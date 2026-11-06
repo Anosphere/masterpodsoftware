@@ -119,7 +119,7 @@ are base64 / base64url as the browser produces them.
 | `/add-to-security-bucket-one`   | vouched | Stores encrypted images in bucket one, under the bucket key `keyId` names                |
 | `/add-to-security-bucket-two`   | vouched | Stores encrypted images and texts in bucket two, under the bucket key `keyId` names      |
 | `/list-security-records`        | vouched | Everything in both buckets for the caller, each row with its `keyId`                     |
-| `/create-chat-room`             | setup   | A private or public room with the creator's own wrapped room key                         |
+| `/create-chat-room`             | setup   | A private or public room with the creator's own wrapped room key; a private room can be about a listing (`listingId`, 2026-11-06) |
 | `/invite-to-chat-room`          | setup   | The creator invites a pod, carrying the room key wrapped to it                           |
 | `/accept-invite`                | setup   | Joins: the wrapped key moves into `chat_hpke`                                            |
 | `/decline-invite`               | setup   | Drops the invite                                                                         |
@@ -127,14 +127,15 @@ are base64 / base64url as the browser produces them.
 | `/approve-join`                 | setup   | The creator lets the requester in with the wrapped key                                   |
 | `/decline-join`                 | setup   | Drops the join request                                                                   |
 | `/leave-chat-room`              | setup   | Leaves a room; the creator cannot                                                        |
-| `/list-chat-rooms`              | setup   | The caller's rooms (members, invited, own wrapped key, newest message, listing summary), open invites, join requests on its rooms |
+| `/list-chat-rooms`              | setup   | The caller's rooms (members, invited, own wrapped key, newest message, the listing a room is about with its owner), open invites (each with its listing too), join requests on its rooms |
 | `/list-public-chat-rooms`       | setup   | Public rooms by name, newest first, paged                                                |
 | `/list-messages`                | setup   | A room's messages after a position, or the newest ones before a position, members only   |
 | `/send-message`                 | setup   | Stores a ciphertext message, members only                                                |
 | `/get-chat-public-keys`         | setup   | The chat public keys of up to 50 pods that completed setup                               |
-| `/create-listing`               | setup   | A listing of anos for a fiat currency with its marketplace room                          |
-| `/close-listing`                | setup   | Closes the owner's listing; the room stays, new join requests are refused                |
-| `/list-listings`                | setup   | Listings filtered by side, currency, country and status, sorted and paged                |
+| `/create-listing`               | setup   | A listing of anos for a fiat currency; since 2026-11-06 without a room of its own, people connect with a private room each |
+| `/close-listing`                | setup   | Closes the owner's listing; an old listing's room stays, new join requests and new rooms about it are refused |
+| `/list-listings`                | setup   | Listings filtered by side, currency, country and status (`any` allowed), the caller's own with `mine`, sorted and paged |
+| `/get-listing`                  | setup   | One listing by id, open or closed, in the list's form                                    |
 | `/create-anos-account`          | setup   | Records an anos account the pod made: type, the private halves under the pod's encryption key, the signed creation; `409` on a repeat |
 | `/mark-anos-account-submitted`  | setup   | Records that a validator answered the account's creation; the caller's accounts only     |
 | `/list-anos-accounts`           | setup   | The caller's anos accounts, oldest first, with the blob, the creation, `submittedAt` and `breakGlassBlob` (null until a recovery stored it) |
@@ -212,13 +213,13 @@ keep the references straight. Every table and column has a `COMMENT ON`
 | `notifications`           | What the phone polls; read, never deleted                              |
 | `security_images`         | Encrypted images of both buckets, each with the id of its bucket key; append-only |
 | `security_info`           | Encrypted texts of bucket two, each with the id of its bucket key; append-only |
-| `chat_rooms`              | Private, public and marketplace rooms                                  |
+| `chat_rooms`              | Private, public and old marketplace rooms; `listing_id` when a room is about a listing |
 | `chat_room_members`       | Who is in which room                                                   |
 | `chat_hpke`               | Each member's wrapped room key                                         |
 | `chat_room_invites`       | Open invites, carrying the wrapped key                                 |
 | `chat_room_join_requests` | Open join requests                                                     |
 | `chat_room_messages`      | Ciphertext messages, numbered by `position`                            |
-| `listings`                | Marketplace listings                                                   |
+| `listings`                | Marketplace listings; `chat_room_id` only on the old ones that got a room |
 | `anos_accounts`           | One row per anos account a pod made: type, key blob, the signed creation, when it was submitted, the break-glass blob after a recovery; never deleted |
 | `recovery_cases`          | One row per recovery case: lookup id, the pod being recovered, contact email, status; one open case per lookup id |
 | `recovery_pods`           | One per case: the recovery passkey, the recovery session, the hybrid key and its wrapped private halves |

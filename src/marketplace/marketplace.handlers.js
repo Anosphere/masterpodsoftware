@@ -1,5 +1,5 @@
 import { answer } from '../util/result.js';
-import { close, createListing, list } from './marketplace.service.js';
+import { close, createListing, get, list } from './marketplace.service.js';
 
 /**
  * Route handlers for the marketplace. HTTP in and out only: the caller is
@@ -19,5 +19,10 @@ export async function closeListingHandler(req, res) {
 
 /** POST /list-listings */
 export async function listListingsHandler(req, res) {
-  answer(res, await list(req.body));
+  answer(res, await list(req.anopod, req.body));
+}
+
+/** POST /get-listing */
+export async function getListingHandler(req, res) {
+  answer(res, await get(req.body));
 }

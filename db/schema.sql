@@ -6,8 +6,9 @@
 -- Safe to run again on a database that already has it: tables use IF NOT
 -- EXISTS, functions and triggers use OR REPLACE, comments just overwrite.
 -- It never alters a table that already exists, though, apart from the
--- idempotent ALTERs of the recovery and attestation blocks at the end. After
--- changing this file, rebuild the local database from scratch with
+-- idempotent ALTERs of the recovery, attestation and marketplace blocks at
+-- the end. After changing this file, rebuild the local database from scratch
+-- with
 --
 --   npm run db:reset
 --
@@ -408,6 +409,7 @@ CREATE TABLE IF NOT EXISTS chat_rooms (
   creator_anopod_id BYTEA       NOT NULL CHECK (octet_length(creator_anopod_id) = 32),
   type              TEXT        NOT NULL CHECK (type IN ('private', 'public', 'marketplace')),
   name              TEXT        CHECK (char_length(name) BETWEEN 1 AND 100),
+  listing_id        BYTEA       CHECK (octet_length(listing_id) = 32),
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
   CHECK ((type = 'public') = (name IS NOT NULL))
@@ -420,7 +422,7 @@ CREATE OR REPLACE TRIGGER chat_rooms_set_updated_at
   WHEN (OLD.* IS DISTINCT FROM NEW.*)
   EXECUTE FUNCTION set_updated_at();
 
-COMMENT ON TABLE  chat_rooms                   IS 'One row per chat room: private (invites only), public (browsable by name, join requests) or marketplace (one per listing, join requests).';
+COMMENT ON TABLE  chat_rooms                   IS 'One row per chat room: private (invites only; about a listing when listing_id is set, one such room per person who connects, since 2026-11-06), public (browsable by name, join requests) or marketplace (the old one-per-listing rooms, join requests; none made since 2026-11-06, the existing ones stay).';
 COMMENT ON COLUMN chat_rooms.chat_room_id      IS 'Random id, 32 raw bytes.';
 COMMENT ON COLUMN chat_rooms.creator_anopod_id IS 'The pod that made the room. It invites, answers join requests and cannot leave.';
 COMMENT ON COLUMN chat_rooms.type              IS 'private, public or marketplace.';
@@ -535,7 +537,7 @@ COMMENT ON COLUMN chat_room_messages.created_at       IS 'When the row was inser
 
 CREATE TABLE IF NOT EXISTS listings (
   listing_id   BYTEA          PRIMARY KEY CHECK (octet_length(listing_id) = 32),
-  chat_room_id BYTEA          NOT NULL UNIQUE CHECK (octet_length(chat_room_id) = 32),
+  chat_room_id BYTEA          UNIQUE CHECK (octet_length(chat_room_id) = 32),
   anopod_id    BYTEA          NOT NULL CHECK (octet_length(anopod_id) = 32),
   side         TEXT           NOT NULL CHECK (side IN ('buy', 'sell')),
   quantity     BIGINT         NOT NULL CHECK (quantity > 0),
@@ -554,16 +556,16 @@ CREATE OR REPLACE TRIGGER listings_set_updated_at
   WHEN (OLD.* IS DISTINCT FROM NEW.*)
   EXECUTE FUNCTION set_updated_at();
 
-COMMENT ON TABLE  listings              IS 'Marketplace listings, always anos for a fiat currency. Each listing owns one marketplace chat room.';
+COMMENT ON TABLE  listings              IS 'Marketplace listings, always anos for a fiat currency. Until 2026-11-06 each listing owned one marketplace chat room; since then the people who connect each get a private room about it (chat_rooms.listing_id).';
 COMMENT ON COLUMN listings.listing_id   IS 'Random id, 32 raw bytes.';
-COMMENT ON COLUMN listings.chat_room_id IS 'The listing''s marketplace room, made with it.';
+COMMENT ON COLUMN listings.chat_room_id IS 'The listing''s old marketplace room, made with it until 2026-11-06. Null for every listing made since.';
 COMMENT ON COLUMN listings.anopod_id    IS 'The owner.';
 COMMENT ON COLUMN listings.side         IS 'buy or sell, from the owner''s side.';
 COMMENT ON COLUMN listings.quantity     IS 'Millionths of an anos (6 implied decimals).';
 COMMENT ON COLUMN listings.currency     IS 'ISO 4217 code, three uppercase letters.';
 COMMENT ON COLUMN listings.country      IS 'ISO 3166-1 alpha-2 code, two uppercase letters.';
 COMMENT ON COLUMN listings.price        IS 'Per anos, in currency; up to 8 decimals.';
-COMMENT ON COLUMN listings.status       IS 'open or closed. A closed listing takes no new join requests; the room and its members stay.';
+COMMENT ON COLUMN listings.status       IS 'open or closed. A closed listing takes no new join requests and no new rooms about it; an old listing''s room and its members stay.';
 COMMENT ON COLUMN listings.created_at   IS 'When the row was inserted. Set by default, never changed.';
 COMMENT ON COLUMN listings.updated_at   IS 'When the row last changed. Maintained by the listings_set_updated_at trigger.';
 
@@ -989,3 +991,21 @@ ALTER TABLE notifications ADD CONSTRAINT notifications_kind_check
                   'joinRequest', 'joinApproved', 'joinDeclined',
                   'tradeCaseOpened', 'disputeCaseOpened', 'caseScheduled',
                   'caseDecided', 'caseDismissed'));
+
+
+-- The marketplace block (2026-11-06): chat_rooms.listing_id, the listing a
+-- room is about, with its index and a backfill for the old marketplace
+-- rooms, and listings.chat_room_id made nullable, since a listing no longer
+-- gets a room of its own. The column and the nullable chat_room_id are also
+-- inline in the two CREATE TABLEs above, for a fresh database; the index
+-- and the column comment are here only, after the column exists on a live
+-- one. All idempotent: IF NOT EXISTS, an UPDATE that finds nothing the
+-- second time, a DROP NOT NULL that changes nothing on a nullable column.
+
+ALTER TABLE chat_rooms ADD COLUMN IF NOT EXISTS listing_id BYTEA CHECK (octet_length(listing_id) = 32);
+CREATE INDEX IF NOT EXISTS chat_rooms_listing_id_idx ON chat_rooms (listing_id) WHERE listing_id IS NOT NULL;
+UPDATE chat_rooms r SET listing_id = l.listing_id FROM listings l
+ WHERE l.chat_room_id = r.chat_room_id AND r.listing_id IS NULL;
+ALTER TABLE listings ALTER COLUMN chat_room_id DROP NOT NULL;
+
+COMMENT ON COLUMN chat_rooms.listing_id IS 'The listing the room is about, 32 raw bytes, or null. Set on a private room made by /create-chat-room with a listingId (2026-11-06) and, by the marketplace block''s backfill, on every old marketplace room.';

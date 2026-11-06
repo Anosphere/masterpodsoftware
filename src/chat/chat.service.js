@@ -1,7 +1,7 @@
 import { findById } from '../anopods/anopods.queries.js';
 import { decodeBytes } from '../crypto/bytes.js';
 import { isUniqueViolation, withTransaction } from '../db/transaction.js';
-import { findListingByRoom } from '../marketplace/listings.queries.js';
+import { findListing, findListingByRoom } from '../marketplace/listings.queries.js';
 import { notify } from '../notifications/notifications.queries.js';
 import { decodeId, randomId, toHex } from '../util/ids.js';
 import { decodeBase64 } from '../util/images.js';
@@ -29,6 +29,7 @@ import {
   listMessagesBefore,
   listPublicRooms as listPublicRoomsQuery,
   listRoomsFor,
+  roomAboutListingBy,
 } from './chat.queries.js';
 
 /**
@@ -70,7 +71,11 @@ function integerOption(value, fallback, min, max) {
   return Number.isInteger(value) && value >= min && value <= max ? value : undefined;
 }
 
-/** POST /create-chat-room. Body { type, name, hpkeKey }. */
+/**
+ * POST /create-chat-room. Body { type, name, hpkeKey, listingId }, the
+ * listingId optional (2026-11-06): the listing a private room is about,
+ * checked after everything else.
+ */
 export async function createRoom(anopod, body) {
   if (!isObject(body) || typeof body.type !== 'string' || typeof body.hpkeKey !== 'string') {
     return refuse(400, BAD_SHAPE);
@@ -85,6 +90,17 @@ export async function createRoom(anopod, body) {
   }
   const hpkeKey = decodeHpkeKey(body.hpkeKey);
   if (hpkeKey === null) return refuse(400, 'invalid hpkeKey');
+  let listingId = null;
+  if (body.listingId !== undefined && body.listingId !== null) {
+    if (typeof body.listingId !== 'string') return refuse(400, BAD_SHAPE);
+    if (type === 'public') return refuse(400, 'public rooms have no listing');
+    listingId = decodeId(body.listingId);
+    const listing = listingId === null ? null : await findListing(listingId);
+    if (listing === null) return refuse(404, 'listing not found');
+    if (listing.status !== 'open') return refuse(409, 'listing closed');
+    if (listing.anopodId.equals(anopod.anopodId)) return refuse(400, 'your own listing');
+    if ((await roomAboutListingBy(listingId, anopod.anopodId)) !== null) return refuse(409, 'room already open');
+  }
 
   const chatRoomId = randomId();
   await withTransaction(async (client) => {
@@ -93,6 +109,7 @@ export async function createRoom(anopod, body) {
       creatorAnopodId: anopod.anopodId,
       type,
       name: type === 'public' ? name : null,
+      listingId,
     });
     await insertMember(client, chatRoomId, anopod.anopodId, hpkeKey);
   });
