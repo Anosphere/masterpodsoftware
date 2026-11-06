@@ -211,32 +211,71 @@ export async function listMessages(chatRoomId, afterPosition, limit) {
   }));
 }
 
+/**
+ * The room's newest messages below `beforePosition`, at most `limit`, in
+ * ascending order, each in the wire form of listMessages: how a room opens
+ * at its newest messages and loads older ones.
+ */
+export async function listMessagesBefore(chatRoomId, beforePosition, limit) {
+  const { rows } = await pool.query(
+    `SELECT message_id, position, sender_anopod_id, message, created_at
+     FROM chat_room_messages
+     WHERE chat_room_id = $1 AND position < $2
+     ORDER BY position DESC
+     LIMIT $3`,
+    [chatRoomId, beforePosition, limit],
+  );
+  return rows.reverse().map((row) => ({
+    messageId: toHex(row.message_id),
+    position: Number(row.position),
+    senderAnopodId: toHex(row.sender_anopod_id),
+    message: row.message.toString('base64'),
+    createdAt: row.created_at.toISOString(),
+  }));
+}
+
 // ---------------------------------------------------------------------------
 // Lists
 // ---------------------------------------------------------------------------
 
 /**
  * The rooms `anopodId` is a member of, newest first, each with the caller's
- * own wrapped key, the members (id and username), the highest message
- * position (0 when empty) and, for a marketplace room, its listing id:
- * { chatRoomId, type, name, listingId, creatorAnopodId, hpkeKey, members,
- * lastPosition, createdAt }.
+ * own wrapped key, the members (id and username), the people invited who
+ * have not answered yet (oldest first), the newest message in the wire form
+ * of listMessages (null when the room has none) with its position as
+ * lastPosition (0 when none) and, for a marketplace room, its listing id
+ * and the listing's side, quantity (millionths, a decimal string) and
+ * currency: { chatRoomId, type, name, listingId, listing, creatorAnopodId,
+ * hpkeKey, members, invited, lastMessage, lastPosition, createdAt }.
  */
 export async function listRoomsFor(anopodId) {
   const { rows } = await pool.query(
-    `SELECT r.chat_room_id, r.type, r.name, r.creator_anopod_id, r.created_at, l.listing_id, h.hpke_key,
-            (SELECT COALESCE(max(msg.position), 0) FROM chat_room_messages msg
-              WHERE msg.chat_room_id = r.chat_room_id) AS last_position,
+    `SELECT r.chat_room_id, r.type, r.name, r.creator_anopod_id, r.created_at, h.hpke_key,
+            l.listing_id, l.side, l.quantity, l.currency,
+            lm.message_id AS last_message_id, lm.position AS last_position,
+            lm.sender_anopod_id AS last_sender_anopod_id, lm.message AS last_message,
+            lm.created_at AS last_created_at,
             (SELECT COALESCE(json_agg(json_build_object('anopodId', encode(m.anopod_id, 'hex'),
                                                          'username', ma.username)
                                       ORDER BY m.created_at, m.anopod_id), '[]'::json)
                FROM chat_room_members m
                JOIN anopods ma ON ma.anopod_id = m.anopod_id
-              WHERE m.chat_room_id = r.chat_room_id) AS members
+              WHERE m.chat_room_id = r.chat_room_id) AS members,
+            (SELECT COALESCE(json_agg(json_build_object('anopodId', encode(i.anopod_id_to, 'hex'),
+                                                         'username', ia.username)
+                                      ORDER BY i.created_at, i.invite_id), '[]'::json)
+               FROM chat_room_invites i
+               JOIN anopods ia ON ia.anopod_id = i.anopod_id_to
+              WHERE i.chat_room_id = r.chat_room_id) AS invited
      FROM chat_room_members cm
      JOIN chat_rooms r ON r.chat_room_id = cm.chat_room_id
      JOIN chat_hpke h ON h.chat_room_id = cm.chat_room_id AND h.anopod_id = cm.anopod_id
      LEFT JOIN listings l ON l.chat_room_id = r.chat_room_id
+     LEFT JOIN LATERAL (SELECT msg.message_id, msg.position, msg.sender_anopod_id, msg.message, msg.created_at
+                          FROM chat_room_messages msg
+                         WHERE msg.chat_room_id = r.chat_room_id
+                         ORDER BY msg.position DESC
+                         LIMIT 1) lm ON true
      WHERE cm.anopod_id = $1
      ORDER BY r.created_at DESC, r.chat_room_id`,
     [anopodId],
@@ -246,10 +285,22 @@ export async function listRoomsFor(anopodId) {
     type: row.type,
     name: row.name,
     listingId: toHex(row.listing_id),
+    listing: row.listing_id === null ? null : { side: row.side, quantity: row.quantity, currency: row.currency },
     creatorAnopodId: toHex(row.creator_anopod_id),
     hpkeKey: toHex(row.hpke_key),
     members: row.members,
-    lastPosition: Number(row.last_position),
+    invited: row.invited,
+    lastMessage:
+      row.last_message_id === null
+        ? null
+        : {
+            messageId: toHex(row.last_message_id),
+            position: Number(row.last_position),
+            senderAnopodId: toHex(row.last_sender_anopod_id),
+            message: row.last_message.toString('base64'),
+            createdAt: row.last_created_at.toISOString(),
+          },
+    lastPosition: row.last_position === null ? 0 : Number(row.last_position),
     createdAt: row.created_at.toISOString(),
   }));
 }

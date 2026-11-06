@@ -890,17 +890,25 @@ Answer:
 
 ```json
 {
-  "rooms": [ { "chatRoomId", "type", "name", "listingId", "creatorAnopodId", "hpkeKey",
-               "members": [ { "anopodId", "username" } ], "lastPosition", "createdAt" } ],
+  "rooms": [ { "chatRoomId", "type", "name", "listingId", "listing", "creatorAnopodId", "hpkeKey",
+               "members": [ { "anopodId", "username" } ], "invited": [ { "anopodId", "username" } ],
+               "lastMessage", "lastPosition", "createdAt" } ],
   "invites": [ { "inviteId", "chatRoomId", "type", "name", "from": profile, "createdAt" } ],
   "joinRequests": [ { "joinRequestId", "chatRoomId", "from": profile, "createdAt" } ]
 }
 ```
 
-`rooms` are the caller's memberships with the caller's own wrapped key and
-the highest message position (0 when empty); `invites` the open invites to
-the caller; `joinRequests` the open requests on rooms the caller created.
-Marketplace rooms appear with `name` null and their `listingId`; for other rooms `listingId` is null.
+`rooms` are the caller's memberships with the caller's own wrapped key, the
+members, the people invited who have not answered yet (`invited`, oldest
+first, `[]` when there are none), the room's newest message (`lastMessage`,
+in the form /list-messages uses, null when the room has none) and its
+position as `lastPosition` (0 when none); `invites` the open invites to the
+caller; `joinRequests` the open requests on rooms the caller created.
+Marketplace rooms appear with `name` null, their `listingId` and `listing`,
+the listing's `{ side, quantity, currency }` with `quantity` a decimal string
+of millionths; for other rooms `listingId` and `listing` are null. `invited`,
+`lastMessage` and `listing` were added for the wallet's chat screens
+(2026-11-05).
 
 ### POST /list-public-chat-rooms (setup)
 
@@ -911,8 +919,12 @@ createdAt } ] }`, type `public` only, newest first.
 
 ### POST /list-messages (setup)
 
-Body: `{ chatRoomId, afterPosition, limit }`; `afterPosition` defaults to
-0, `limit` to 100 (max 200).
+Body: `{ chatRoomId, afterPosition, beforePosition, limit }`;
+`afterPosition` defaults to 0, `limit` to 100 (max 200). `beforePosition`
+is optional, 1 or more: when it is given, the answer is the newest `limit`
+messages whose position is below it, and `afterPosition` is ignored (`400
+invalid beforePosition` for a bad value); this is how a room opens at its
+newest messages and loads older ones (2026-11-05).
 
 Checks: the caller is a member (`403 not a member`).
 
