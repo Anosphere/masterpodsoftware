@@ -392,15 +392,23 @@ CREATE TABLE IF NOT EXISTS chat_rooms (
   creator_anopod_id BYTEA       NOT NULL CHECK (octet_length(creator_anopod_id) = 32),
   type              TEXT        NOT NULL CHECK (type IN ('private', 'public', 'marketplace')),
   name              TEXT        CHECK (char_length(name) BETWEEN 1 AND 100),
+  listing_id        BYTEA       CHECK (octet_length(listing_id) = 32),
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
   CHECK ((type = 'public') = (name IS NOT NULL))
 );
 CREATE INDEX IF NOT EXISTS chat_rooms_type_created_at_idx ON chat_rooms (type, created_at DESC);
+CREATE INDEX IF NOT EXISTS chat_rooms_listing_id_idx ON chat_rooms (listing_id) WHERE listing_id IS NOT NULL;
 ```
 
 Public rooms carry a plaintext name so they can be browsed. Private rooms
-have none. A marketplace room is named by its listing.
+have none. A marketplace room is named by its listing. `listing_id` (added
+2026-11-06) is the listing a room is about: set on a private room made by
+/create-chat-room with a `listingId`, one such room per person who connects
+with the owner, and set on every old marketplace room by the backfill of the
+marketplace block at the end of `db/schema.sql` (the column, its index, the
+backfill and the `listings.chat_room_id` change below, all idempotent, after
+the attestation block). No marketplace room is made since that date.
 
 ### chat_room_members, chat_hpke
 
@@ -477,7 +485,7 @@ there is no per-message signature, by decision.
 ```sql
 CREATE TABLE IF NOT EXISTS listings (
   listing_id   BYTEA          PRIMARY KEY CHECK (octet_length(listing_id) = 32),
-  chat_room_id BYTEA          NOT NULL UNIQUE CHECK (octet_length(chat_room_id) = 32),
+  chat_room_id BYTEA          UNIQUE CHECK (octet_length(chat_room_id) = 32),
   anopod_id    BYTEA          NOT NULL CHECK (octet_length(anopod_id) = 32),
   side         TEXT           NOT NULL CHECK (side IN ('buy', 'sell')),
   quantity     BIGINT         NOT NULL CHECK (quantity > 0),
@@ -493,7 +501,11 @@ CREATE INDEX IF NOT EXISTS listings_status_created_at_idx ON listings (status, c
 
 A listing is always anos for a fiat currency: `quantity` in millionths of
 an anos, `price` per anos in `currency` (ISO 4217), `country` ISO 3166-1
-alpha-2. Each listing owns one marketplace room.
+alpha-2. Until 2026-11-06 each listing owned one marketplace room,
+`chat_room_id`; since then `chat_room_id` is null on every new listing and
+the people who connect each get a private room about it, linked by
+`chat_rooms.listing_id`. The old rooms stay, with their listings' ids on
+both rows.
 
 ## 5. Routes
 
@@ -788,11 +800,22 @@ shares of key `keyId` knows which rows it opens.
 
 ### POST /create-chat-room (setup)
 
-Body: `{ type, name, hpkeKey }`: `type` is `private` or `public`; `name`
-required for `public`, absent for `private`; `hpkeKey` is the creator's own
-wrapped copy of the new room key (section 7).
+Body: `{ type, name, hpkeKey, listingId }`: `type` is `private` or `public`;
+`name` required for `public`, absent for `private`; `hpkeKey` is the
+creator's own wrapped copy of the new room key (section 7); `listingId`
+(optional, 2026-11-06) is the listing a `private` room is about: how a
+person connects with a listing's owner. The room is made, then the owner is
+invited with /invite-to-chat-room as for any private room, and accepts or
+declines the invite.
 
-Writes: `chat_rooms`, `chat_room_members` (creator), `chat_hpke` (creator).
+Checks for `listingId`, after the existing ones: `type` is `private` (`400
+public rooms have no listing`); the listing exists (`404 listing not
+found`) and is open (`409 listing closed`); the caller is not its owner
+(`400 your own listing`); the caller has no room about it yet, a room it
+created with this `listing_id` (`409 room already open`).
+
+Writes: `chat_rooms` (with `listing_id` when given), `chat_room_members`
+(creator), `chat_hpke` (creator).
 
 Answer: `201 { chatRoomId }`.
 
@@ -893,7 +916,7 @@ Answer:
   "rooms": [ { "chatRoomId", "type", "name", "listingId", "listing", "creatorAnopodId", "hpkeKey",
                "members": [ { "anopodId", "username" } ], "invited": [ { "anopodId", "username" } ],
                "lastMessage", "lastPosition", "createdAt" } ],
-  "invites": [ { "inviteId", "chatRoomId", "type", "name", "from": profile, "createdAt" } ],
+  "invites": [ { "inviteId", "chatRoomId", "type", "name", "listingId", "listing", "from": profile, "createdAt" } ],
   "joinRequests": [ { "joinRequestId", "chatRoomId", "from": profile, "createdAt" } ]
 }
 ```
@@ -904,11 +927,17 @@ first, `[]` when there are none), the room's newest message (`lastMessage`,
 in the form /list-messages uses, null when the room has none) and its
 position as `lastPosition` (0 when none); `invites` the open invites to the
 caller; `joinRequests` the open requests on rooms the caller created.
-Marketplace rooms appear with `name` null, their `listingId` and `listing`,
-the listing's `{ side, quantity, currency }` with `quantity` a decimal string
-of millionths; for other rooms `listingId` and `listing` are null. `invited`,
-`lastMessage` and `listing` were added for the wallet's chat screens
-(2026-11-05).
+A room about a listing (`chat_rooms.listing_id`: a private room made with a
+`listingId`, or an old marketplace room) appears with its `listingId` and
+`listing`, `{ listingId, side, quantity, currency, country, price, status,
+owner: { anopodId, username } }` with `quantity` a decimal string of
+millionths and `price` a decimal string without trailing zeros, as
+/list-listings gives them; for other rooms `listingId` and `listing` are
+null. Each invite carries the same `listingId` and `listing`, null for a
+room without a listing, so the owner's request can say which listing it is
+about. `invited`, `lastMessage` and `listing` were added for the wallet's
+chat screens (2026-11-05); `listing` grew to this form and reached the
+invites for the marketplace rework (2026-11-06).
 
 ### POST /list-public-chat-rooms (setup)
 
@@ -950,16 +979,20 @@ only for pods whose setup is complete; the others are left out.
 
 ### POST /create-listing (setup)
 
-Body: `{ side, quantity, currency, country, price, hpkeKey }`: `side`
-`buy` or `sell`; `quantity` a decimal string of millionths of an anos, above
-zero; `currency` three uppercase letters; `country` two uppercase letters;
-`price` a decimal string, above zero, at most 8 decimals; `hpkeKey` the
-owner's own wrapped copy of the new room key.
+Body: `{ side, quantity, currency, country, price }`: `side` `buy` or
+`sell`; `quantity` a decimal string of millionths of an anos, above zero;
+`currency` three uppercase letters; `country` two uppercase letters; `price`
+a decimal string, above zero, at most 8 decimals. `hpkeKey`, the owner's
+wrapped copy of a room key, is optional since 2026-11-06 and ignored when
+present (a string, else `400 bad request shape`), so an older client still
+gets its listing.
 
-Writes: `chat_rooms` (type `marketplace`, name null), `chat_room_members`
-(owner), `chat_hpke` (owner), `listings`.
+Writes: `listings` only, with `chat_room_id` null. Until 2026-11-06 a
+listing got a marketplace room with it (`chat_rooms` type `marketplace`,
+the owner's `chat_room_members` and `chat_hpke` rows); now the people who
+connect each open a private room about it with /create-chat-room.
 
-Answer: `201 { listingId, chatRoomId }`.
+Answer: `201 { listingId, chatRoomId: null }`.
 
 ### POST /close-listing (setup)
 
@@ -968,21 +1001,37 @@ Body: `{ listingId }`.
 Checks: the listing exists (`404 listing not found`) and the caller owns it
 (`403 not your listing`); it is open (`409 already closed`).
 
-Writes: `UPDATE listings SET status = 'closed'`. The room and its members
-stay; new join requests are refused.
+Writes: `UPDATE listings SET status = 'closed'`. An old listing's room and
+its members stay; new join requests are refused, as are new rooms about the
+listing (/create-chat-room, `409 listing closed`).
 
 Answer: `200 { listingId, status: 'closed' }`.
 
 ### POST /list-listings (setup)
 
-Body, all optional: `{ side, currency, country, status, sortBy,
-sortDirection, limit, offset }`. `status` defaults to `open`; `sortBy` is
-`createdAt` (default), `price` or `quantity`; `sortDirection` `desc`
-(default) or `asc`; `limit` 50 (max 200); `offset` 0.
+Body, all optional: `{ side, currency, country, status, mine, sortBy,
+sortDirection, limit, offset }`. `status` is `open` (default), `closed` or,
+since 2026-11-06, `any`; `mine` (2026-11-06) is a boolean, true for the
+caller's own listings only (`400 invalid mine` otherwise), for the wallet's
+Your listings page and its counts; `sortBy` is `createdAt` (default),
+`price` or `quantity`; `sortDirection` `desc` (default) or `asc`; `limit`
+50 (max 200); `offset` 0.
 
 Answer: `200 { listings: [ { listingId, chatRoomId, owner: profile, side,
 quantity, currency, country, price, status, createdAt } ] }`, `quantity`
-and `price` as decimal strings.
+and `price` as decimal strings; `chatRoomId` is the old marketplace room of
+a listing made before 2026-11-06 and null since.
+
+### POST /get-listing (setup)
+
+Body: `{ listingId }` (`400 bad request shape` for anything else).
+
+Checks: the listing exists (`404 listing not found`). Open or closed, any
+pod with setup may read it.
+
+Answer: `200 { listing }`, one item in the form of /list-listings. For the
+wallet's listing page, which has its own address and reads one listing
+(2026-11-06).
 
 ### POST /create-anos-account (setup)
 
@@ -1234,6 +1283,54 @@ Step 3 of `~/Desktop/Z/web_app/docs/build-plan.md`, built as its spec says
   create by the same and by another pod, `404` on marking someone else's,
   the unsigned lookup answering `vouched` true and, for a row written for
   an unvouched pod, false. The database is dropped at the end.
+
+### The marketplace rework (2026-11-06)
+
+Step 1 of `~/Desktop/Z-TestNet/forclaude/wallet-marketplace-plan-1.md`
+(its section 1), the masterpod's part of the wallet's phone-first
+marketplace: a private chat per person who connects with a listing's owner
+instead of one group room per listing, the listing linked to the room by
+`chat_rooms.listing_id`. Built as the plan says; what it settled:
+
+- The schema change is additive and idempotent: `chat_rooms.listing_id`
+  (nullable, a partial index) and `listings.chat_room_id` made nullable,
+  inline in the two `CREATE TABLE`s for a fresh database and in the
+  marketplace block at the end of `db/schema.sql` for a live one, where the
+  block also sets `listing_id` on every old marketplace room from its
+  listing. The index and the column comment sit in the block only: at the
+  table they would run before the column exists on a live database. A second
+  run changes nothing. Deployed as the deploy plan's schema paste (its
+  section 6) with this Mac's new line count and hash; the backfill moves
+  `updated_at` on the old rooms.
+- `/create-chat-room`: a `listingId` that is not a string is `400 bad
+  request shape`; one that does not decode is `404 listing not found`, as
+  `/close-listing` and `/get-listing` treat theirs; `listingId: null` counts
+  as absent, like every optional field. The listing checks run after the
+  existing ones, in the plan's order. `roomAboutListingBy` answers the room
+  in `findRoom`'s form, the oldest when there are several.
+- `/list-chat-rooms` joins `listings` on `chat_rooms.listing_id` (no longer
+  on `listings.chat_room_id`), so an old marketplace room keeps its listing
+  through the backfill and a new private room gets its own; the owner's
+  username is a second join on `anopods`. The 2026-11-05 fields of
+  `listing` are unchanged; the new ones sit beside them.
+- `/create-listing` keeps its field order and refusals; `hpkeKey: null`
+  counts as absent. The service no longer imports from `src/chat/`.
+  `/close-listing` is unchanged in code.
+- `/list-listings`: `mine` is a boolean (`400 invalid mine` otherwise),
+  read on the service with the caller; `status: 'any'` reaches the SQL as
+  null, and the owner filter is one more parameter on the same statement.
+  `/get-listing` has its own select, `findListingItem`, a copy of the
+  /list-listings select for one id; `findListing` (ids as Buffers, no
+  profile) stays for the services' own checks.
+- `/request-to-join` still serves old marketplace rooms and public rooms.
+  Between the masterpod deploy and the wallet deploy a listing made on the
+  old wallet has no room, so its Request to join fails; the gap is kept
+  short (plan 1.8).
+- Checked with `node --check` on every changed file and the schema run
+  twice against the local `masterpod` database inside one rolled-back
+  transaction, first with an old-style listing and its marketplace room in
+  place (the backfill set its `listing_id`), then the changed query
+  functions and the two read services on the same transaction.
 
 
 ## 12. Recovery and moderation

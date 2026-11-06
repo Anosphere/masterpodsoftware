@@ -1,5 +1,6 @@
 import { PROFILE_COLUMNS, profileFromRow } from '../anopods/anopods.queries.js';
 import { pool } from '../db/pool.js';
+import { trimDecimal } from '../marketplace/listings.queries.js';
 import { toHex } from '../util/ids.js';
 
 /**
@@ -14,18 +15,21 @@ import { toHex } from '../util/ids.js';
 // Rooms
 // ---------------------------------------------------------------------------
 
-/** Writes a room on `client`: `name` is null unless `type` is 'public'. */
-export async function insertRoom(client, { chatRoomId, creatorAnopodId, type, name }) {
+/**
+ * Writes a room on `client`: `name` is null unless `type` is 'public';
+ * `listingId` is the listing a private room is about, null when absent.
+ */
+export async function insertRoom(client, { chatRoomId, creatorAnopodId, type, name, listingId = null }) {
   await client.query(
-    `INSERT INTO chat_rooms (chat_room_id, creator_anopod_id, type, name) VALUES ($1, $2, $3, $4)`,
-    [chatRoomId, creatorAnopodId, type, name],
+    `INSERT INTO chat_rooms (chat_room_id, creator_anopod_id, type, name, listing_id) VALUES ($1, $2, $3, $4, $5)`,
+    [chatRoomId, creatorAnopodId, type, name, listingId],
   );
 }
 
-/** The room with this id, as { chatRoomId, creatorAnopodId, type, name, createdAt }, or null. */
+/** The room with this id, as { chatRoomId, creatorAnopodId, type, name, listingId, createdAt }, or null. */
 export async function findRoom(chatRoomId, db = pool) {
   const { rows } = await db.query(
-    `SELECT chat_room_id, creator_anopod_id, type, name, created_at FROM chat_rooms WHERE chat_room_id = $1`,
+    `SELECT chat_room_id, creator_anopod_id, type, name, listing_id, created_at FROM chat_rooms WHERE chat_room_id = $1`,
     [chatRoomId],
   );
   if (rows.length === 0) return null;
@@ -35,6 +39,33 @@ export async function findRoom(chatRoomId, db = pool) {
     creatorAnopodId: row.creator_anopod_id,
     type: row.type,
     name: row.name,
+    listingId: row.listing_id,
+    createdAt: row.created_at,
+  };
+}
+
+/**
+ * The room `creatorAnopodId` created about this listing (its listing_id),
+ * in findRoom's form, or null: whether the person has connected with the
+ * listing already.
+ */
+export async function roomAboutListingBy(listingId, creatorAnopodId, db = pool) {
+  const { rows } = await db.query(
+    `SELECT chat_room_id, creator_anopod_id, type, name, listing_id, created_at
+     FROM chat_rooms
+     WHERE listing_id = $1 AND creator_anopod_id = $2
+     ORDER BY created_at, chat_room_id
+     LIMIT 1`,
+    [listingId, creatorAnopodId],
+  );
+  if (rows.length === 0) return null;
+  const row = rows[0];
+  return {
+    chatRoomId: row.chat_room_id,
+    creatorAnopodId: row.creator_anopod_id,
+    type: row.type,
+    name: row.name,
+    listingId: row.listing_id,
     createdAt: row.created_at,
   };
 }
@@ -239,19 +270,45 @@ export async function listMessagesBefore(chatRoomId, beforePosition, limit) {
 // ---------------------------------------------------------------------------
 
 /**
+ * The columns of the listing a room is about, joined as `l` with its owner
+ * as `la`, and the listing object they make: { listingId, side, quantity,
+ * currency, country, price, status, owner: { anopodId, username } }, the
+ * quantity a decimal string of millionths and the price a decimal string
+ * without trailing zeros, as /list-listings gives them; null for a room
+ * without a listing.
+ */
+const ROOM_LISTING_COLUMNS = `l.side, l.quantity, l.currency, l.country, l.price, l.status,
+            l.anopod_id AS owner_anopod_id, la.username AS owner_username`;
+
+function listingFromRow(row) {
+  if (row.listing_id === null) return null;
+  return {
+    listingId: toHex(row.listing_id),
+    side: row.side,
+    quantity: row.quantity,
+    currency: row.currency,
+    country: row.country,
+    price: trimDecimal(row.price),
+    status: row.status,
+    owner: { anopodId: toHex(row.owner_anopod_id), username: row.owner_username },
+  };
+}
+
+/**
  * The rooms `anopodId` is a member of, newest first, each with the caller's
  * own wrapped key, the members (id and username), the people invited who
  * have not answered yet (oldest first), the newest message in the wire form
  * of listMessages (null when the room has none) with its position as
- * lastPosition (0 when none) and, for a marketplace room, its listing id
- * and the listing's side, quantity (millionths, a decimal string) and
- * currency: { chatRoomId, type, name, listingId, listing, creatorAnopodId,
+ * lastPosition (0 when none) and, for a room about a listing
+ * (chat_rooms.listing_id: a private room made with a listingId, or an old
+ * marketplace room), its listing id and the listing as listingFromRow
+ * gives it: { chatRoomId, type, name, listingId, listing, creatorAnopodId,
  * hpkeKey, members, invited, lastMessage, lastPosition, createdAt }.
  */
 export async function listRoomsFor(anopodId) {
   const { rows } = await pool.query(
     `SELECT r.chat_room_id, r.type, r.name, r.creator_anopod_id, r.created_at, h.hpke_key,
-            l.listing_id, l.side, l.quantity, l.currency,
+            r.listing_id, ${ROOM_LISTING_COLUMNS},
             lm.message_id AS last_message_id, lm.position AS last_position,
             lm.sender_anopod_id AS last_sender_anopod_id, lm.message AS last_message,
             lm.created_at AS last_created_at,
@@ -270,7 +327,8 @@ export async function listRoomsFor(anopodId) {
      FROM chat_room_members cm
      JOIN chat_rooms r ON r.chat_room_id = cm.chat_room_id
      JOIN chat_hpke h ON h.chat_room_id = cm.chat_room_id AND h.anopod_id = cm.anopod_id
-     LEFT JOIN listings l ON l.chat_room_id = r.chat_room_id
+     LEFT JOIN listings l ON l.listing_id = r.listing_id
+     LEFT JOIN anopods la ON la.anopod_id = l.anopod_id
      LEFT JOIN LATERAL (SELECT msg.message_id, msg.position, msg.sender_anopod_id, msg.message, msg.created_at
                           FROM chat_room_messages msg
                          WHERE msg.chat_room_id = r.chat_room_id
@@ -285,7 +343,7 @@ export async function listRoomsFor(anopodId) {
     type: row.type,
     name: row.name,
     listingId: toHex(row.listing_id),
-    listing: row.listing_id === null ? null : { side: row.side, quantity: row.quantity, currency: row.currency },
+    listing: listingFromRow(row),
     creatorAnopodId: toHex(row.creator_anopod_id),
     hpkeKey: toHex(row.hpke_key),
     members: row.members,
@@ -305,13 +363,20 @@ export async function listRoomsFor(anopodId) {
   }));
 }
 
-/** The open invites to `anopodId`, oldest first: { inviteId, chatRoomId, type, name, from: profile, createdAt }. */
+/**
+ * The open invites to `anopodId`, oldest first, each with the listing its
+ * room is about (listingFromRow; null without one): { inviteId, chatRoomId,
+ * type, name, listingId, listing, from: profile, createdAt }.
+ */
 export async function listInvitesFor(anopodId) {
   const { rows } = await pool.query(
-    `SELECT i.invite_id, i.chat_room_id, i.created_at, r.type, r.name, ${PROFILE_COLUMNS}
+    `SELECT i.invite_id, i.chat_room_id, i.created_at, r.type, r.name, r.listing_id, ${ROOM_LISTING_COLUMNS},
+            ${PROFILE_COLUMNS}
      FROM chat_room_invites i
      JOIN chat_rooms r ON r.chat_room_id = i.chat_room_id
      JOIN anopods a ON a.anopod_id = i.anopod_id_from
+     LEFT JOIN listings l ON l.listing_id = r.listing_id
+     LEFT JOIN anopods la ON la.anopod_id = l.anopod_id
      WHERE i.anopod_id_to = $1
      ORDER BY i.created_at, i.invite_id`,
     [anopodId],
@@ -321,6 +386,8 @@ export async function listInvitesFor(anopodId) {
     chatRoomId: toHex(row.chat_room_id),
     type: row.type,
     name: row.name,
+    listingId: toHex(row.listing_id),
+    listing: listingFromRow(row),
     from: profileFromRow(row),
     createdAt: row.created_at.toISOString(),
   }));

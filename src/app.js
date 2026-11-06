@@ -46,7 +46,7 @@ export function createApp() {
   app.use(vouchingRouter); // owns /search-usernames, /send-vouch-request, /list-vouch-requests, /approve-vouch-request, /decline-vouch-request
   app.use(securityRouter); // owns /add-to-security-bucket-one, /add-to-security-bucket-two, /list-security-records
   app.use(chatRouter); // owns the thirteen chat routes, /create-chat-room to /get-chat-public-keys
-  app.use(marketplaceRouter); // owns /create-listing, /close-listing, /list-listings
+  app.use(marketplaceRouter); // owns /create-listing, /close-listing, /list-listings, /get-listing
   app.use(anosAccountsRouter); // owns /create-anos-account, /mark-anos-account-submitted, /list-anos-accounts, /get-anos-account
   app.use(recoveryRouter); // owns /open-recovery-case, /unlock-recovery-pod, /get-recovery-pod
   app.use(attestingRouter); // owns the fourteen attestor routes, /list-attestors to /dismiss-attestor-case, and the person's /list-my-cases, /get-my-case, /share-lookup-id, /add-dispute-evidence
