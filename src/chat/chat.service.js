@@ -26,6 +26,7 @@ import {
   listInvitesFor,
   listJoinRequestsForCreator,
   listMessages,
+  listMessagesBefore,
   listPublicRooms as listPublicRoomsQuery,
   listRoomsFor,
 } from './chat.queries.js';
@@ -286,18 +287,28 @@ export async function listPublicRooms(body) {
   return ok(200, { rooms: await listPublicRoomsQuery(limit, offset) });
 }
 
-/** POST /list-messages. Body { chatRoomId, afterPosition, limit }. Members only. */
+/**
+ * POST /list-messages. Body { chatRoomId, afterPosition, beforePosition,
+ * limit }. Members only. With `beforePosition` the answer is the newest
+ * `limit` messages below it and `afterPosition` is ignored.
+ */
 export async function listRoomMessages(anopod, body) {
   if (!isObject(body) || typeof body.chatRoomId !== 'string') return refuse(400, BAD_SHAPE);
   const chatRoomId = decodeId(body.chatRoomId);
   if (chatRoomId === null) return refuse(400, 'invalid chatRoomId');
   const afterPosition = integerOption(body.afterPosition, 0, 0, Number.MAX_SAFE_INTEGER);
   if (afterPosition === undefined) return refuse(400, 'invalid afterPosition');
+  const beforePosition = integerOption(body.beforePosition, null, 1, Number.MAX_SAFE_INTEGER);
+  if (beforePosition === undefined) return refuse(400, 'invalid beforePosition');
   const limit = integerOption(body.limit, MESSAGES_DEFAULT_LIMIT, 1, MESSAGES_MAX_LIMIT);
   if (limit === undefined) return refuse(400, 'invalid limit');
   if (!(await isMember(chatRoomId, anopod.anopodId))) return refuse(403, 'not a member');
 
-  return ok(200, { messages: await listMessages(chatRoomId, afterPosition, limit) });
+  const messages =
+    beforePosition === null
+      ? await listMessages(chatRoomId, afterPosition, limit)
+      : await listMessagesBefore(chatRoomId, beforePosition, limit);
+  return ok(200, { messages });
 }
 
 /** POST /send-message. Body { chatRoomId, message }, the ciphertext base64. Members only. */

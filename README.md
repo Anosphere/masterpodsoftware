@@ -127,9 +127,9 @@ are base64 / base64url as the browser produces them.
 | `/approve-join`                 | setup   | The creator lets the requester in with the wrapped key                                   |
 | `/decline-join`                 | setup   | Drops the join request                                                                   |
 | `/leave-chat-room`              | setup   | Leaves a room; the creator cannot                                                        |
-| `/list-chat-rooms`              | setup   | The caller's rooms (members, own wrapped key, last position), open invites, join requests on its rooms |
+| `/list-chat-rooms`              | setup   | The caller's rooms (members, invited, own wrapped key, newest message, listing summary), open invites, join requests on its rooms |
 | `/list-public-chat-rooms`       | setup   | Public rooms by name, newest first, paged                                                |
-| `/list-messages`                | setup   | A room's messages after a position, members only                                         |
+| `/list-messages`                | setup   | A room's messages after a position, or the newest ones before a position, members only   |
 | `/send-message`                 | setup   | Stores a ciphertext message, members only                                                |
 | `/get-chat-public-keys`         | setup   | The chat public keys of up to 50 pods that completed setup                               |
 | `/create-listing`               | setup   | A listing of anos for a fiat currency with its marketplace room                          |
