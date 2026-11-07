@@ -63,7 +63,7 @@ Four levels. A route's level is given with the route in section 5.
 | none | Plain JSON body, no signature. | `/challenge`, `/check-username`, `/get-anopod-session-keys`, `/get-anos-account`, and `/create-anopod`, `/unlock`, which are signed by the ephemeral keys inside them |
 | session | Signed by the pod's current ephemeral keys (section 3). Vouched or not. | `/search-usernames`, `/send-vouch-request`, `/check-anopod-status`, `/list-notifications`, `/mark-notifications-read`, `/get-anopod-profile` |
 | vouched | session, and `anopods.vouched` is true. | `/list-vouch-requests`, `/approve-vouch-request`, `/decline-vouch-request`, `/complete-setup`, `/add-to-security-bucket-one`, `/add-to-security-bucket-two`, `/list-security-records` |
-| setup | vouched, and setup is complete (`anopod_encryption_key_blob_2` is set, so the pod has chat keys). | every chat and marketplace route; `/create-anos-account`, `/mark-anos-account-submitted`, `/list-anos-accounts` |
+| setup | vouched, and setup is complete (`anopod_encryption_key_blob_2` is set, so the pod has chat keys). | every chat and marketplace route; `/create-anos-account`, `/mark-anos-account-submitted`, `/list-anos-accounts`; the six wallet memory routes, `/add-noted-transaction` to `/set-wallet-settings` (2026-11-07) |
 
 Three middlewares: `requireSession`, `requireVouched`, `requireSetup`.
 Failing them: `401` (session), `403 anopod not vouched`, `403 setup not
@@ -383,6 +383,64 @@ CREATE INDEX IF NOT EXISTS anos_accounts_anopod_id_idx ON anos_accounts (anopod_
 `account_id` is the SHA-256 of key1 + postQuantumKey1, as the validators
 compute it. `key_blob` is 156 bytes in practice (section 7). `submitted_at`
 is null until `/mark-anos-account-submitted`.
+
+### noted_transactions
+
+Added 2026-11-07 for the wallet (its spec, section 4.6). One row per ledger
+transaction a pod noted for its tax records: the ledger's own facts in the
+clear (the transaction, the pod's account, the other side as the wallet
+shows it, the position, the time, the amount of anos and whether they left
+the account), since the masterpod already links a pod to its accounts and
+every validator holds the chain; and the private part, the kind, the money,
+the currency, the memo and the tag, as one blob under the pod's encryption
+key, which this server cannot open. One note per pod and transaction,
+enforced by the unique rule. The ledger facts never change after the row is
+written, only the blob; the row is deleted when the person removes the
+note. Stand-alone: no foreign keys.
+
+```sql
+CREATE TABLE IF NOT EXISTS noted_transactions (
+  note_id          BYTEA       PRIMARY KEY CHECK (octet_length(note_id) = 32),
+  anopod_id        BYTEA       NOT NULL CHECK (octet_length(anopod_id) = 32),
+  transaction_id   BYTEA       NOT NULL CHECK (octet_length(transaction_id) = 32),
+  account_id       BYTEA       NOT NULL CHECK (octet_length(account_id) = 32),
+  other_account_id BYTEA       CHECK (octet_length(other_account_id) = 32),
+  position         BIGINT      NOT NULL CHECK (position >= 0),
+  transacted_at    TIMESTAMPTZ NOT NULL,
+  amount           BIGINT      NOT NULL CHECK (amount >= 0),
+  sent             BOOLEAN     NOT NULL,
+  note_blob        BYTEA       NOT NULL CHECK (octet_length(note_blob) <= 4096),
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (anopod_id, transaction_id)
+);
+CREATE INDEX IF NOT EXISTS noted_transactions_anopod_id_transacted_at_idx ON noted_transactions (anopod_id, transacted_at DESC);
+```
+
+`note_blob` is at most 4096 bytes, a few hundred in practice (section 7).
+`position` and `amount` are BIGINTs, as the validators keep them; the index
+serves `/list-noted-transactions`, the pod's notes newest first.
+
+### wallet_settings
+
+Added 2026-11-07 for the wallet (its spec, section 4.7). One row per pod:
+the small things its wallet remembers, as one encrypted JSON object under
+the pod's encryption key, the Protect your passkey answer first; a later
+thing is one more field inside the object, with no change here. Written
+whole by `/set-wallet-settings`, which inserts the row or replaces its blob
+in place; never deleted.
+
+```sql
+CREATE TABLE IF NOT EXISTS wallet_settings (
+  anopod_id     BYTEA       PRIMARY KEY CHECK (octet_length(anopod_id) = 32),
+  settings_blob BYTEA       NOT NULL CHECK (octet_length(settings_blob) <= 16384),
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+```
+
+`settings_blob` is at most 16384 bytes, a few dozen in practice (section
+7).
 
 ### chat_rooms
 
@@ -1095,6 +1153,101 @@ unknown account`).
 Answer: `200 { accountId, anopodId, vouched }`, `vouched` read from the
 pod's row.
 
+### POST /add-noted-transaction (setup)
+
+Added 2026-11-07 (the wallet's spec, 4.6), with the five routes below. A
+note on a ledger transaction of the caller's, for the person's tax records:
+the ledger's facts in the clear and the private part (the kind, the money,
+the currency, the memo, the tag) as one blob under the pod's encryption key,
+which this server cannot open.
+
+```json
+{
+  "transactionId":  "<hex 32>",
+  "accountId":      "<hex 32, an anos account of the caller's>",
+  "otherAccountId": "<hex 32, or null>",
+  "position":       12,
+  "transactedAt":   "2026-11-07T10:00:00.000Z",
+  "amount":         "<millionths of an anos, a decimal string>",
+  "sent":           true,
+  "noteBlob":       "<hex, 1 to 4096 bytes>"
+}
+```
+
+Checks, in order: the shape (`400 bad request shape`: the five strings,
+`otherAccountId` a string or null, `position` a number, `sent` a boolean);
+`transactionId` 32 bytes (`400 invalid transactionId`); `accountId` 32
+bytes (`400 invalid accountId`); `otherAccountId` 32 bytes when not null
+(`400 invalid otherAccountId`); `position` an integer of 0 or more (`400
+invalid position`); `transactedAt` parses (`400 invalid transactedAt`);
+`amount` digits only that fit a BIGINT (`400 invalid amount`); `noteBlob` 1
+to 4096 bytes (`400 invalid noteBlob`); an `anos_accounts` row with this
+`accountId` and this pod (`403 not your account`); no note of this pod for
+this transaction (`409 already noted`), the unique rule as the backstop (a
+unique violation on the insert answers the same `409`).
+
+Writes: `INSERT noted_transactions` with a fresh `note_id`.
+
+Answer: `201 { noteId }`.
+
+### POST /update-noted-transaction (setup)
+
+Body: `{ noteId, noteBlob }`.
+
+Checks: the shape (`400 bad request shape`); `noteId` 32 bytes (`400
+invalid noteId`); `noteBlob` 1 to 4096 bytes (`400 invalid noteBlob`); the
+row exists and is this pod's (`404 note not found`).
+
+Writes: `UPDATE note_blob`; the ledger facts never change.
+
+Answer: `200 { noteId, updatedAt }`, ISO 8601.
+
+### POST /remove-noted-transaction (setup)
+
+Body: `{ noteId }`.
+
+Checks: the shape (`400 bad request shape`); `noteId` 32 bytes (`400
+invalid noteId`); the row is this pod's (`404 note not found`).
+
+Writes: `DELETE` the row.
+
+Answer: `200 { noteId, removed: true }`.
+
+### POST /list-noted-transactions (setup)
+
+Body: `{ from, to }`, both optional, ISO 8601; null counts as absent.
+
+Checks: the shape (`400 bad request shape`); `from` parses when given
+(`400 invalid from`); `to` parses when given (`400 invalid to`).
+
+Reads: the pod's rows with `transacted_at` at or after `from` and before
+`to`, newest `transacted_at` first, then the highest `position`, 1001 rows
+at most.
+
+Answer: `200 { notes: [ { noteId, transactionId, accountId,
+otherAccountId, position, transactedAt, amount, sent, noteBlob, createdAt,
+updatedAt } ], more }`: the first 1000, and `more` true when a 1001st row
+exists. Ids and the blob hex, `otherAccountId` null when there is none,
+`position` a number, the three times ISO 8601, `amount` a decimal string.
+
+### POST /get-wallet-settings (setup)
+
+Body: `{}`.
+
+Answer: `200 { settingsBlob, updatedAt }`, hex and ISO 8601, both null
+before the first set.
+
+### POST /set-wallet-settings (setup)
+
+Body: `{ settingsBlob }`.
+
+Checks: the shape (`400 bad request shape`); `settingsBlob` 1 to 16384
+bytes (`400 invalid settingsBlob`).
+
+Writes: `INSERT` or `UPDATE` the pod's one row, whole.
+
+Answer: `200 { updatedAt }`, ISO 8601.
+
 ## 6. Notifications
 
 | kind | to | reference_id |
@@ -1141,6 +1294,8 @@ string.
 | security bucket key | 32 random bytes per add, deposited with the keyholders as Shamir shares and not kept; images and info are encrypted under it the same way, content type in the clear; `keyId`, 32 random bytes per key, travels with the shares and with the add |
 | `identityBlob` (2026-10-25) | public ledger id (32) `\|\|` lookup id (32) under the encryption key: 92 bytes; the ids as `~/Desktop/Z/web_app/docs/public-ledger-id.md` makes them |
 | anos `keyBlob` (2026-10-25) | key1 scalar (32) `\|\|` postQuantumKey1 seed (32) `\|\|` key2 scalar (32) `\|\|` postQuantumKey2 seed (32) under the encryption key: 156 bytes; opened only to sign |
+| `noteBlob` (2026-11-07) | a JSON object `{ v: 1, kind, money, currency, memo, tag }` as UTF-8 under the encryption key; a few hundred bytes; the wallet's `wrapJson` |
+| `settingsBlob` (2026-11-07) | a JSON object `{ v: 1, protect }` under the encryption key; the wallet's `wrapJson` |
 
 Keys live in RAM and die with the tab. Nothing secret is stored on the phone.
 
@@ -1331,6 +1486,55 @@ instead of one group room per listing, the listing linked to the room by
   transaction, first with an old-style listing and its marketplace room in
   place (the backfill set its `listing_id`), then the changed query
   functions and the two read services on the same transaction.
+
+### The wallet memory (2026-11-07)
+
+Step 1 of `~/Desktop/Z-TestNet/forclaude/wallet-notes-plan-1.md` (its
+section 1), the masterpod's part of the wallet's memory: two tables under
+the person's pod, `noted_transactions` (one note per ledger transaction,
+for the person's tax records: the ledger's facts in the clear, the private
+part as a blob this server cannot open) and `wallet_settings` (one
+encrypted object per pod, the Protect your passkey answer first), and six
+routes at level setup in a new feature folder, `src/wallet-memory/`, in the
+shape of `src/anos-accounts/`. Why: the ledger knows the anos, the time and
+the other account of a transaction, not the money the person paid or
+received, and until now the wallet kept nothing of its own. Built as the
+plan says; what it settled:
+
+- The schema change is additive and idempotent: one block at the end of
+  `db/schema.sql`, after the marketplace block, with `IF NOT EXISTS` and
+  `OR REPLACE`, so `npm run db:setup` and the deploy plan's schema paste add
+  the two tables to a live database and a second run changes nothing. Each
+  table's `COMMENT ON` lines sit after its trigger, before the next table,
+  as the seeds pair does; the file's header comment is unchanged, since the
+  block alters nothing that exists.
+- A time (`transactedAt`, `from`, `to`) is checked with `Date.parse`, as
+  the session's timestamp is, and handed to the SQL in its ISO 8601 form,
+  so pg sees one shape whatever the client wrote.
+- The account check of `/add-noted-transaction` reads the `anos_accounts`
+  row through the anos accounts feature's `findAccount`; no row and a row of
+  another pod's both answer `403 not your account`.
+- `/update-noted-transaction` and `/remove-noted-transaction` take their
+  `404 note not found` from the write itself (`UPDATE ... RETURNING` with
+  no row, `DELETE` with no row), as `/mark-anos-account-submitted` does;
+  `findNote` is written as the plan lists it and no route of this step
+  needs it.
+- `position` and `amount` come back from pg as decimal strings (BIGINT);
+  the service answers `amount` as the string and `position` as a number.
+  `/list-noted-transactions` asks for 1001 rows and answers the first 1000
+  with `more` true when the 1001st exists; `from: null` and `to: null`
+  count as absent, like every optional field.
+- Checked with `node --check` on every changed file and, by psql on the
+  local `masterpod` database inside one rolled-back transaction as the
+  marketplace rework was checked (`SET ROLE masterpodsoftware`), the two
+  tables with their index and triggers, then each query of the two query
+  files as `PREPARE` with its exact text and `EXECUTE` on a throwaway pod
+  id and transaction id: the insert twice, a second note on the same
+  transaction refused by the unique rule, the find by transaction, the
+  find by id (none for another pod), the list without a range, with one and
+  past both, the update (none for another pod), the delete (none for
+  another pod), the settings upsert twice and its find; then the DDL a
+  second time, which changed nothing. No server, no browser.
 
 
 ## 12. Recovery and moderation

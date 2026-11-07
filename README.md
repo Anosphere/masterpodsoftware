@@ -53,7 +53,7 @@ Every route is a `POST` with a JSON body. Four pod levels and three more:
 
 | session  | Signed by the pod's current ephemeral keys (the envelope below). Vouched or not.          |
 | vouched  | session, and `anopods.vouched` is true.                                                  |
-| setup    | vouched, and setup is complete (the pod has chat keys): every chat and marketplace route, the three anos account routes, `/rotate-backup-code` and `/store-break-glass-blob` after a recovery, and the person's four attestation routes `/list-my-cases`, `/get-my-case`, `/share-lookup-id`, `/add-dispute-evidence`. |
+| setup    | vouched, and setup is complete (the pod has chat keys): every chat and marketplace route, the three anos account routes, the six wallet memory routes, `/rotate-backup-code` and `/store-break-glass-blob` after a recovery, and the person's four attestation routes `/list-my-cases`, `/get-my-case`, `/share-lookup-id`, `/add-dispute-evidence`. |
 | recovery | Signed by a recovery pod's current ephemeral keys: the same envelope with `caseId` in place of `anopodId` (`src/auth/require-recovery-session.js`); `/get-recovery-pod`, `/complete-recovery-case`. |
 
 | moderator | session, and the pod's username starts with `moderator` and a super seed vouched for it (`src/auth/require-moderator.js`; the stake is the keyholders' check); the six moderation routes. |
@@ -139,6 +139,12 @@ are base64 / base64url as the browser produces them.
 | `/create-anos-account`          | setup   | Records an anos account the pod made: type, the private halves under the pod's encryption key, the signed creation; `409` on a repeat |
 | `/mark-anos-account-submitted`  | setup   | Records that a validator answered the account's creation; the caller's accounts only     |
 | `/list-anos-accounts`           | setup   | The caller's anos accounts, oldest first, with the blob, the creation, `submittedAt` and `breakGlassBlob` (null until a recovery stored it) |
+| `/add-noted-transaction`        | setup   | Records a note on a ledger transaction of the caller's, for their tax records: the ledger's facts in the clear, the private part as a blob under the pod's encryption key; one note per transaction, `409` on a second |
+| `/update-noted-transaction`     | setup   | Replaces a note's blob; the ledger's facts never change; the caller's notes only |
+| `/remove-noted-transaction`     | setup   | Deletes a note; the caller's notes only                                                  |
+| `/list-noted-transactions`      | setup   | The caller's notes in a date range, newest first, the newest 1,000 with `more` when there are older ones |
+| `/get-wallet-settings`          | setup   | The caller's wallet settings blob and when it was set, null before the first set         |
+| `/set-wallet-settings`          | setup   | Stores the caller's wallet settings blob whole: one row per pod, replaced in place        |
 
 | `/get-anos-account`             | none    | For the validators' binding check: the pod that made an account and whether it is vouched |
 | `/open-recovery-case`           | none    | A locked-out person's recovery case and its recovery pod: the lookup id, the username, a contact email, a new passkey (PRF required) registered under the pod's id, the hybrid key the bankers encrypt shares to; `409` while a case for the lookup id is open |
@@ -221,6 +227,8 @@ keep the references straight. Every table and column has a `COMMENT ON`
 | `chat_room_messages`      | Ciphertext messages, numbered by `position`                            |
 | `listings`                | Marketplace listings; `chat_room_id` only on the old ones that got a room |
 | `anos_accounts`           | One row per anos account a pod made: type, key blob, the signed creation, when it was submitted, the break-glass blob after a recovery; never deleted |
+| `noted_transactions`      | One row per ledger transaction a pod noted for its tax records: the ledger's facts in the clear, the private part as a blob under the pod's encryption key; one per pod and transaction; deleted when the person removes it |
+| `wallet_settings`         | One row per pod: the small things its wallet remembers as one encrypted blob (the Protect your passkey answer first); replaced in place |
 | `recovery_cases`          | One row per recovery case: lookup id, the pod being recovered, contact email, status; one open case per lookup id |
 | `recovery_pods`           | One per case: the recovery passkey, the recovery session, the hybrid key and its wrapped private halves |
 | `recovery_shares`         | What the keyholders posted to a case, as posted; append-only           |
@@ -291,6 +299,7 @@ src/
   chat/              the thirteen chat routes
   marketplace/       /create-listing, /close-listing, /list-listings
   anos-accounts/     /create-anos-account, /mark-anos-account-submitted, /list-anos-accounts, /get-anos-account
+  wallet-memory/     the six wallet memory routes, /add-noted-transaction to /set-wallet-settings; the two tables' queries
   recovery/          /open-recovery-case, /unlock-recovery-pod, /get-recovery-pod, the six moderator routes, /receive-recovery-share/:caseId, /recover-with-backup-code, /complete-recovery-case, /rotate-backup-code, /store-break-glass-blob; the four recovery tables' queries
   attesting/         the fourteen attestor routes, /list-attestors to /dismiss-attestor-case, and the person's /list-my-cases, /get-my-case, /share-lookup-id, /add-dispute-evidence; the five attestation tables' queries; account-signatures.js, the validators' any-two-pairs rule
 
