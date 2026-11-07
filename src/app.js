@@ -14,6 +14,7 @@ import { notificationsRouter } from './notifications/notifications.router.js';
 import { recoveryRouter } from './recovery/recovery.router.js';
 import { securityRouter } from './security/security.router.js';
 import { vouchingRouter } from './vouching/vouching.router.js';
+import { walletMemoryRouter } from './wallet-memory/wallet-memory.router.js';
 
 /**
  * The largest JSON body accepted: a security bucket request full of images,
@@ -48,6 +49,7 @@ export function createApp() {
   app.use(chatRouter); // owns the thirteen chat routes, /create-chat-room to /get-chat-public-keys
   app.use(marketplaceRouter); // owns /create-listing, /close-listing, /list-listings, /get-listing
   app.use(anosAccountsRouter); // owns /create-anos-account, /mark-anos-account-submitted, /list-anos-accounts, /get-anos-account
+  app.use(walletMemoryRouter); // owns the six wallet memory routes, /add-noted-transaction to /set-wallet-settings
   app.use(recoveryRouter); // owns /open-recovery-case, /unlock-recovery-pod, /get-recovery-pod
   app.use(attestingRouter); // owns the fourteen attestor routes, /list-attestors to /dismiss-attestor-case, and the person's /list-my-cases, /get-my-case, /share-lookup-id, /add-dispute-evidence
 

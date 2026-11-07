@@ -1009,3 +1009,73 @@ UPDATE chat_rooms r SET listing_id = l.listing_id FROM listings l
 ALTER TABLE listings ALTER COLUMN chat_room_id DROP NOT NULL;
 
 COMMENT ON COLUMN chat_rooms.listing_id IS 'The listing the room is about, 32 raw bytes, or null. Set on a private room made by /create-chat-room with a listingId (2026-11-06) and, by the marketplace block''s backfill, on every old marketplace room.';
+
+
+-- ---------------------------------------------------------------------------
+-- The wallet memory block (added 2026-11-07, wallet spec 4.6 and 4.7): what
+-- a wallet remembers for its pod. noted_transactions: one row per ledger
+-- transaction the person noted for their tax records, the ledger's own facts
+-- in the clear (the masterpod already links a pod to its accounts and the
+-- validators hold the chain) and the private part, the kind, the money, the
+-- currency and the memo, under the pod's encryption key, which this server
+-- cannot open. wallet_settings: one row per pod, one blob of the small things
+-- the wallet remembers (the Protect your passkey answer first), under the same
+-- key. Stand-alone: no foreign keys. A note is deleted when the person removes
+-- it; the settings row is replaced in place.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS noted_transactions (
+  note_id          BYTEA       PRIMARY KEY CHECK (octet_length(note_id) = 32),
+  anopod_id        BYTEA       NOT NULL CHECK (octet_length(anopod_id) = 32),
+  transaction_id   BYTEA       NOT NULL CHECK (octet_length(transaction_id) = 32),
+  account_id       BYTEA       NOT NULL CHECK (octet_length(account_id) = 32),
+  other_account_id BYTEA       CHECK (octet_length(other_account_id) = 32),
+  position         BIGINT      NOT NULL CHECK (position >= 0),
+  transacted_at    TIMESTAMPTZ NOT NULL,
+  amount           BIGINT      NOT NULL CHECK (amount >= 0),
+  sent             BOOLEAN     NOT NULL,
+  note_blob        BYTEA       NOT NULL CHECK (octet_length(note_blob) <= 4096),
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (anopod_id, transaction_id)
+);
+CREATE INDEX IF NOT EXISTS noted_transactions_anopod_id_transacted_at_idx ON noted_transactions (anopod_id, transacted_at DESC);
+
+CREATE OR REPLACE TRIGGER noted_transactions_set_updated_at
+  BEFORE UPDATE ON noted_transactions
+  FOR EACH ROW
+  WHEN (OLD.* IS DISTINCT FROM NEW.*)
+  EXECUTE FUNCTION set_updated_at();
+
+COMMENT ON TABLE  noted_transactions                  IS 'One row per ledger transaction a pod noted for its tax records: the ledger''s facts in the clear and the private part (the kind, the money, the currency, the memo) under the pod''s encryption key. One note per pod and transaction. Deleted when the person removes it. Stand-alone; no foreign keys.';
+COMMENT ON COLUMN noted_transactions.note_id          IS 'Random id, 32 raw bytes, minted by /add-noted-transaction.';
+COMMENT ON COLUMN noted_transactions.anopod_id        IS 'The pod that noted it.';
+COMMENT ON COLUMN noted_transactions.transaction_id   IS 'The transaction''s id on the validators, 32 raw bytes.';
+COMMENT ON COLUMN noted_transactions.account_id       IS 'The pod''s anos account the transaction belongs to (an anos_accounts row of the pod''s).';
+COMMENT ON COLUMN noted_transactions.other_account_id IS 'The other side of the transaction as the wallet shows it (the receiver when the pod sent, the sender when it received), or null when there is none.';
+COMMENT ON COLUMN noted_transactions.position         IS 'The transaction''s position on the ledger, as /list-transactions answers it.';
+COMMENT ON COLUMN noted_transactions.transacted_at    IS 'When the validators wrote the transaction (createdAt).';
+COMMENT ON COLUMN noted_transactions.amount           IS 'Millionths of an anos, as the ledger says it.';
+COMMENT ON COLUMN noted_transactions.sent             IS 'True when the anos left the pod''s account, false when they came in or nothing moved.';
+COMMENT ON COLUMN noted_transactions.note_blob        IS 'Ciphertext of the private part (iv || ciphertext || tag), at most 4096 bytes: a JSON object with the kind, the money, the currency, the memo and the tag, under the pod''s encryption key (wallet spec 7). The server cannot open it.';
+COMMENT ON COLUMN noted_transactions.created_at       IS 'When the row was inserted. Set by default, never changed.';
+COMMENT ON COLUMN noted_transactions.updated_at       IS 'When the row last changed. Maintained by the noted_transactions_set_updated_at trigger.';
+
+CREATE TABLE IF NOT EXISTS wallet_settings (
+  anopod_id     BYTEA       PRIMARY KEY CHECK (octet_length(anopod_id) = 32),
+  settings_blob BYTEA       NOT NULL CHECK (octet_length(settings_blob) <= 16384),
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE OR REPLACE TRIGGER wallet_settings_set_updated_at
+  BEFORE UPDATE ON wallet_settings
+  FOR EACH ROW
+  WHEN (OLD.* IS DISTINCT FROM NEW.*)
+  EXECUTE FUNCTION set_updated_at();
+
+COMMENT ON TABLE  wallet_settings               IS 'One row per pod: the small things its wallet remembers, as one encrypted JSON object (the Protect your passkey answer first; wallet spec 7). Written whole by /set-wallet-settings. The server cannot open it.';
+COMMENT ON COLUMN wallet_settings.anopod_id     IS 'The pod.';
+COMMENT ON COLUMN wallet_settings.settings_blob IS 'Ciphertext of the settings object (iv || ciphertext || tag), at most 16384 bytes, under the pod''s encryption key.';
+COMMENT ON COLUMN wallet_settings.created_at    IS 'When the row was inserted. Set by default, never changed.';
+COMMENT ON COLUMN wallet_settings.updated_at    IS 'When the row last changed. Maintained by the wallet_settings_set_updated_at trigger.';
