@@ -63,7 +63,7 @@ Four levels. A route's level is given with the route in section 5.
 | none | Plain JSON body, no signature. | `/challenge`, `/check-username`, `/get-anopod-session-keys`, `/get-anos-account`, and `/create-anopod`, `/unlock`, which are signed by the ephemeral keys inside them |
 | session | Signed by the pod's current ephemeral keys (section 3). Vouched or not. | `/search-usernames`, `/send-vouch-request`, `/check-anopod-status`, `/list-notifications`, `/mark-notifications-read`, `/get-anopod-profile` |
 | vouched | session, and `anopods.vouched` is true. | `/list-vouch-requests`, `/approve-vouch-request`, `/decline-vouch-request`, `/complete-setup`, `/add-to-security-bucket-one`, `/add-to-security-bucket-two`, `/list-security-records` |
-| setup | vouched, and setup is complete (`anopod_encryption_key_blob_2` is set, so the pod has chat keys). | every chat and marketplace route; `/create-anos-account`, `/mark-anos-account-submitted`, `/list-anos-accounts`; the six wallet memory routes, `/add-noted-transaction` to `/set-wallet-settings` (2026-11-07); the person's two break-glass routes, `/file-break-glass-moves` and `/list-my-break-glass-moves` (2026-11-08, section 14) |
+| setup | vouched, and setup is complete (`anopod_encryption_key_blob_2` is set, so the pod has chat keys). | every chat and marketplace route; `/create-anos-account`, `/mark-anos-account-submitted`, `/list-anos-accounts`; the six wallet memory routes, `/add-noted-transaction` to `/set-wallet-settings` (2026-11-07); the person's two break-glass routes, `/file-break-glass-moves` and `/list-my-break-glass-moves` (2026-11-08, section 14); the six DAO routes, `/create-dao-proposal` to `/list-dao-votes` (2026-11-08, section 15) |
 
 Three middlewares: `requireSession`, `requireVouched`, `requireSetup`.
 Failing them: `401` (session), `403 anopod not vouched`, `403 setup not
@@ -1310,6 +1310,12 @@ Keys live in RAM and die with the tab. Nothing secret is stored on the phone.
 | `TIMESTAMP_WINDOW_SECONDS` | `120` | Allowed clock difference on a signed request, each way |
 | `MAX_IMAGE_BYTES` | `10485760` | Largest image, decoded |
 | `MAX_IMAGES_PER_REQUEST` | `5` | Images per bucket request |
+| `VALIDATOR_URLS` | `http://localhost:3001` to `3005` | The validators asked for the DAO stake list, comma-separated, tried in order; on the servers the doormen's URLs (section 15.7) |
+| `DAO_PROPOSE_MIN_VOTES` | `1` | The least DAO votes (whole staked anos) a pod needs in the snapshot to post a proposal |
+| `DAO_PROPOSAL_PERCENT` | `15` | The percent of all DAO votes a pending proposal needs in support to go to a vote; at most 100 |
+| `DAO_PASS_PERCENT` | `50` | For must be more than this percent of the votes cast; at most 99, so a tie fails |
+| `DAO_PENDING_MINUTES` | `10080` | How long a proposal may collect support (a week) |
+| `DAO_VOTE_MINUTES` | `20160` | How long an open proposal takes votes (two weeks) |
 
 All have defaults, so the existing `.env` keeps working. The JSON body
 limit is computed from the last two: `MAX_IMAGES_PER_REQUEST *
@@ -3604,3 +3610,508 @@ What the plan left open and how it was decided:
   still count two kinds of case), `src/recovery/` (`/store-break-glass-blob`
   and `setBreakGlassBlob` stay as they are), `src/anos-accounts/`,
   `src/security/`, `signed-request.js`, `package.json`, the scripts.
+
+## 15. DAO voting
+
+Design settled 2026-11-08 in a planning chat of five rounds (the plan is
+`~/Desktop/Z-TestNet/forclaude/dao-voting-plan-1.md`, FINAL). Why:
+`daoVote` has been one of the six stake purposes since 2026-10-23
+(anossoftware spec section 2), recorded only: a transferToFund for daoVote
+adds to `stakes.dao_vote_stake` and nothing read it. A DAO voting ledger,
+simple and quick, to be made more sophisticated after the production
+launch: plain-text proposals; a pending stage in which a proposal collects
+support like a petition collects signatures, so junk never reaches a vote;
+two weeks of for and against; one staked anos one vote; votes by anoPod
+id. Four repos in order: the validator (anossoftware spec section 23, one
+public read of every account's DAO stake), the doorman (its section 6, the
+line that lets the read through), this server (this section, step 3 of
+the plan: the tables, the six routes and the clock) and the wallet (its
+section 11, steps 4 and 5). No reset: everything is additive, deployed
+validators and doormen first, then this server, then the wallet. The
+guardians' fund proposals (anossoftware sections 3 to 6) are a different
+system and are not touched. Nothing above this section changes except the
+items in 15.8.
+
+### 15.1 The flow
+
+1. A pod posts a proposal (`/create-dao-proposal`, 15.4): a title and a
+   body, plain text. This server reads every account's DAO stake from a
+   validator once and boils it down to one weight per pod (15.6), the
+   posting snapshot, stored with the proposal. The proposer needs at least
+   `DAO_PROPOSE_MIN_VOTES` votes in it and no pending proposal of their
+   own. The proposal is `pending`, with `needed`, the support that takes it
+   to a vote (`DAO_PROPOSAL_PERCENT` of the snapshot's total), and
+   `pending_until`, `DAO_PENDING_MINUTES` ahead. The proposer's own weight
+   is the first support.
+2. Other pods support it (`/support-dao-proposal`), each with its weight in
+   the posting snapshot, once, no undo: a petition. A pod with no DAO votes
+   in the snapshot cannot.
+3. The flip (15.5): when the support reaches `needed`, right after the
+   support that reached it or on the clock's next tick, a fresh snapshot
+   replaces the posting one and fixes the voting power, and the proposal is
+   `open` with `vote_closes_at` `DAO_VOTE_MINUTES` ahead. A proposal that
+   reaches its support while no validator can be reached stays pending
+   with the support recorded; the clock retries every minute. A proposal
+   still pending at `pending_until` expires and leaves the lists.
+4. Pods vote for or against (`/vote-dao-proposal`), each with its weight in
+   the fresh snapshot, once, no undo. A support in the pending stage is not
+   a vote for in the official stage; everyone votes fresh. Every support
+   and every vote is public (`/list-dao-votes`): the voter's username,
+   weight and time.
+5. The close (15.5): at `vote_closes_at` the clock sums the votes;
+   `accepted` when for is more than `DAO_PASS_PERCENT` percent of the votes
+   cast, else `rejected` (a tie fails; no vote at all fails; there is no
+   quorum, the pending stage is the quorum). The results go on the row,
+   the snapshot rows are deleted, the proposal is in the Decided list.
+   Accepted means recorded: nothing moves money or changes a setting;
+   people act on it.
+
+### 15.2 Who
+
+Level setup (section 2) on every route: a vouched pod with setup complete,
+signed by its session keys like every other request. A vote is recorded by
+anoPod id, so it is exactly as trustworthy as this server (the plan's
+decision 3, accepted for now; signing with pair one of a staked account,
+verifiable against the chain, is the upgrade for later and changes no
+table). The weight comes from the proposal's snapshot (15.6), never from a
+live read: a pod's DAO votes are the whole anos of `dao_vote_stake` summed
+over its anos accounts (`anos_accounts` maps each account to its pod),
+millionths floored. `STAKE_MIN_DAO_VOTE_ANOS` on the validators stays the
+smallest single stake; the only other minimum is `DAO_PROPOSE_MIN_VOTES` to
+post. A pod with no votes in a proposal's snapshot may read it but neither
+support nor vote on it.
+
+### 15.3 Tables
+
+Three new tables, no new column, no widened check. DDL into
+`db/schema.sql` after the break-glass block, in the file's style (header
+comment, `COMMENT ON` for every table and column, `set_updated_at` on
+`dao_proposals`, `refuse_change` on `dao_votes`, neither on
+`dao_snapshot_weights`, whose rows the service replaces and deletes). The
+whole file, idempotent, applies it to the live database (13.10).
+
+```sql
+CREATE TABLE IF NOT EXISTS dao_proposals (
+  proposal_id    BYTEA       PRIMARY KEY CHECK (octet_length(proposal_id) = 32),
+  anopod_id      BYTEA       NOT NULL CHECK (octet_length(anopod_id) = 32),
+  title          TEXT        NOT NULL CHECK (char_length(title) BETWEEN 1 AND 100),
+  body           TEXT        NOT NULL CHECK (char_length(body) BETWEEN 1 AND 5000),
+  status         TEXT        NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'open', 'accepted', 'rejected', 'expired')),
+  snapshot_total BIGINT      NOT NULL CHECK (snapshot_total >= 0),
+  snapshot_at    TIMESTAMPTZ NOT NULL,
+  needed         BIGINT      NOT NULL CHECK (needed >= 1),
+  pending_until  TIMESTAMPTZ NOT NULL,
+  opened_at      TIMESTAMPTZ,
+  vote_closes_at TIMESTAMPTZ,
+  decided_at     TIMESTAMPTZ,
+  result_for     BIGINT,
+  result_against BIGINT,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS dao_proposals_status_created_at_idx ON dao_proposals (status, created_at DESC);
+CREATE INDEX IF NOT EXISTS dao_proposals_status_decided_at_idx ON dao_proposals (status, decided_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS dao_proposals_one_pending_per_pod_idx ON dao_proposals (anopod_id) WHERE status = 'pending';
+CREATE OR REPLACE TRIGGER dao_proposals_set_updated_at
+  BEFORE UPDATE ON dao_proposals
+  FOR EACH ROW
+  WHEN (OLD.* IS DISTINCT FROM NEW.*)
+  EXECUTE FUNCTION set_updated_at();
+
+CREATE TABLE IF NOT EXISTS dao_votes (
+  proposal_id BYTEA       NOT NULL CHECK (octet_length(proposal_id) = 32),
+  anopod_id   BYTEA       NOT NULL CHECK (octet_length(anopod_id) = 32),
+  stage       TEXT        NOT NULL CHECK (stage IN ('pending', 'official')),
+  vote        TEXT        NOT NULL CHECK (vote IN ('for', 'against')),
+  weight      BIGINT      NOT NULL CHECK (weight >= 1),
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (proposal_id, anopod_id, stage),
+  CHECK (stage = 'official' OR vote = 'for')
+);
+CREATE INDEX IF NOT EXISTS dao_votes_anopod_id_created_at_idx ON dao_votes (anopod_id, created_at DESC);
+CREATE OR REPLACE TRIGGER dao_votes_append_only
+  BEFORE UPDATE OR DELETE ON dao_votes
+  FOR EACH ROW EXECUTE FUNCTION refuse_change();
+
+CREATE TABLE IF NOT EXISTS dao_snapshot_weights (
+  proposal_id BYTEA  NOT NULL CHECK (octet_length(proposal_id) = 32),
+  anopod_id   BYTEA  NOT NULL CHECK (octet_length(anopod_id) = 32),
+  weight      BIGINT NOT NULL CHECK (weight >= 1),
+  PRIMARY KEY (proposal_id, anopod_id)
+);
+```
+
+`dao_proposals`: one row per proposal, never deleted. `snapshot_total`,
+`needed`, `result_for` and `result_against` are votes, whole anos, never
+millionths. `snapshot_total` and `snapshot_at` (the validator's `asOf`) are
+the current snapshot's, replaced when the proposal goes open; `needed` is
+the posting snapshot's number, `max(1, ceil(total * DAO_PROPOSAL_PERCENT /
+100))`, and never changes. `result_for` and `result_against` are written
+at the close and null before it (and on an expired proposal); `decided_at`
+is set at the close and at the expiry. The partial unique index is the
+"one pending proposal per pod" rule.
+
+`dao_votes`: one row per pod per stage, append-only; a vote never changes.
+`stage` `pending` is a support (always `for`, the check), `official` a
+vote. `weight` is the pod's votes in the proposal's snapshot at the time,
+the posting snapshot in the pending stage and the fresh one in the
+official stage, so the archive stands on its own once the snapshot rows
+are gone.
+
+`dao_snapshot_weights`: the proposal's current snapshot, one row per pod
+with votes (pods at 0 have no row), replaced at the flip and deleted at
+the end. Stake on an account the masterpod does not know counts in
+`snapshot_total` and in nobody's weight. No foreign keys, as everywhere.
+
+### 15.4 Routes
+
+Conventions of section 5 throughout: every route a `POST` at level setup,
+checks in order, first failure answers, every multi-row write one
+transaction. The caller is `req.anopod`. Ids on the wire are hex; weights,
+totals and sums are votes (whole anos) as JSON numbers, the BIGINT strings
+converted (they stay far below 2^53); times ISO 8601. Every write to a
+proposal runs with the row locked (`SELECT ... FOR UPDATE`) and the status
+checked under the lock, so a support racing the flip, or two flips on two
+boxes, see each other.
+
+**POST /create-dao-proposal**. Body `{ title, body }`. Checks, in order:
+
+1. Shape: both strings; `400 bad request shape`.
+2. `title` trimmed at both ends, 1 to 100 characters; `400 invalid title`.
+   `body` trimmed at both ends, 1 to 5,000 characters; `400 invalid body`.
+3. The snapshot (15.6); `503 validators unreachable` when no validator
+   answered.
+4. The caller's weight in it at least `DAO_PROPOSE_MIN_VOTES`; `403 not
+   enough DAO votes`.
+5. No pending proposal of the caller's; `409 a pending proposal is already
+   open`, also on the unique violation at the write.
+
+Writes, one transaction: the proposal (status `pending`, `snapshot_total`
+and `snapshot_at` from the snapshot, `needed` as 15.3 says, `pending_until
+= now() + DAO_PENDING_MINUTES`), the snapshot rows, the proposer's
+pending-stage `for` row with their weight. Then the flip (15.5), outside
+the transaction.
+
+Answer: `201 { proposalId, status }`, `status` after the flip attempt:
+`open` when the proposer alone reaches `needed`, else `pending`.
+
+**POST /support-dao-proposal**. Body `{ proposalId }`; `400 bad request
+shape`, `400 invalid proposalId`. One transaction with the row locked: the
+row exists (`404 unknown proposal`); status `pending` (`409 proposal not
+pending`); `pending_until` ahead (`409 proposal expired`); the caller's
+weight in the snapshot at least 1 (`403 no DAO votes in this proposal`);
+no pending-stage row of the caller's (`409 already supported`, also on the
+unique violation); the row inserted with the caller's weight. Then the
+flip.
+
+Answer: `200 { proposalId, status, support, needed }`: `support` the
+pending-stage sum after the write, `status` after the flip attempt.
+
+**POST /vote-dao-proposal**. Body `{ proposalId, vote }`; `400 bad request
+shape`, `400 invalid proposalId`; `vote` `for` or `against` (`400 invalid
+vote`). One transaction with the row locked: the row exists (`404 unknown
+proposal`); status `open` (`409 proposal not open`); `vote_closes_at`
+ahead (`409 voting closed`); the caller's weight in the (fresh) snapshot at
+least 1 (`403 no DAO votes in this proposal`); no official-stage row of the
+caller's (`409 already voted`, also on the unique violation); the row
+inserted.
+
+Answer: `200 { proposalId, for, against, yourVote }`, the official sums
+after the write.
+
+**POST /list-dao-proposals**. Body `{ status, from?, to?, limit?, offset?
+}`: `status` `pending`, `open` or `decided` (accepted and rejected
+together; `400 invalid status`); `from` and `to` ISO 8601 or absent (`400
+invalid from`, `400 invalid to`), `from` at or after and `to` before, on
+`created_at` for pending and open and on `decided_at` for decided; `limit`
+1 to 100, default 20 (`400 invalid limit`); `offset` 0 or more, default 0
+(`400 invalid offset`). Newest first by the same column. Expired proposals
+are never listed.
+
+Answer: `200 { proposals: [ item ], settings }`.
+
+```json
+{
+  "proposalId":    "<hex>",
+  "title":         "...",
+  "status":        "pending",
+  "proposer":      { "anopodId": "<hex>", "username": "..." },
+  "createdAt":     "2026-11-08T12:00:00.000Z",
+  "pendingUntil":  "2026-11-15T12:00:00.000Z",
+  "openedAt":      null,
+  "voteClosesAt":  null,
+  "decidedAt":     null,
+  "snapshotTotal": 1200,
+  "needed":        180,
+  "support":       25,
+  "for":           0,
+  "against":       0,
+  "yourWeight":    12,
+  "yourSupport":   true,
+  "yourVote":      null
+}
+```
+
+`for` and `against` are the stored results once decided and the live sums
+before; `yourWeight` is the caller's votes in the proposal's current
+snapshot (0 when none), `yourSupport` whether the caller supported it,
+`yourVote` the caller's vote or null. `username` is null when the pod's row
+is gone. `settings` is `{ proposeMinVotes, proposalPercent, passPercent,
+pendingMinutes, voteMinutes }`, the dials of 15.7, so the wallet's words
+carry the numbers.
+
+**POST /get-dao-proposal**. Body `{ proposalId }`; `400 bad request shape`,
+`400 invalid proposalId`, `404 unknown proposal`. Answer: `200 { proposal
+}`, the item of the list with `body` added. An expired proposal is answered
+too (status `expired`, its results null), so an old link resolves.
+
+**POST /list-dao-votes**. Body `{ proposalId, stage, limit?, offset? }`;
+`400 bad request shape`, `400 invalid proposalId`; `stage` `pending` (the
+supports) or `official` (the votes; `400 invalid stage`); `limit` 1 to 200,
+default 50 (`400 invalid limit`); `offset` 0 or more (`400 invalid
+offset`); `404 unknown proposal`. Answer: `200 { votes: [ { anopodId,
+username, vote, weight, createdAt } ] }`, newest first; `username` null
+when the pod's row is gone. The wallet marks the caller's own row by
+`anopodId`.
+
+### 15.5 Statuses and the clock
+
+```
+pending -> open      the flip: the support reached needed; a fresh snapshot fixes the voting power
+pending -> expired   the clock: pending_until passed with the support under needed
+open    -> accepted  the clock: vote_closes_at passed and for * 100 > DAO_PASS_PERCENT * (for + against)
+open    -> rejected  the clock: vote_closes_at passed, otherwise (a tie, or no vote at all)
+```
+
+`accepted`, `rejected` and `expired` are final. Expired proposals are kept
+with their rows and hidden from the lists, not deleted.
+
+The flip, `flipIfReached(proposalId)` in `src/dao/dao.service.js`, runs
+after a posting and after a support, and from the clock: a fresh snapshot
+(15.6); when no validator answers it logs `dao: the flip of <id> waits,
+validators unreachable` and answers `pending`. Then one transaction: the
+row locked; a status other than `pending` answers that status; a
+pending-stage sum under `needed` answers `pending`; else the fresh weights
+replace the snapshot rows, the row gets `status = 'open'`, the fresh total
+and `asOf`, `opened_at = now()` and `vote_closes_at = now() +
+DAO_VOTE_MINUTES`; `open`. `needed` is not recomputed: it is the posting
+snapshot's number, and the support rows carry that snapshot's weights.
+
+The clock, `src/dao/dao-clock.js`, in the shape of anossoftware's
+`src/held-transactions/unapproved-sweep.js`: `startDaoClock()` after
+`listen` in `src/server.js`, `stopDaoClock()` in its `shutdown`; one tick
+at boot, then every 60 seconds, `unref`'d. A tick:
+
+1. The expiry: one statement moves every pending proposal whose
+   `pending_until` has passed to `expired` with `decided_at = now()`; each
+   one's snapshot rows are deleted; one log line per proposal.
+2. The flip: every pending proposal whose pending-stage sum is at or above
+   `needed` goes through `flipIfReached`, the retry for a flip that found
+   the validators unreachable when the support arrived.
+3. The close, one transaction: the open proposals whose `vote_closes_at`
+   has passed, locked with `SKIP LOCKED`; for each, the official sums,
+   `accepted` when `for * 100 > DAO_PASS_PERCENT * (for + against)` else
+   `rejected`, the results and `decided_at` written, the snapshot rows
+   deleted; one log line per proposal.
+
+Three masterpods run the clock at once on prod1, prod2 and prod3: the
+expiry is one idempotent statement, the flip locks the row and re-checks
+the status, the close skips the rows another box holds. A tick that throws
+logs the error and the next tick runs.
+
+### 15.6 The validator read and the snapshot
+
+The one outbound call this server makes, `src/dao/validators.client.js`
+`fetchDaoStakes()`: for each URL of `VALIDATOR_URLS`, in order, `POST
+<url>/list-dao-stakes` with the header `Content-Type: application/json`,
+the body `{}` and a five-second timeout, the shape of anossoftware's
+`src/masterpod/masterpod.client.js`. The validator's answer (anossoftware
+spec 23) is `200 { asOf, total, stakes: [ { accountId, daoVoteStake } ]
+}`: `asOf` ISO 8601, `total` a decimal string of millionths, `stakes` every
+account with DAO stake above zero, `accountId` 64 lowercase hex,
+`daoVoteStake` a decimal string of millionths. The first `200` of that
+shape is the answer; anything else moves to the next URL with one log line:
+a doorman or a validator that has not pulled the route (`404`), a joiner
+(`503 not counted yet`), the doorman's own refusals (doormansoftware spec
+6: `400`, `413`, `429 too many requests`, `502`, `504`), a timeout, a body
+of the wrong shape. When every URL failed, null. The read is public and
+unsigned: everything in it is on the public chain, and this server has no
+anos account or validator key to sign with. The doormen's certificates are
+Let's Encrypt, so the fetch verifies them as any other.
+
+The snapshot, `src/dao/snapshot.js` `takeSnapshot()`: the stakes (null
+passed through); `findPodsForAccounts` (15.8) maps the accounts to pods;
+per pod the millionths are summed as BigInt and floored to whole anos
+(`weight = sum / 1,000,000`), pods at 0 dropped; `total` the answer's
+`total` floored the same way. Returns `{ asOf, total, weights: [ {
+anopodId, weight } ] }`. Taken when a proposal is posted (the posting
+snapshot: the support stage counts against it) and again at the flip (the
+fresh snapshot: the voting power for the two weeks). Stake added after a
+snapshot counts from the next one. Stake on an account the masterpod does
+not know (none today: every account is made through
+`/create-anos-account`) counts in `total` and in nobody's weight.
+
+### 15.7 Environment variables
+
+| Variable | Default | Meaning |
+| -------- | ------- | ------- |
+| `VALIDATOR_URLS` | `http://localhost:3001` to `3005`, the five local validators | the validators asked for the DAO stake list, comma-separated, tried in order; on the servers the doormen's URLs, the list of the wallet's `network/wallet.env`; a trailing slash is dropped |
+| `DAO_PROPOSE_MIN_VOTES` | `1` | the least DAO votes (whole staked anos) in the snapshot a pod needs to post |
+| `DAO_PROPOSAL_PERCENT` | `15` | the percent of all DAO votes a pending proposal needs in support; at most 100 |
+| `DAO_PASS_PERCENT` | `50` | for must be more than this percent of the votes cast; at most 99, so a tie fails |
+| `DAO_PENDING_MINUTES` | `10080` | how long a proposal may collect support (a week) |
+| `DAO_VOTE_MINUTES` | `20160` | how long an open proposal takes votes (two weeks) |
+
+`env.validatorUrls` and `env.dao` (`proposeMinVotes`, `proposalPercent`,
+`passPercent`, `pendingMinutes`, `voteMinutes`) in `src/config/env.js`;
+every integer a positive integer, the two percents also capped. All have
+defaults, so the existing `.env` keeps working; on the servers the user
+adds `VALIDATOR_URLS` (a masterpod with no validator to ask answers `503`
+to every posting). Locally the minutes may be set small to try the clock.
+
+### 15.8 Changes to what exists (all additive)
+
+- `db/schema.sql`: the three tables, as a block after the break-glass
+  block.
+- `src/anos-accounts/anos-accounts.queries.js`:
+  `findPodsForAccounts(accountIds, db)`, `SELECT account_id, anopod_id
+  FROM anos_accounts WHERE account_id = ANY($1)`, a Map from the account
+  id in hex to the pod's id as a Buffer; the snapshot's one lookup.
+- `src/config/env.js` and `.example.env`: the six variables of 15.7.
+- `src/app.js`: the DAO router mounted, with its comment line.
+- `src/server.js`: the clock started in the `listen` callback and stopped
+  first thing in `shutdown`; the one thing this server runs on its own
+  besides the listener.
+- Section 2's level table names the six routes; section 8's table the six
+  variables.
+- `README.md`: the routes, the tables, the folder, the variables.
+
+Nothing else in existing code changes. New: `src/dao/` (`dao.router.js`,
+`dao.handlers.js`, `dao.service.js`, `dao.queries.js`,
+`validators.client.js`, `snapshot.js`, `dao-clock.js`). No new npm package.
+
+### 15.9 Deferred, by decision
+
+- A moderator hide for a proposal's text (on the user's own after-launch
+  list).
+- Votes signed by pair one of a staked account, verifiable against the
+  chain; changes no table.
+- Notifications; the wallet reads the lists, and Home's "Things to do" line
+  counts the open proposals the pod has not voted on.
+- Editing or withdrawing a proposal.
+- A cursor on the lists (`offset` paging today).
+- A vote list export.
+- A logged-out public view of the proposals.
+- Also out (the plan's section 8): comments on a proposal (the chat is
+  there); a quorum (the pending stage is the quorum); any weighting but one
+  anos one vote; the stake withdrawal lock, which the guardians work by
+  hand from the vote rows' times.
+
+### 15.10 Notes from the build
+
+#### Build 1, the masterpod (2026-11-08)
+
+Built from `~/Desktop/Z-TestNet/forclaude/dao-voting-plan-1.md` section 3,
+on main at 846111b (the vouching selfie change). No new npm package, no
+test script and no rig (none was asked for). The schema was not applied to
+any database for keeps: the user applies the whole file by psql as the
+superuser with `SET ROLE masterpodsoftware`, as 13.10 records, and
+locally with `npm run db:setup`. What the plan left open and how it was
+decided:
+
+- The schema block sits at the end of `db/schema.sql`, after the
+  break-glass block: the plan's DDL, aligned in the file's column style,
+  with a header comment and a `COMMENT ON` for every table and column.
+  `dao_snapshot_weights` has no `created_at` and no trigger, as the plan's
+  DDL has it; the file's header comment, which names the blocks that hold
+  the ALTERs, is unchanged, since this block has none.
+- The validator client's shape check requires `asOf` too (a string
+  `Date.parse` understands), beside the plan's `total` and `stakes`: it
+  lands in `snapshot_at`, which is NOT NULL, so an answer without it is a
+  body of the wrong shape and moves to the next URL. `accountId` must be
+  lowercase hex, as the validator's spec answers it; `total` and
+  `daoVoteStake` digits with no leading zero. The log line names the URL
+  and the reason: the HTTP status with the answer's `error` when there is
+  one, the fetch error's message (a timeout included), or `bad shape`.
+- Two queries join the plan's list: `hasPendingProposal(anopodId)`, the
+  posting's "no pending proposal of the caller" before the write (the
+  partial unique index is the backstop, as the plan says), and
+  `findVote(client, proposalId, anopodId, stage)`, the "no row of the
+  caller in this stage" check under the lock on a support and on a vote
+  (the primary key the backstop). `PROPOSAL_STATUSES`, `DECIDED_STATUSES`
+  and `STAGES` are exported from the queries file for the service.
+- The times: `pending_until`, `opened_at` and `vote_closes_at` are
+  computed in the service from the server's clock and passed to the
+  queries, as the plan's signatures read; `decided_at` is the database's
+  `now()` at the expiry and at the close. `snapshot_at` is the validator's
+  `asOf`, parsed and passed as a Date. The support route's "pending_until
+  ahead" and the vote route's "vote_closes_at ahead" compare the locked
+  row's time with the server's clock.
+- The flip takes the snapshot before looking at the support, as 3.5
+  orders it, so a support that leaves the proposal far from `needed` costs
+  one validator read too (and, while no validator answers, the "waits"
+  log line and up to five seconds per URL before the `200`). A check of
+  the sum before the read is a one-line change for later. The flip logs
+  one line when it opens a proposal (the support reached, the closing
+  time), beside the plan's line for the unreachable validators.
+- The lists: `from` is at or after and `to` before, as `listNotes` reads
+  its bounds; a bad `limit` or `offset` is `400 invalid limit` or `400
+  invalid offset`, the marketplace's and the chat's reasons. A `vote`,
+  `stage` or `status` that is not one of its words is `400 invalid vote`,
+  `invalid stage` or `invalid status` whatever its type, after the shape
+  check of the strings the route needs. The item's `for` and `against`
+  read the stored result when it is set and the live sum otherwise, so an
+  expired proposal (results null) reads 0 and 0. `settings` is `env.dao`
+  itself, a frozen object of the five dials.
+- `/list-dao-votes` checks that the proposal exists through
+  `findProposal`, the one read of a proposal by id; `/get-dao-proposal`
+  answers the same row with the body.
+- `findPendingReached` does not look at `pending_until`: the expiry runs
+  before the flip in every tick, so a proposal past its time is expired
+  before the flip pass looks. The tick is one try/catch over the three
+  steps, as the sweep's, with no guard against a tick that outlives the
+  minute: the flip is safe to repeat (the lock and the status check), so
+  an overlap costs a validator read at most. The expiry's `deleteSnapshot`
+  runs on the pool, one proposal at a time; the close's on the close's
+  client. `replaceSnapshot` is `deleteSnapshot` and then the one `INSERT
+  ... SELECT` over `unnest`; an empty snapshot inserts nothing.
+- `VALIDATOR_URLS`' default is built as `http://localhost:300<n>` for 1 to
+  5; `optionalPercent` is `optionalInteger` with a ceiling, for the two
+  percents (100 and 99).
+- Checks (3.8): `node --check` on the eleven changed source files (the
+  seven of `src/dao/`, `anos-accounts.queries.js`, `env.js`, `app.js`,
+  `server.js`), clean; every name imported by the new files is exported
+  where it is imported from. The SQL by psql against the local `masterpod`
+  database (as the superuser `codex`; the app's role `masterpodsoftware`
+  is not one) inside one transaction, rolled back: the DAO block applied
+  twice (`IF NOT EXISTS`, `OR REPLACE`, the comments overwritten; the
+  three tables with 16, 6 and 3 columns, a comment on each table and
+  column, the two triggers, the seven indexes); every query of
+  `dao.queries.js` and `findPodsForAccounts` prepared with its exact text
+  (twenty statements, the text taken from the functions by a throwaway
+  client that recorded what they sent, outside the repo) and executed on
+  throwaway rows (one pod with an `anopods` row, one without, three
+  proposals): the partial unique index refusing a second pending proposal
+  of the pod, `set_updated_at` overriding a backdated `updated_at`, the
+  replace (the delete and the `unnest` insert, a pod dropped on the
+  second replace, an empty replace), the append-only trigger refusing an
+  `UPDATE` and a `DELETE`, the primary key refusing a second row of the
+  pod in the stage, the check refusing a pending `against`,
+  `findProposal` with the username, the three sums and the caller's part
+  for two callers, the list for pending and for open with a `from` bound,
+  a `to` bound, `limit` and `offset`, the lock, the sums, the votes list
+  with the username and a null for the pod without a row, `findWeight`,
+  `findVote`, `hasPendingProposal`, the clock's three steps (the expiry of
+  the proposal past `pending_until`, the reached one found and opened by
+  `setOpen`, the closable one locked and decided accepted 7 to 3 with its
+  snapshot rows gone), the decided list with the stored and the live sums
+  equal, the expired proposal in no list but still found by id. After the
+  rollback the three tables and the throwaway pod were gone.
+  `findPodsForAccounts` ran once more, read-only, on two live account ids
+  and one unknown id: the two mapped to their pods, the unknown absent,
+  an empty list answering no rows.
+- Not touched: `src/attesting/`, `src/break-glass/`, `src/recovery/`,
+  `src/wallet-memory/`, `src/marketplace/`, `src/chat/`, the auth
+  middlewares, `package.json`, the scripts; in the README the level table
+  and the paragraph after the routes table (the plan names the routes
+  list, the tables list, the folder list and the variables table).

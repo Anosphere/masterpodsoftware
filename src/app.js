@@ -7,6 +7,7 @@ import { authRouter } from './auth/auth.router.js';
 import { breakGlassRouter } from './break-glass/break-glass.router.js';
 import { chatRouter } from './chat/chat.router.js';
 import { env } from './config/env.js';
+import { daoRouter } from './dao/dao.router.js';
 import { healthRouter } from './health/health.router.js';
 import { marketplaceRouter } from './marketplace/marketplace.router.js';
 import { errorHandler } from './middleware/error-handler.js';
@@ -54,6 +55,7 @@ export function createApp() {
   app.use(recoveryRouter); // owns /open-recovery-case, /unlock-recovery-pod, /get-recovery-pod
   app.use(attestingRouter); // owns the fourteen attestor routes, /list-attestors to /dismiss-attestor-case, and the person's /list-my-cases, /get-my-case, /share-lookup-id, /add-dispute-evidence
   app.use(breakGlassRouter); // owns the nine break-glass routes: the person's /file-break-glass-moves and /list-my-break-glass-moves, and the attestors' /list-break-glass-cases to /dismiss-break-glass-case
+  app.use(daoRouter); // owns the six DAO voting routes, /create-dao-proposal to /list-dao-votes
 
   // Order matters: these must come after every router.
   app.use(notFound);

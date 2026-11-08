@@ -1,5 +1,6 @@
 import { createApp } from './app.js';
 import { env } from './config/env.js';
+import { startDaoClock, stopDaoClock } from './dao/dao-clock.js';
 import { closePool, query } from './db/pool.js';
 
 // Verify the database connection before accepting traffic, so a bad
@@ -19,6 +20,9 @@ const app = createApp();
 
 const server = app.listen(env.port, () => {
   console.log(`masterpodsoftware listening on http://localhost:${env.port}`);
+  // And the DAO clock (src/dao/dao-clock.js): once now, then every minute,
+  // the expiry, the flip and the close of the DAO proposals (spec 15.5).
+  startDaoClock();
 });
 
 let shuttingDown = false;
@@ -27,6 +31,7 @@ let shuttingDown = false;
 async function shutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
+  stopDaoClock();
   console.log(`\n${signal} received, shutting down...`);
 
   // Safety net: never hang forever if a connection refuses to close.

@@ -191,6 +191,12 @@ are base64 / base64url as the browser produces them.
 | `/sign-off-break-glass-case`    | attestor | One attestation per move of the case, each the validators' follow-up signed by two pairs of the caller's account and verified against the stored creation, posted together; the second distinct pod's decides the case |
 | `/mark-break-glass-case-sent`   | attestor | Records that the stored attestations, two per move, were posted to a validator, and the answers; a retry writes another event |
 | `/dismiss-break-glass-case`     | attestor | Closes the case with a preset reason and a note; final; the held moves stay on the ledger until a cancel |
+| `/create-dao-proposal`          | setup   | A plain-text DAO proposal, title 1 to 100 and body 1 to 5,000 characters: reads every account's DAO stake from a validator, stores the posting snapshot, counts the proposer's own weight as the first support; `503 validators unreachable` when no validator answers |
+| `/support-dao-proposal`         | setup   | Supports a pending proposal with the caller's weight in the posting snapshot, once, no undo; the support that reaches `needed` opens the vote on a fresh snapshot |
+| `/vote-dao-proposal`            | setup   | Votes for or against an open proposal with the caller's weight in the fresh snapshot, once, no undo |
+| `/list-dao-proposals`           | setup   | The pending, open or decided proposals, newest first, paged, a date range on each, with the live sums, the caller's own part and the dials (`settings`); expired ones are never listed |
+| `/get-dao-proposal`             | setup   | One proposal with its body, in the list's form; an expired one too, so an old link resolves |
+| `/list-dao-votes`               | setup   | The supports or the votes of a proposal, newest first, paged: each voter's pod, username, vote, weight and time; every vote is public |
 
 The objects each route takes and answers are in `docs/schemas.md` section 5;
 the notification kinds in section 6; what the phone computes (PRF-derived
@@ -262,6 +268,9 @@ keep the references straight. Every table and column has a `COMMENT ON`
 | `attestor_events`         | Everything that happened to a trade, dispute or break-glass case, the signed sign-offs included, append-only |
 | `break_glass_cases`       | One row per recovery case whose finish filed break-glass moves: the recovery case as the attestors see it, keyed by its id; the recovered pod, the status |
 | `break_glass_moves`       | One row per break-glass move: the `breakGlassTransfer`'s id, the old account, the new account of the same type, the type; append-only |
+| `dao_proposals`           | One row per DAO proposal: the text, the proposer, the status, the current snapshot's total, the support needed, the stage times, the result; never deleted |
+| `dao_votes`               | One row per pod per stage of a proposal: a support while pending, a vote for or against while open, each with the pod's weight at the time; append-only, public |
+| `dao_snapshot_weights`    | A proposal's current snapshot, one row per pod with DAO votes; replaced when the proposal goes open, deleted when it finishes |
 
 ## Configuration
 
@@ -285,6 +294,12 @@ at boot. Everything after `PGPASSWORD` has a default.
 | `TIMESTAMP_WINDOW_SECONDS` | `120`                   | Allowed clock difference on a signed request, each way           |
 | `MAX_IMAGE_BYTES`          | `10485760`              | Largest image, decoded                                           |
 | `MAX_IMAGES_PER_REQUEST`   | `5`                     | Images per bucket request                                        |
+| `VALIDATOR_URLS`           | `http://localhost:3001` to `3005` | The validators asked for the DAO stake list, comma-separated, tried in order; on the servers the doormen's URLs (the wallet's list) |
+| `DAO_PROPOSE_MIN_VOTES`    | `1`                     | The least DAO votes (whole staked anos) a pod needs in the snapshot to post a proposal |
+| `DAO_PROPOSAL_PERCENT`     | `15`                    | The percent of all DAO votes a pending proposal needs in support to go to a vote; at most 100 |
+| `DAO_PASS_PERCENT`         | `50`                    | For must be more than this percent of the votes cast; at most 99, so a tie fails |
+| `DAO_PENDING_MINUTES`      | `10080`                 | How long a proposal may collect support (a week)                 |
+| `DAO_VOTE_MINUTES`         | `20160`                 | How long an open proposal takes votes (two weeks)                |
 
 The JSON body limit is computed from the last two:
 `MAX_IMAGES_PER_REQUEST * MAX_IMAGE_BYTES * 1.4 + 1 MB`.
@@ -326,6 +341,7 @@ src/
   recovery/          /open-recovery-case, /unlock-recovery-pod, /get-recovery-pod, the six moderator routes, /receive-recovery-share/:caseId, /recover-with-backup-code, /complete-recovery-case, /rotate-backup-code, /store-break-glass-blob; the four recovery tables' queries
   attesting/         the fourteen attestor routes, /list-attestors to /dismiss-attestor-case, and the person's /list-my-cases, /get-my-case, /share-lookup-id, /add-dispute-evidence; the five attestation tables' queries; account-signatures.js, the validators' any-two-pairs rule
   break-glass/       the nine break-glass routes, the person's /file-break-glass-moves and /list-my-break-glass-moves and the attestors' /list-break-glass-cases to /dismiss-break-glass-case; the two break-glass tables' queries
+  dao/               the six DAO voting routes, /create-dao-proposal to /list-dao-votes; the three DAO tables' queries; validators.client.js, the one outbound call (the DAO stake read); snapshot.js, one weight per pod; dao-clock.js, the expiry, the flip and the close every minute
 
   health/            GET /health: status, uptime, database round trip
   middleware/        404 and the central error handler

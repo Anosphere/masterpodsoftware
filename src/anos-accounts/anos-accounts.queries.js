@@ -98,3 +98,17 @@ export async function setBreakGlassBlob(accountId, anopodId, blob) {
   );
   return rowCount === 1;
 }
+
+/**
+ * For the DAO snapshot (spec 15.6): the pod of each of these accounts
+ * (32-byte Buffers), as a Map from the account id in lowercase hex to the
+ * pod's id as a Buffer. An account the masterpod does not know has no
+ * entry.
+ */
+export async function findPodsForAccounts(accountIds, db = pool) {
+  const { rows } = await db.query(
+    'SELECT account_id, anopod_id FROM anos_accounts WHERE account_id = ANY ($1::bytea[])',
+    [accountIds],
+  );
+  return new Map(rows.map((row) => [row.account_id.toString('hex'), row.anopod_id]));
+}

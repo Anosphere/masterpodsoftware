@@ -1145,3 +1145,103 @@ COMMENT ON COLUMN break_glass_moves.account_id     IS 'The old account, whose ke
 COMMENT ON COLUMN break_glass_moves.account_id_to  IS 'The new account the finish made: the move''s receiver (an anos_accounts row of the same pod''s, of the same type).';
 COMMENT ON COLUMN break_glass_moves.account_type   IS 'spending, guarded, vault or assisted: the type both accounts have, checked at filing (the validators check it again).';
 COMMENT ON COLUMN break_glass_moves.created_at     IS 'When the row was inserted (the filing). Set by default, never changed.';
+
+
+-- ---------------------------------------------------------------------------
+-- The DAO voting block (added 2026-11-08, spec section 15): plain-text
+-- proposals and stake-weighted votes, the ledger of the DAO. One staked anos
+-- of the daoVote purpose is one vote (anossoftware spec 2): a pod's weight is
+-- the whole anos of dao_vote_stake summed over its anos accounts, read from a
+-- validator (/list-dao-stakes) and boiled down to one weight per pod when a
+-- proposal is posted and again when it goes to a vote. dao_proposals: one row
+-- per proposal, pending while it collects support like a petition, open while
+-- it takes votes, then accepted, rejected or expired. dao_votes: one row per
+-- pod per stage, a support in the pending stage or a vote for or against in
+-- the official stage, append-only; the row keeps the voter's weight, so the
+-- archive stands on its own. dao_snapshot_weights: the weights of the
+-- proposal's current snapshot, replaced when the proposal goes open and
+-- deleted when it finishes, so no trigger on it. A clock in the masterpod
+-- (src/dao/dao-clock.js) runs the expiry, the flip to open and the close
+-- every minute. No foreign keys; the service keeps the references straight.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS dao_proposals (
+  proposal_id    BYTEA       PRIMARY KEY CHECK (octet_length(proposal_id) = 32),
+  anopod_id      BYTEA       NOT NULL CHECK (octet_length(anopod_id) = 32),
+  title          TEXT        NOT NULL CHECK (char_length(title) BETWEEN 1 AND 100),
+  body           TEXT        NOT NULL CHECK (char_length(body) BETWEEN 1 AND 5000),
+  status         TEXT        NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'open', 'accepted', 'rejected', 'expired')),
+  snapshot_total BIGINT      NOT NULL CHECK (snapshot_total >= 0),
+  snapshot_at    TIMESTAMPTZ NOT NULL,
+  needed         BIGINT      NOT NULL CHECK (needed >= 1),
+  pending_until  TIMESTAMPTZ NOT NULL,
+  opened_at      TIMESTAMPTZ,
+  vote_closes_at TIMESTAMPTZ,
+  decided_at     TIMESTAMPTZ,
+  result_for     BIGINT,
+  result_against BIGINT,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS dao_proposals_status_created_at_idx ON dao_proposals (status, created_at DESC);
+CREATE INDEX IF NOT EXISTS dao_proposals_status_decided_at_idx ON dao_proposals (status, decided_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS dao_proposals_one_pending_per_pod_idx ON dao_proposals (anopod_id) WHERE status = 'pending';
+
+CREATE OR REPLACE TRIGGER dao_proposals_set_updated_at
+  BEFORE UPDATE ON dao_proposals
+  FOR EACH ROW
+  WHEN (OLD.* IS DISTINCT FROM NEW.*)
+  EXECUTE FUNCTION set_updated_at();
+
+COMMENT ON TABLE  dao_proposals                IS 'One row per DAO proposal (spec 15.3): plain text, the proposer''s pod, the status, the current snapshot''s total, the support needed, the stage times and the result. Pending while it collects support, open while it takes votes, then accepted, rejected or expired; never deleted. Stand-alone; no foreign keys.';
+COMMENT ON COLUMN dao_proposals.proposal_id    IS 'Random id, 32 raw bytes, minted by /create-dao-proposal.';
+COMMENT ON COLUMN dao_proposals.anopod_id      IS 'The proposer''s pod. One pending proposal per pod at a time: the partial unique index dao_proposals_one_pending_per_pod_idx.';
+COMMENT ON COLUMN dao_proposals.title          IS 'Plain text, 1 to 100 characters, trimmed, shown as typed.';
+COMMENT ON COLUMN dao_proposals.body           IS 'Plain text, 1 to 5000 characters, trimmed, shown as typed; no links, no formatting.';
+COMMENT ON COLUMN dao_proposals.status         IS 'pending (collecting support), open (taking votes), accepted, rejected or expired (spec 15.5). The flip and the clock move it; the last three are final. Expired proposals leave the lists but stay here.';
+COMMENT ON COLUMN dao_proposals.snapshot_total IS 'All DAO votes (whole anos, never millionths) in the current snapshot: the posting snapshot''s total while pending, replaced by the fresh snapshot''s when the proposal goes open.';
+COMMENT ON COLUMN dao_proposals.snapshot_at    IS 'The validator''s asOf of the current snapshot; replaced together with snapshot_total.';
+COMMENT ON COLUMN dao_proposals.needed         IS 'The support (whole anos) that takes the proposal to a vote: max(1, ceil(the posting snapshot''s total * DAO_PROPOSAL_PERCENT / 100)). Never changes.';
+COMMENT ON COLUMN dao_proposals.pending_until  IS 'When the pending stage ends: the posting + DAO_PENDING_MINUTES. A proposal still pending then expires.';
+COMMENT ON COLUMN dao_proposals.opened_at      IS 'When the proposal went open (the flip). Null before.';
+COMMENT ON COLUMN dao_proposals.vote_closes_at IS 'When the vote ends: opened_at + DAO_VOTE_MINUTES. Null before the flip.';
+COMMENT ON COLUMN dao_proposals.decided_at     IS 'When the proposal finished: the close (accepted or rejected) or the expiry. Null before.';
+COMMENT ON COLUMN dao_proposals.result_for     IS 'The votes for (whole anos) at the close. Null before it, and on an expired proposal.';
+COMMENT ON COLUMN dao_proposals.result_against IS 'The votes against (whole anos) at the close. Null before it, and on an expired proposal.';
+COMMENT ON COLUMN dao_proposals.created_at     IS 'When the row was inserted (the posting). Set by default, never changed.';
+COMMENT ON COLUMN dao_proposals.updated_at     IS 'When the row last changed. Maintained by the dao_proposals_set_updated_at trigger.';
+
+CREATE TABLE IF NOT EXISTS dao_votes (
+  proposal_id BYTEA       NOT NULL CHECK (octet_length(proposal_id) = 32),
+  anopod_id   BYTEA       NOT NULL CHECK (octet_length(anopod_id) = 32),
+  stage       TEXT        NOT NULL CHECK (stage IN ('pending', 'official')),
+  vote        TEXT        NOT NULL CHECK (vote IN ('for', 'against')),
+  weight      BIGINT      NOT NULL CHECK (weight >= 1),
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (proposal_id, anopod_id, stage),
+  CHECK (stage = 'official' OR vote = 'for')
+);
+CREATE INDEX IF NOT EXISTS dao_votes_anopod_id_created_at_idx ON dao_votes (anopod_id, created_at DESC);
+CREATE OR REPLACE TRIGGER dao_votes_append_only
+  BEFORE UPDATE OR DELETE ON dao_votes
+  FOR EACH ROW EXECUTE FUNCTION refuse_change();
+
+COMMENT ON TABLE  dao_votes             IS 'One row per pod per stage of a DAO proposal (spec 15.3): a support while the proposal was pending, a vote for or against while it was open, each with the pod''s weight at the time. Append-only: one action per pod per stage, no undo. Every row is public.';
+COMMENT ON COLUMN dao_votes.proposal_id IS 'The proposal (a dao_proposals row).';
+COMMENT ON COLUMN dao_votes.anopod_id   IS 'The pod that supported or voted. One row per pod per stage: the primary key.';
+COMMENT ON COLUMN dao_votes.stage       IS 'pending: a support, given while the proposal collected support. official: a vote, given while it was open. A support is not a vote; everyone votes fresh.';
+COMMENT ON COLUMN dao_votes.vote        IS 'for or against. In the pending stage always for (the check): a support.';
+COMMENT ON COLUMN dao_votes.weight      IS 'The pod''s DAO votes (whole anos) in the proposal''s snapshot at the time: the posting snapshot in the pending stage, the fresh one in the official stage. Kept here, so the archive stands once the snapshot rows are gone.';
+COMMENT ON COLUMN dao_votes.created_at  IS 'When the row was inserted. Set by default, never changed.';
+
+CREATE TABLE IF NOT EXISTS dao_snapshot_weights (
+  proposal_id BYTEA  NOT NULL CHECK (octet_length(proposal_id) = 32),
+  anopod_id   BYTEA  NOT NULL CHECK (octet_length(anopod_id) = 32),
+  weight      BIGINT NOT NULL CHECK (weight >= 1),
+  PRIMARY KEY (proposal_id, anopod_id)
+);
+
+COMMENT ON TABLE  dao_snapshot_weights             IS 'The current snapshot of a DAO proposal (spec 15.6): one row per pod with DAO votes, as a validator answered them when the proposal was posted, replaced by a fresh read when it goes open, deleted when it finishes. The weight a support or a vote is recorded with. No trigger: the service replaces and deletes these rows.';
+COMMENT ON COLUMN dao_snapshot_weights.proposal_id IS 'The proposal (a dao_proposals row).';
+COMMENT ON COLUMN dao_snapshot_weights.anopod_id   IS 'A pod with DAO votes in the snapshot. Pods at 0 have no row.';
+COMMENT ON COLUMN dao_snapshot_weights.weight      IS 'The pod''s DAO votes (whole anos): the millionths of dao_vote_stake summed over the pod''s anos accounts, floored.';
