@@ -115,7 +115,7 @@ are base64 / base64url as the browser produces them.
 | `/send-vouch-request`           | session | Asks a seed to vouch for the caller                                                      |
 | `/list-notifications`           | session | The caller's notifications, newest first (`unreadOnly`, `limit`)                        |
 | `/mark-notifications-read`      | session | Marks notifications read                                                                 |
-| `/list-vouch-requests`          | vouched | The open requests addressed to the caller (a seed), oldest first, each with the requester's selfie |
+| `/list-vouch-requests`          | vouched | The open requests addressed to the caller (a seed), oldest first, each with the requester's profile (no selfie since 2026-11-08; the wallet reads it through `/get-anopod-profile`) |
 | `/approve-vouch-request`        | vouched | Records the vouch; flips `vouched` on a super seed's approval or the second vouch; a super seed's approval also makes a seed |
 | `/decline-vouch-request`        | vouched | Drops the request and notifies the requester                                             |
 | `/complete-setup`               | vouched | Stores the two encryption key blobs, the backup code keys, the chat keys and the identity blob (eight fields), once |

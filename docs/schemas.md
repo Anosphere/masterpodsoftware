@@ -575,8 +575,7 @@ transaction.
 
 A "profile" in an answer is
 `{ anopodId, username, firstName, lastName, vouched, isSeed, isSuperSeed }`;
-only `/get-anopod-profile`, `/search-usernames` and `/list-vouch-requests`
-add the selfie.
+only `/get-anopod-profile` and `/search-usernames` add the selfie.
 
 ### POST /challenge (none)
 
@@ -758,9 +757,10 @@ Answer: `200 { profile..., selfie }` or `404 anopod not found`.
 
 Body: `{}`. The open requests addressed to the caller, oldest first.
 
-Answer: `200 { requests: [ { vouchIdNumber, from: { profile..., selfie },
-createdAt } ] }`; the selfie is the requester's public selfie, so the seed
-sees who is asking. A caller who is not a seed gets an empty list.
+Answer: `200 { requests: [ { vouchIdNumber, from: profile, createdAt } ] }`.
+A caller who is not a seed gets an empty list. (2026-11-08) The selfie left
+this list: the wallet reads each requester's picture through
+`/get-anopod-profile`, so a seed with many requests sees the list at once.
 
 ### POST /approve-vouch-request (vouched)
 
@@ -1406,6 +1406,14 @@ thing was chosen and is recorded here; nothing above was changed.
   A keyholder fetches a pod's current session public keys with it, on every
   `/receive-share`, to verify the pod's signature (keyholdersoftware spec 3.1
   and 5.10). Public keys are public, so the route is unsigned.
+- `/list-vouch-requests` answers each requester's profile without the selfie
+  since 2026-11-08 (step 1 of
+  `~/Desktop/Z-TestNet/forclaude/wallet-vouch-requests-plan-1.md`): the
+  wallet reads each requester's picture through `/get-anopod-profile`, so a
+  seed with many requests sees the list at once instead of waiting for every
+  picture. `listOpenFor` lost its join on `public_selfies`; the order, the
+  body and the other two selfie routes are unchanged, and no schema or
+  environment change came with it.
 
 ### The wallet build (2026-10-25)
 
