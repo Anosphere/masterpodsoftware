@@ -9,7 +9,10 @@ of listings, and, since 2026-10-26, the recovery cases of locked-out people:
 their moderation, the keyholders' shares and the finish (`docs/schemas.md`
 section 12), and the attestors' cases on assisted trades and disputed
 escrows: the person's lookup id, the parties' encrypted evidence, the
-sign-offs that are the validators' own follow-up objects (section 13).
+sign-offs that are the validators' own follow-up objects (section 13), and,
+since 2026-11-08, the break-glass cases: the moves a recovery's finish files
+out of the accounts whose keys died with the lost passkey, into new accounts
+of the same type, and the attestors' sign-offs on them (section 14).
 
 Everything a pod keeps private reaches the server as ciphertext;
 the server checks shapes, lengths, signatures and who may do what, and stores
@@ -53,11 +56,11 @@ Every route is a `POST` with a JSON body. Four pod levels and three more:
 
 | session  | Signed by the pod's current ephemeral keys (the envelope below). Vouched or not.          |
 | vouched  | session, and `anopods.vouched` is true.                                                  |
-| setup    | vouched, and setup is complete (the pod has chat keys): every chat and marketplace route, the three anos account routes, the six wallet memory routes, `/rotate-backup-code` and `/store-break-glass-blob` after a recovery, and the person's four attestation routes `/list-my-cases`, `/get-my-case`, `/share-lookup-id`, `/add-dispute-evidence`. |
+| setup    | vouched, and setup is complete (the pod has chat keys): every chat and marketplace route, the three anos account routes, the six wallet memory routes, `/rotate-backup-code` and `/store-break-glass-blob` after a recovery, the person's four attestation routes `/list-my-cases`, `/get-my-case`, `/share-lookup-id`, `/add-dispute-evidence`, and the person's two break-glass routes `/file-break-glass-moves`, `/list-my-break-glass-moves`. |
 | recovery | Signed by a recovery pod's current ephemeral keys: the same envelope with `caseId` in place of `anopodId` (`src/auth/require-recovery-session.js`); `/get-recovery-pod`, `/complete-recovery-case`. |
 
 | moderator | session, and the pod's username starts with `moderator` and a super seed vouched for it (`src/auth/require-moderator.js`; the stake is the keyholders' check); the six moderation routes. |
-| attestor | session, and the pod's username starts with `attestor` and a super seed vouched for it (`src/auth/require-attestor.js`, the moderator rule with the other prefix; the stake is the validators' and the keyholders' check); the fourteen attestor routes of section 13. |
+| attestor | session, and the pod's username starts with `attestor` and a super seed vouched for it (`src/auth/require-attestor.js`, the moderator rule with the other prefix; the stake is the validators' and the keyholders' check); the fourteen attestor routes of section 13 and the seven break-glass routes of section 14. |
 
 Failing a level: `401` for anything wrong with the signature or the session,
 `403 anopod not vouched`, `403 setup not complete`, `403 not a moderator`, `403 not an attestor`. Other errors are
@@ -179,6 +182,15 @@ are base64 / base64url as the browser produces them.
 | `/get-my-case`                  | setup   | The person's view of one case: their subset of the events; for a dispute the case key and their own evidence with `keyForMe` |
 | `/share-lookup-id`              | setup   | The person hands the attestor their lookup id on a trade case |
 | `/add-dispute-evidence`         | setup   | A party's evidence files, each ciphertext with its content key wrapped twice, or files of theirs supplied again under `existing` |
+| `/file-break-glass-moves`       | setup   | The finish of a recovery files its break-glass moves: the recovery case's id and, per move, the old account, the new account of the same type and the `breakGlassTransfer`'s id; a second call adds moves |
+| `/list-my-break-glass-moves`    | setup   | The caller's break-glass cases with their moves and the person's subset of the events: what a lost account's card shows |
+| `/list-break-glass-cases`       | attestor | The break-glass cases by status (`open` and `inReview` by default), newest first, with the person's names, the moves and the sign-off counts |
+| `/get-break-glass-case`         | attestor | One case: the recovery case's lookup id, status and two moderator approvals, the person's profile and selfie, the moves, every event with the acting pod and its details complete |
+| `/list-break-glass-case-security-records` | attestor | The person's rows of one bucket, ciphertext with their key ids; writes the viewed event |
+| `/schedule-break-glass-case`    | attestor | The video call: the `scheduled` event, status `inReview`; no notification |
+| `/sign-off-break-glass-case`    | attestor | One attestation per move of the case, each the validators' follow-up signed by two pairs of the caller's account and verified against the stored creation, posted together; the second distinct pod's decides the case |
+| `/mark-break-glass-case-sent`   | attestor | Records that the stored attestations, two per move, were posted to a validator, and the answers; a retry writes another event |
+| `/dismiss-break-glass-case`     | attestor | Closes the case with a preset reason and a note; final; the held moves stay on the ledger until a cancel |
 
 The objects each route takes and answers are in `docs/schemas.md` section 5;
 the notification kinds in section 6; what the phone computes (PRF-derived
@@ -199,6 +211,15 @@ pod named `attestor...` that a super seed vouched for (13.2); the
 attestors' app is the wallet's attestor edition (build 3); a sign-off is
 the validators' own follow-up object, verified here against the account's
 stored creation and posted to a validator by the deciding attestor's app.
+Break-glass moves are section 14: the nine routes above, built 2026-11-08
+(step 3 of `~/Desktop/Z-TestNet/forclaude/break-glass-plan-1.md`). When a
+passkey is lost the keys of the pod's anos accounts die with it; the finish
+of the recovery makes a new account of the same type for each old account
+that holds anos, posts a `breakGlassTransfer` for each, signed by the
+account's break-glass pair, and files the moves here; two attestors check
+the person against the recovery case's two moderator approvals and sign
+every move of the case in one pass, and the deciding attestor's app posts
+the attestations to a validator.
 
 
 ## Database tables
@@ -238,7 +259,9 @@ keep the references straight. Every table and column has a `COMMENT ON`
 | `escrow_disputes`         | One case per disputed escrow: the escrow, both parties' accounts and pods, who disputed, the opening attestor, the case key's public halves, the status; one open case per escrow |
 | `escrow_dispute_keys`     | A dispute case's private key wrapped to each attestor pod's chat key, as `chat_hpke`; deleted when the case ends |
 | `escrow_dispute_evidence` | One row per evidence file: ciphertext, the content key under the uploader's encryption key (stays) and encrypted to the case key (nulled when the case ends) |
-| `attestor_events`         | Everything that happened to a trade or dispute case, the signed sign-offs included, append-only |
+| `attestor_events`         | Everything that happened to a trade, dispute or break-glass case, the signed sign-offs included, append-only |
+| `break_glass_cases`       | One row per recovery case whose finish filed break-glass moves: the recovery case as the attestors see it, keyed by its id; the recovered pod, the status |
+| `break_glass_moves`       | One row per break-glass move: the `breakGlassTransfer`'s id, the old account, the new account of the same type, the type; append-only |
 
 ## Configuration
 
@@ -302,6 +325,7 @@ src/
   wallet-memory/     the six wallet memory routes, /add-noted-transaction to /set-wallet-settings; the two tables' queries
   recovery/          /open-recovery-case, /unlock-recovery-pod, /get-recovery-pod, the six moderator routes, /receive-recovery-share/:caseId, /recover-with-backup-code, /complete-recovery-case, /rotate-backup-code, /store-break-glass-blob; the four recovery tables' queries
   attesting/         the fourteen attestor routes, /list-attestors to /dismiss-attestor-case, and the person's /list-my-cases, /get-my-case, /share-lookup-id, /add-dispute-evidence; the five attestation tables' queries; account-signatures.js, the validators' any-two-pairs rule
+  break-glass/       the nine break-glass routes, the person's /file-break-glass-moves and /list-my-break-glass-moves and the attestors' /list-break-glass-cases to /dismiss-break-glass-case; the two break-glass tables' queries
 
   health/            GET /health: status, uptime, database round trip
   middleware/        404 and the central error handler
@@ -328,14 +352,19 @@ returning `ok(status, body)` or `refuse(status, reason)`) and its queries
 
 - Inside recovery (`docs/schemas.md` section 12.9): one approval and one
   rejection on a case; revoking a moderator; the meeting link by email;
-  limits on opening cases; moving anos with the recovered break-glass
-  seeds; notifications for case events.
+  limits on opening cases; notifications for case events (moving anos
+  with the recovered break-glass seeds was built 2026-11-08, section 14).
 - Inside attestation (section 13.9): revoking an attestor, an attestor's
   history of cases; a party deleting or replacing their evidence, other
   content types or larger files; a time limit on open cases, a case on a
   trade whose accounts the masterpod does not know; the meeting link by
   email; notifications for bucket views and key shares; paging on the
   lists. The attestors' app is the wallet's attestor edition (build 3).
+- Inside break-glass moves (section 14.9): notifications to the attestors
+  and to the person; a move filed after a cancel on the ledger; a
+  dismissal with an effect on the ledger; the owner's dispute path,
+  forwarding and a repeat sweep for money that lands in an old account
+  after the move.
 
 - Several passkeys or several live sessions per pod.
 - Purging pods that never got vouched, and their usernames.

@@ -63,7 +63,7 @@ Four levels. A route's level is given with the route in section 5.
 | none | Plain JSON body, no signature. | `/challenge`, `/check-username`, `/get-anopod-session-keys`, `/get-anos-account`, and `/create-anopod`, `/unlock`, which are signed by the ephemeral keys inside them |
 | session | Signed by the pod's current ephemeral keys (section 3). Vouched or not. | `/search-usernames`, `/send-vouch-request`, `/check-anopod-status`, `/list-notifications`, `/mark-notifications-read`, `/get-anopod-profile` |
 | vouched | session, and `anopods.vouched` is true. | `/list-vouch-requests`, `/approve-vouch-request`, `/decline-vouch-request`, `/complete-setup`, `/add-to-security-bucket-one`, `/add-to-security-bucket-two`, `/list-security-records` |
-| setup | vouched, and setup is complete (`anopod_encryption_key_blob_2` is set, so the pod has chat keys). | every chat and marketplace route; `/create-anos-account`, `/mark-anos-account-submitted`, `/list-anos-accounts`; the six wallet memory routes, `/add-noted-transaction` to `/set-wallet-settings` (2026-11-07) |
+| setup | vouched, and setup is complete (`anopod_encryption_key_blob_2` is set, so the pod has chat keys). | every chat and marketplace route; `/create-anos-account`, `/mark-anos-account-submitted`, `/list-anos-accounts`; the six wallet memory routes, `/add-noted-transaction` to `/set-wallet-settings` (2026-11-07); the person's two break-glass routes, `/file-break-glass-moves` and `/list-my-break-glass-moves` (2026-11-08, section 14) |
 
 Three middlewares: `requireSession`, `requireVouched`, `requireSetup`.
 Failing them: `401` (session), `403 anopod not vouched`, `403 setup not
@@ -2002,7 +2002,9 @@ the blob 1 to 1024 bytes (60 in practice, 12.6). The row exists and is the
 caller's (`404 unknown account`). Writes `break_glass_blob`; a second call
 replaces it. Answer: `200 { accountId, stored: true }`.
 `/list-anos-accounts` answers `breakGlassBlob` (hex or null) on every item
-from this build on.
+from this build on. The wallet stopped calling this route on 2026-11-08
+(section 14): the finish uses the recovered seed once, to sign the moves,
+and wipes it; the route and `anos_accounts.break_glass_blob` stay, unused.
 
 ### 12.5 Statuses and events
 
@@ -2093,7 +2095,8 @@ Nothing else in existing code changes. The new routes live in
 - Sending the meeting link by email; the moderator writes by hand.
 - Limits on opening cases; a dispute when a lookup id's one open case is
   not the person's.
-- Moving anos with the break-glass keys; this build stores the seeds.
+- Moving anos with the break-glass keys; this build stores the seeds
+  (built 2026-11-08, section 14).
 - Notifications for case events; the person opens the app.
 - The attestor app.
 
@@ -2431,7 +2434,7 @@ attestor, never both. Revoking an attestor is not built (13.9).
 
 | Level | Meaning | Routes |
 | ----- | ------- | ------ |
-| attestor | session, and the caller is an attestor as above. `requireAttestor` runs `requireSession`, then the username prefix, then the super-seed query; failing them `403 not an attestor`. | the fourteen routes of 13.4.3 and 13.4.4 |
+| attestor | session, and the caller is an attestor as above. `requireAttestor` runs `requireSession`, then the username prefix, then the super-seed query; failing them `403 not an attestor`. | the fourteen routes of 13.4.3 and 13.4.4, and the seven break-glass routes of 14.4.2 (2026-11-08) |
 
 The person's four routes (13.4.5) are level setup: the person needs their
 encryption key, their identity blob and their anos accounts.
@@ -3105,3 +3108,491 @@ how it was decided:
 - Not touched: `src/recovery/`, `src/security/`, `src/vouching/`,
   `src/anos-accounts/`, `src/chat/`, `signed-request.js`, the moderator
   routes. The validators and the keyholders are build 1's, unchanged.
+
+## 14. Break-glass moves
+
+Design settled 2026-11-08 in a planning chat of five rounds (the plan is
+`~/Desktop/Z-TestNet/forclaude/break-glass-plan-1.md`, FINAL). Why: the
+key blobs of a pod's anos accounts were wrapped under the anoPod encryption
+key, which the backup code also opens, so whoever rebuilt a backup code held
+the original signing keys, and the recovery of 2026-10-26 handed a
+recovered person exactly those keys back while the break-glass seed
+deposited for this very case went unused. From 2026-11-08 the wallet wraps
+the signing keys under a key from the passkey's PRF output alone, so a lost
+passkey kills the old accounts' keys for good, and the break-glass key is
+what moves the money: a new ledger transaction type, `breakGlassTransfer`,
+signed by the account's break-glass pair alone and attested by two
+attestors like an assisted transfer, from each old account to a new account
+of the same type. Four repos in order: the validator (anossoftware spec
+section 22), the doorman (its section 5), this server (this section, step 3
+of the plan) and the wallet (its section 11); deployed after a reset of the
+testnet with a fresh genesis, the wallet last. This section is the
+masterpod's part: the break-glass cases the attestors work from, a case per
+recovery case with one row per move, filed by the wallet at the finish and
+listed to the attestor edition beside the trades. Nothing above this
+section changes except the items in 14.8.
+
+### 14.1 The flow
+
+1. The finish of a recovery (12.4.2 and 12.4.5: after
+   `/recover-with-backup-code` and the rotation, before the completion)
+   reads each old account's balance from a validator with the recovered
+   break-glass pair, makes a new account of the same type for each old
+   account that holds anos (12.4.5's `/store-break-glass-blob` is not called
+   any more), posts a `breakGlassTransfer` per account to a validator, signed
+   by the break-glass pair alone, and files the moves here (14.4.1,
+   `/file-break-glass-moves`): the recovery case's id and, per move, the old
+   account, the new one and the transaction id. The break-glass case is the
+   recovery case seen by the attestors; a second call (Retry) adds moves.
+   The seed is wiped; nothing of it is stored here.
+2. The attestor edition lists the break-glass cases beside the trades
+   (14.4.2, `/list-break-glass-cases`) and opens one
+   (`/get-break-glass-case`): the person's profile with the selfie, the
+   recovery case's lookup id and its two moderator approvals, the moves and
+   the events. The amounts and the stage of each move come from a
+   validator's `/list-assisted-transfers`, which answers `type` since
+   2026-11-08 (anossoftware 13.2).
+3. The attestor pulls the bucket keys from the keyholders by the lookup id,
+   as for a trade, reads the buckets (`/list-break-glass-case-security-records`),
+   schedules a video call (`/schedule-break-glass-case`) and checks the
+   person once more. A mismatch is a dismissal with a preset reason
+   (`/dismiss-break-glass-case`); the held moves stay on the ledger until a
+   cancel (14.9).
+4. The attestor signs one attestation per move, the validators' own
+   follow-up object (13.4.2), in one tap, and posts them together
+   (`/sign-off-break-glass-case`); the masterpod verifies each against the
+   attestor's stored creation and records them. A second attestor, from a
+   different pod, does the same; two sign-offs decide the case.
+5. The app of the attestor whose sign-off decided the case posts both
+   attestors' stored attestations, two per move, to a validator and records
+   the answers (`/mark-break-glass-case-sent`). The validators write each
+   move once both attestations are approved, no cancel is present and its
+   unlock moment has passed; the sender's stakes row moves with the money
+   (anossoftware 4.5).
+6. The person's wallet reads the case's progress from
+   `/list-my-break-glass-moves`: the lost account's card shows it. No
+   notification is sent (14.7).
+
+### 14.2 Who
+
+The person at level setup (section 2): after the finish they hold their
+pod's session again (the recovery passkey is the pod's passkey from
+`/recover-with-backup-code` on) and setup is complete. The attestors at
+level attestor (13.2): the same pods and the same `requireAttestor`; the
+masterpod does not check the stake, the validators do on every read and
+every follow-up, and the keyholders on every bucket key request.
+
+| Level | Routes |
+| ----- | ------ |
+| setup | `/file-break-glass-moves`, `/list-my-break-glass-moves` |
+| attestor | `/list-break-glass-cases`, `/get-break-glass-case`, `/list-break-glass-case-security-records`, `/schedule-break-glass-case`, `/sign-off-break-glass-case`, `/mark-break-glass-case-sent`, `/dismiss-break-glass-case` |
+
+### 14.3 Tables
+
+Two new tables, no new column, no widened check. DDL into `db/schema.sql`
+after the wallet memory block, in the file's style (header comment,
+`COMMENT ON` for every table and column, `set_updated_at` on the cases,
+`refuse_change` on the moves). The whole file, idempotent, applies it to
+the live database (13.10).
+
+```sql
+CREATE TABLE IF NOT EXISTS break_glass_cases (
+  case_id    BYTEA       PRIMARY KEY CHECK (octet_length(case_id) = 32),
+  anopod_id  BYTEA       NOT NULL CHECK (octet_length(anopod_id) = 32),
+  status     TEXT        NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'inReview', 'decided', 'dismissed')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS break_glass_cases_status_created_at_idx ON break_glass_cases (status, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS break_glass_moves (
+  transaction_id BYTEA       PRIMARY KEY CHECK (octet_length(transaction_id) = 32),
+  case_id        BYTEA       NOT NULL CHECK (octet_length(case_id) = 32),
+  account_id     BYTEA       NOT NULL CHECK (octet_length(account_id) = 32),
+  account_id_to  BYTEA       NOT NULL CHECK (octet_length(account_id_to) = 32),
+  account_type   TEXT        NOT NULL CHECK (account_type IN ('spending', 'guarded', 'vault', 'assisted')),
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS break_glass_moves_case_id_idx ON break_glass_moves (case_id);
+CREATE OR REPLACE TRIGGER break_glass_moves_append_only
+  BEFORE UPDATE OR DELETE ON break_glass_moves
+  FOR EACH ROW EXECUTE FUNCTION refuse_change();
+```
+
+`break_glass_cases`: one row per recovery case whose finish filed moves.
+`case_id` is the recovery case's id (`recovery_cases.case_id`): a
+break-glass case is the recovery case seen by the attestors, and the
+recovery case's lookup id and approvals are read from its own tables.
+`anopod_id` is the recovered pod (`recovery_cases.anopod_id`), the caller
+of the filing. `status` moves as 14.5 says, the statuses of a trade case.
+Nothing else about a case is a column: everything that happens is an
+`attestor_events` row with that `case_id`, the kinds `scheduled`,
+`bucketOneViewed`, `bucketTwoViewed`, `attestationSigned`, `decided`,
+`sent` and `dismissed`, which the column's check already allows; `opened`
+records the filing. As trades and disputes already share that log, a case
+id names one row in one of three tables.
+
+`break_glass_moves`: one row per move, append-only. `transaction_id` is the
+`breakGlassTransfer`'s id on the validators and the key: one move per
+transaction, so a second filing of the same transaction is refused.
+`account_id` is the old account, `account_id_to` the new one, both
+`anos_accounts` rows of the pod's, `account_type` the type both have,
+checked at filing (the validators check it again). No foreign keys, as
+everywhere.
+
+### 14.4 Routes
+
+Conventions of section 5 throughout: every route a `POST`, checks in
+order, first failure answers, every multi-row write one transaction. "The
+case" is the `break_glass_cases` row a route resolved by `caseId`; "the
+recovery case" the `recovery_cases` row of the same id; "the case's pod"
+the `anopods` row `case.anopod_id` names. Every write to a case runs with
+the row locked (`SELECT ... FOR UPDATE`, as 12.10's `withLockedCase`),
+re-checking the status under the lock; a status that moved on meanwhile
+answers `409 case closed` (`409 case not decided` on the sent route). The
+filing locks the row too, right after inserting it when it is new. Review
+statuses are `open` and `inReview`; `decided` and `dismissed` are final. A
+profile is a pod's profile with its public selfie, as `/get-anopod-profile`
+answers it, null when the pod's row is gone.
+
+#### 14.4.1 Level setup, the person
+
+**POST /file-break-glass-moves**. Body:
+
+```json
+{
+  "caseId": "<hex 32, the recovery case>",
+  "moves":  [ { "accountId": "<hex 32, the old account>", "accountIdTo": "<hex 32, the new account>", "transactionId": "<hex 32, the breakGlassTransfer>" } ]
+}
+```
+
+1 to 20 moves. Checks:
+
+1. Shape: `caseId` a string, `moves` a list of 1 to 20 objects each with
+   the three strings; `400 bad request shape`. Then every id decodes to 32
+   bytes: `400 invalid caseId`, and per move `400 invalid accountId`,
+   `invalid accountIdTo`, `invalid transactionId`, in that order.
+2. The recovery case exists and its `anopod_id` is the caller's; `404
+   unknown case`. Its status is `delivering` or `completed`; `409 case not
+   ready`.
+3. For each move, in order: both `anos_accounts` rows exist and belong to
+   the caller's pod (`404 unknown account`); the two differ (`400 same
+   account`); their `account_type` is equal (`400 account types differ`);
+   no move with this `transactionId` yet (`409 move already filed`, also
+   on a unique violation at the write).
+
+Writes, one transaction with the case row locked: the `break_glass_cases`
+row if none (status `open`), the moves with the shared `account_type`, the
+`opened` attestor event with `{ moves }` (the count in this call) and the
+caller as `anopod_id`.
+
+Answer: `201 { caseId, status, moves }`, `status` the case's and `moves`
+the count now on the case. A second call for the same case adds moves: the
+wallet calls it once per finish and again on Retry for the moves that
+failed. The break-glass case's own status is not checked: a later filing
+adds to a case under review as to a fresh one.
+
+**POST /list-my-break-glass-moves**. Body `{}`. The caller's break-glass
+cases, newest first, each with its moves and the person's subset of the
+events. What the lost account's card reads.
+
+Answer: `200 { cases: [ { caseId, status, signOffs, moves: [ { accountId,
+accountIdTo, transactionId, accountType, createdAt } ], events: [ { kind,
+details, createdAt } ], createdAt, updatedAt } ] }`. `signOffs` is the
+count of distinct pods that signed; `moves` are in account order; `events`
+carries `scheduled` (`at`, `meetLink`), `decided` (`{}`), `sent` (`{}`) and
+`dismissed` (`reason` only), never an attestor's id, note or signature,
+and not the filing, the bucket views or the sign-offs themselves.
+
+#### 14.4.2 Level attestor
+
+**POST /list-break-glass-cases**. Body `{ statuses? }`, a list of statuses;
+default `open`, `inReview`; an empty list answers no cases; a status that
+is not one of the four is `400 bad request shape`. Newest first.
+
+Answer: `200 { cases: [ { caseId, status, username, firstName, lastName,
+signOffs, moves: [ { accountId, accountIdTo, transactionId, accountType }
+], createdAt, updatedAt } ] }`. The names come from a LEFT JOIN on
+`anopods`, null when the row is gone; `signOffs` is the count of distinct
+pods with an `attestationSigned` event on the case; `moves` are in account
+order.
+
+**POST /get-break-glass-case**. Body `{ caseId }`; `404 unknown case`.
+
+Answer: `200 { case: { caseId, status, lookupId, recoveryStatus, approvals:
+[ { username, signedAt } ], createdAt, updatedAt }, profile, moves: [ {
+accountId, accountIdTo, transactionId, accountType, createdAt } ], events:
+[ { eventId, kind, anopodId, username, details, createdAt } ] }`.
+`lookupId` and `recoveryStatus` are the recovery case's (null when its row
+is gone, never in practice); `approvals` are the `approvalSigned` recovery
+events in time order, each with the moderator's username (a LEFT JOIN, null
+when the pod's row is gone) and `signedAt` from the event's details;
+`profile` is the case's pod's with the public selfie; `events` are the
+attestor events of this case with the acting pod's username and the
+details complete, as `/get-trade-case` answers them: the stored attestations
+are in the `attestationSigned` events, for the posting after the decision.
+
+**POST /list-break-glass-case-security-records**. Body `{ caseId, bucket }`,
+`bucket` the number 1 or 2; `404 unknown case`. The case's pod's rows of
+that bucket, the shape of `/list-trade-case-security-records` (`images`
+with `type = bucket`; `info` only for bucket 2), oldest first. Writes the
+`bucketOneViewed` or `bucketTwoViewed` attestor event with `{ keyIds }`, the
+distinct key ids returned. No status check. The attestor pulls the bucket
+keys from the keyholders by the case's `lookupId`, as for a trade; the
+masterpod cannot open the rows.
+
+**POST /schedule-break-glass-case**. Body `{ caseId, at, meetLink }` as
+`/schedule-attestor-case`: `at` an ISO 8601 time, `meetLink` an `https` URL
+of at most 500 characters. Status `open` or `inReview` (`409 case closed`).
+Writes the `scheduled` event with `{ at, meetLink }` and `status =
+'inReview'` when it was `open`. Answer: `200 { caseId, status }`. No
+notification: the person's wallet reads the event from
+`/list-my-break-glass-moves`.
+
+**POST /sign-off-break-glass-case**. Body:
+
+```json
+{
+  "caseId":       "<hex>",
+  "attestations": [ { "transactionId": "<hex 32>", "attestation": { "payload": { "type": "attestation", "transactionId": "<hex>", "accountId": "<hex>", "attestorId": "<hex>", "signedAt": "..." }, "signatures": { "...": "as 13.4.2" } } } ]
+}
+```
+
+One attestation per move of the case, each the validators' attestation
+follow-up as it stands (13.4.2; anossoftware 5.2): `transactionId` and
+`accountId` the move's, `attestorId` the attestor's account, signed by that
+account's keys under any two pairs. Checks:
+
+1. Shape: `caseId` a string, `attestations` a list of 1 to 20 objects each
+   with a string `transactionId`; `400 bad request shape`.
+2. The case exists (`404 unknown case`) with status `open` or `inReview`
+   (`409 case closed`).
+3. The list names every move of the case exactly once and nothing else: a
+   `transactionId` that does not decode, names no move of the case or is
+   named twice, or a move left out, is `400 attestations do not match the
+   moves`.
+4. Each `attestation`, in move order, passes checks 1 to 4 of 13.4.2
+   against its move: the shape (`400 bad request shape`); `payload.type`
+   `attestation`; `payload.transactionId` and `payload.accountId` the
+   move's transaction and old account (`400 sign-off does not match the
+   case`); `attestorId` an `anos_accounts` row of the caller's pod (`403
+   not your account`); the signatures against that row's creation keys
+   (`401 bad signature`). The same `attestorId` on all; a second one is
+   `400 attestations differ in attestorId`.
+5. No `attestationSigned` event on this case by the caller's pod; `409
+   already signed off`.
+
+Writes, under the case lock: the `attestationSigned` event with `{
+attestorId, attestations }` (the attestor's account id as hex; the whole
+follow-up objects, in move order) and the caller as `anopod_id`; `status =
+'inReview'` when it was `open`; and when the distinct pods with an
+`attestationSigned` event now number two or more, `status = 'decided'` and
+the `decided` event with `{ attestorIds }`, the signers' account ids from
+the stored events in event order.
+
+Answer: `200 { caseId, status, signOffs }`, the count after the write.
+
+**POST /mark-break-glass-case-sent**. Body `{ caseId, validator, results }`
+as `/mark-attestor-case-sent`: `validator` an integer 1 to 99, `results` 1
+to 40 entries `{ signer, status, error? }` (two attestations per move;
+`signer` hex 32 bytes, `status` an integer, `error` a string of at most 500
+characters). Status `decided` (`409 case not decided`). Writes the `sent`
+event with `{ validator, results }`. Answer: `200 { caseId, status:
+"decided" }`. A failed post is recorded too; a later retry writes another
+event.
+
+**POST /dismiss-break-glass-case**. Body `{ caseId, reason, note }`,
+`reason` one of `selfieMismatch`, `documentsMismatch`, `noShow`,
+`withdrawn`, `other`; `note` 0 to 2000 characters. Status `open` or
+`inReview` (`409 case closed`). Writes `status = 'dismissed'` and the
+`dismissed` event with `{ reason, note }`. Answer: `200 { caseId, status:
+"dismissed" }`. Final. Nothing is cleared (the lookup id is the recovery
+case's) and nothing happens on the ledger: the held moves stay until a
+cancel, which the plan leaves to the later dispute work (its decisions 8
+and 11; 14.9).
+
+### 14.5 Statuses and events
+
+```
+open      -> inReview   an attestor schedules or signs off
+inReview  -> decided    the second sign-off from a different pod
+open, inReview -> dismissed   an attestor dismisses
+```
+
+The statuses of a trade case (13.5). `decided` and `dismissed` are final;
+the posting to a validator is an event, not a status. The recovery case's
+own status (12.5) is not touched by anything here; a filing needs it to be
+`delivering` or `completed`.
+
+| kind | by | details |
+| ---- | -- | ------- |
+| `opened` | the person | `{ moves }`, the count filed in that call; a Retry writes a second `opened` |
+| `scheduled` | an attestor | `{ at, meetLink }` |
+| `bucketOneViewed`, `bucketTwoViewed` | an attestor | `{ keyIds }` |
+| `attestationSigned` | an attestor | `{ attestorId, attestations }`, the whole follow-up objects in move order |
+| `decided` | the server | `{ attestorIds }` |
+| `sent` | an attestor | `{ validator, results }` |
+| `dismissed` | an attestor | `{ reason, note }` |
+
+Events written in one transaction with another (a sign-off and the
+`decided` it completes) keep their order by `clock_timestamp()`, as 12.10
+says. A new duty later is a new kind in the check, not a new column.
+
+### 14.6 Client crypto, new
+
+Nothing on the masterpod: it stores no new ciphertext and verifies an
+attestation as 13.4.2 verifies a trade's, against the stored creation. The
+wallet's side, the key the account key blobs are wrapped under
+(`masterpod/kek-keys/v1`, from the passkey's PRF output), the break-glass
+pair's signature on a `breakGlassTransfer` and the `/get-account` read
+signed with it, is the wallet's spec, section 7 (2026-11-08).
+
+### 14.7 Notifications
+
+None. The person's wallet reads the case's progress from
+`/list-my-break-glass-moves`, and the attestors list the cases; no
+notification kind is added (the plan's decision 14).
+
+### 14.8 Changes to what exists (all additive)
+
+- `db/schema.sql`: the two tables; the comments on `attestor_events` (the
+  table, `case_id`, `details`) and the paragraph above its `CREATE TABLE`
+  name the third kind of case and its two detail shapes.
+- `src/app.js`: the break-glass router mounted, with its comment line.
+- `src/auth/require-attestor.js`: the comment counting the routes the level
+  serves names the seven of this section.
+- `/store-break-glass-blob` (12.4.5) and `anos_accounts.break_glass_blob`
+  are unused since 2026-11-08: the finish uses the recovered seed once, to
+  sign the moves, and wipes it. The route and the column stay.
+- 12.9's "Moving anos with the break-glass keys" is built here; section 2's
+  and 13.2's level tables name the new routes.
+- `README.md`: the routes, the folder, the tables.
+
+Nothing else in existing code changes. New: `src/break-glass/` (router,
+handlers, service, `break-glass.queries.js`). The sign-off checks reuse
+`src/attesting/account-signatures.js` (`hasAccountSignatureShape`,
+`verifyAccountSignatures`) and `anos-accounts.queries.js` `findAccount`;
+the events go through `src/attesting/attestor-events.queries.js`
+(`insertEvent`, `listForCase`, `listForCaseWithUsernames`, `countSignOffs`,
+`signedOffBy`, `listDetails`); the statuses are
+`assisted-trades.queries.js`'s; the recovery case and its events come from
+`src/recovery/recovery-cases.queries.js` and `recovery-events.queries.js`;
+the bucket rows from `security.queries.js` `listFor`; the profile from
+`anopods.service.js` `profileWithSelfie`.
+
+### 14.9 Deferred, by decision
+
+- Notifications to the attestors when moves are filed and to the person
+  when the case moves; the attestor edition and the person's wallet read
+  the case.
+- A move filed after a cancel on the ledger (a `breakGlassCancel` or the
+  owner's `assistedTransferCancel`): the masterpod does not read the
+  ledger; the case stays as filed, and the attestor edition shows the move
+  as not listed on the validator.
+- Dismissing with an effect on the ledger: a dismissal records the
+  attestors' refusal; the held moves stay until a cancel (the plan's
+  decisions 8 and 11).
+- The owner's dispute path, forwarding and a repeat sweep for money that
+  lands in an old account after the move (the plan's section 9).
+
+### 14.10 Notes from the builds
+
+#### Build 1, the masterpod (2026-11-08)
+
+Built from `~/Desktop/Z-TestNet/forclaude/break-glass-plan-1.md` section
+3, on main at aa102ec (the wallet memory merge). No new npm package, no new
+variable, no test script and no rig (none was asked for). The schema was
+not applied to any database for keeps: the user applies the whole file by
+psql as the superuser with `SET ROLE masterpodsoftware`, as 13.10 records.
+What the plan left open and how it was decided:
+
+- The schema block sits at the end of `db/schema.sql`, after the wallet
+  memory block: the plan's DDL, aligned in the file's column style, with a
+  header comment and a `COMMENT ON` for every table and column. The
+  `attestor_events` comments (the table, `case_id`, `details`) and the
+  paragraph above its `CREATE TABLE` were reworded in place, since the
+  third kind of case had made them false.
+- `findMove(transactionId)` joins the plan's eight query functions: the
+  filing's "no move with this transactionId yet" needs a lookup by
+  transaction id before the write, so the refusals come in the plan's
+  order; the unique violation on the primary key is the backstop, and it
+  is also where the same transaction id twice in one request lands.
+- The two lists aggregate a case's moves as JSON in the database
+  (`json_agg ... ORDER BY account_id, transaction_id`), so those moves'
+  ids leave the queries file as lowercase hex (`encode(..., 'hex')`, the
+  wire form) rather than Buffers, and their `createdAt` as the database's
+  text, which the service normalises with `toISOString()`.
+  `/list-break-glass-cases` drops `createdAt` from the moves, as the plan's
+  answer reads; the person's list and `/get-break-glass-case` keep it.
+  `listMoves` and `findMove` return Buffers as every queries file does.
+- The filing: the shape first, then every id of every move decoded, then
+  the recovery case, then the per-move checks move by move in the plan's
+  order. The writes run in one transaction with the case row locked right
+  after the `ON CONFLICT DO NOTHING` insert, as every other write to a case
+  locks its row, so a filing and a sign-off racing see each other. `moves`
+  in the answer counts the case's rows after the write; `status` is the
+  locked row's. Nothing checks the break-glass case's own status on a
+  filing, as the plan reads; a duplicate within one request lands as `409
+  move already filed` at the write.
+- The statuses are imported from `assisted-trades.queries.js`
+  (`CASE_STATUSES`, `REVIEW_STATUSES`, `DEFAULT_LIST_STATUSES`) rather
+  than copied, since the plan makes the break-glass statuses a trade
+  case's; the private helpers of the attesting service (`isNote`,
+  `isMeetLink`, `isTime`, `pick`, `withLockedCase`, `profileOf`,
+  `attestorEvents`) are copied, as the attesting build copied the
+  recovery's, to leave `attesting.service.js` alone.
+- `/list-my-break-glass-moves` ignores the body, as `/list-my-cases` does;
+  the person's events are the four kinds the plan names (`scheduled`,
+  `decided`, `sent`, `dismissed`), so the `opened`, the bucket views and the
+  sign-offs are not answered. The events come from `listForCase` of the
+  attestor events module, the one read without usernames.
+- `/get-break-glass-case`: `lookupId` and `recoveryStatus` are null when
+  the recovery case row is gone (never, in practice); `approvals` are the
+  `approvalSigned` recovery events in time order with the moderator's
+  username from the LEFT JOIN and `signedAt` from the details (null when
+  a detail lacks it); `moves` carry `createdAt`.
+- `/sign-off-break-glass-case`: `attestations` must be a list of 1 to 20
+  objects each with a string `transactionId`, the filing's ceiling (`400
+  bad request shape`); the matching with the moves is one pass over the
+  list (a decode failure, an unknown or repeated id) and a count; checks 1
+  to 4 of 13.4.2 then run per attestation in move order with 13.4.2's
+  reason strings (`sign-off does not match the case` for a wrong
+  transaction or account); a second `attestorId` among them is `400
+  attestations differ in attestorId`, a reason the plan did not name;
+  check 5 (`409 already signed off`) runs once after them, and again under
+  the lock. The stored `attestations` are the follow-up objects exactly as
+  sent, in move order; `attestorId` beside them the account id as lowercase
+  hex, as a trade's event has it; `decided`'s `attestorIds` come from the
+  stored events through `listDetails`.
+- `/mark-break-glass-case-sent` is `/mark-attestor-case-sent` with 40
+  entries, each `{ signer, status, error? }` as 13.4.4 has them; nothing
+  names the move, since the plan keeps the shape.
+- `/dismiss-break-glass-case` clears nothing: a break-glass case holds no
+  lookup id and no evidence.
+- Checks: `node --check` on the five source files (`app.js` and the four
+  new ones). Beyond the plan, the whole app was imported once with dummy
+  environment values, to catch a wrong import name or an import cycle: it
+  imported, with the nine paths registered (the server was not started).
+  The SQL ran against the local `masterpod` database (no `masterpodrig`
+  exists on this machine) as the superuser inside one transaction, rolled
+  back: the block applied twice (`IF NOT EXISTS`, `OR REPLACE`, the
+  comments overwritten), a throwaway pod, two cases, three moves filed in
+  a shuffled order and the events; the real query functions on the
+  transaction's client (28 checks: `findCase`, `insertCase` inserting once
+  and doing nothing the second time, `lockCase`, `updateStatus` with the
+  trigger, `listMoves` in account order, `findMove`, `insertMove`'s unique
+  violation, `listCasesByStatus` with the pod's names, the moves as hex in
+  account order, `signOffs` counting two distinct pods once each, `[]` and
+  `0` for a case without moves, an empty status list, `listCasesForPod`;
+  the aggregated `createdAt` parsing back to the row's time; the
+  append-only trigger refusing an `UPDATE` and a `DELETE`; all seven kinds
+  and `opened` accepted by `attestor_events`), and the same by psql with
+  the list select's text; the tables and the throwaway pod gone after the
+  rollback. The whole file was also applied twice, with `SET ROLE
+  masterpodsoftware`, to a throwaway database made for it and dropped
+  after: the two tables owned by the app role, thirteen comments, the two
+  triggers.
+- Not touched: `src/attesting/` (its files are imported, their comments
+  still count two kinds of case), `src/recovery/` (`/store-break-glass-blob`
+  and `setBreakGlassBlob` stay as they are), `src/anos-accounts/`,
+  `src/security/`, `signed-request.js`, `package.json`, the scripts.

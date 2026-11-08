@@ -29,7 +29,8 @@ export async function mustBeAttestor(req, res, next) {
  * Level "attestor" of spec 13.2: a signed session request from a pod named
  * attestor... that a super seed vouched for. An array, so a route lists it
  * like one middleware: router.post('/x', requireAttestor, handler). The
- * fourteen attestor routes of 13.4.3 and 13.4.4.
+ * fourteen attestor routes of 13.4.3 and 13.4.4, and the seven break-glass
+ * routes of 14.4.2.
  */
 export const requireAttestor = [requireSession, mustBeAttestor];
 

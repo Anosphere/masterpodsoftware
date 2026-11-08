@@ -947,7 +947,8 @@ COMMENT ON COLUMN escrow_dispute_evidence.created_at   IS 'When the row was inse
 COMMENT ON COLUMN escrow_dispute_evidence.updated_at   IS 'When the row last changed (the case-key copy removed). Maintained by the escrow_dispute_evidence_set_updated_at trigger.';
 
 
--- attestor_events: the log of both kinds of case, append-only. One row per
+-- attestor_events: the log of both kinds of case, and since 2026-11-08 of
+-- the break-glass cases too (section 14), append-only. One row per
 -- thing that happened (spec 13.5); anopod_id is the acting pod, an attestor
 -- or a party, null for the server's own events (decided, lookupIdCleared,
 -- evidenceDeleted); details holds what the kind carries, the signed
@@ -971,12 +972,12 @@ CREATE OR REPLACE TRIGGER attestor_events_append_only
   BEFORE UPDATE OR DELETE ON attestor_events
   FOR EACH ROW EXECUTE FUNCTION refuse_change();
 
-COMMENT ON TABLE  attestor_events            IS 'The log of both kinds of attestor case (assisted_trades and escrow_disputes), append-only: one row per thing that happened (spec 13.5). anopod_id is the acting pod, an attestor or a party; null for the server''s own events.';
+COMMENT ON TABLE  attestor_events            IS 'The log of the attestor cases (assisted_trades, escrow_disputes and, since 2026-11-08, break_glass_cases), append-only: one row per thing that happened (spec 13.5 and 14.5). anopod_id is the acting pod, an attestor or a party; null for the server''s own events.';
 COMMENT ON COLUMN attestor_events.event_id   IS 'Random id, 32 raw bytes.';
-COMMENT ON COLUMN attestor_events.case_id    IS 'The case the event belongs to: an assisted_trades or an escrow_disputes row (a case id names one row in one table).';
+COMMENT ON COLUMN attestor_events.case_id    IS 'The case the event belongs to: an assisted_trades, an escrow_disputes or a break_glass_cases row (a case id names one row in one table).';
 COMMENT ON COLUMN attestor_events.kind       IS 'opened, lookupIdShared, evidenceAdded, scheduled, bucketOneViewed, bucketTwoViewed, caseKeyShared, attestationSigned, verdictSigned, decided, lookupIdCleared, evidenceDeleted, sent or dismissed. A new duty later is a new kind, not a new column.';
 COMMENT ON COLUMN attestor_events.anopod_id  IS 'The acting pod: an attestor, or a party (lookupIdShared, evidenceAdded). Null for the server''s own events: decided, lookupIdCleared, evidenceDeleted.';
-COMMENT ON COLUMN attestor_events.details    IS 'What the kind carries (spec 13.5): { transactionId, accountId } or { transactionId, accountId, accountIdTo, disputedBy, keyHolders } for opened; {} for lookupIdShared and lookupIdCleared; { evidenceIds } for evidenceAdded; { at, meetLink } for scheduled; { keyIds } for the bucket views; { anopodId } for caseKeyShared; { attestorId, attestation } for attestationSigned and { arbitratorId, verdict, object } for verdictSigned, the whole signed follow-up object included; { attestorIds } or { verdict, arbitratorIds } for decided; { evidence, keys } (the counts) for evidenceDeleted; { validator, results } for sent; { reason, note } for dismissed.';
+COMMENT ON COLUMN attestor_events.details    IS 'What the kind carries (spec 13.5): { transactionId, accountId } or { transactionId, accountId, accountIdTo, disputedBy, keyHolders } for opened; {} for lookupIdShared and lookupIdCleared; { evidenceIds } for evidenceAdded; { at, meetLink } for scheduled; { keyIds } for the bucket views; { anopodId } for caseKeyShared; { attestorId, attestation } for attestationSigned and { arbitratorId, verdict, object } for verdictSigned, the whole signed follow-up object included; { attestorIds } or { verdict, arbitratorIds } for decided; on a break-glass case (spec 14.5) { moves } for opened and { attestorId, attestations } for attestationSigned, the whole objects in move order; { evidence, keys } (the counts) for evidenceDeleted; { validator, results } for sent; { reason, note } for dismissed.';
 COMMENT ON COLUMN attestor_events.created_at IS 'When the row was inserted: the statement''s clock (clock_timestamp()), so events one transaction writes keep their order.';
 
 
@@ -1079,3 +1080,68 @@ COMMENT ON COLUMN wallet_settings.anopod_id     IS 'The pod.';
 COMMENT ON COLUMN wallet_settings.settings_blob IS 'Ciphertext of the settings object (iv || ciphertext || tag), at most 16384 bytes, under the pod''s encryption key.';
 COMMENT ON COLUMN wallet_settings.created_at    IS 'When the row was inserted. Set by default, never changed.';
 COMMENT ON COLUMN wallet_settings.updated_at    IS 'When the row last changed. Maintained by the wallet_settings_set_updated_at trigger.';
+
+
+-- ---------------------------------------------------------------------------
+-- The break-glass block (added 2026-11-08, spec section 14): the recovery
+-- case as the attestors see it. The key blobs of a pod's anos accounts open
+-- under a key from the passkey's PRF output alone (wallet spec 7, 2026-11-08),
+-- so a lost passkey kills the old accounts' keys for good. At the finish of
+-- the recovery the wallet makes a new account of the same type for each old
+-- account that holds anos, posts a breakGlassTransfer for each to a
+-- validator, signed by the account's break-glass pair (anossoftware spec 22),
+-- and files the moves here (/file-break-glass-moves). Two attestors list the
+-- case beside the trades, check the person once more against the recovery
+-- case's two moderator approvals and sign one attestation per move; the
+-- deciding attestor's app posts them to a validator. break_glass_cases: one
+-- row per recovery case the finish filed moves for, keyed by the recovery
+-- case's own id. break_glass_moves: one row per move, append-only. The
+-- attestors' actions are attestor_events rows with the case id (the kinds
+-- scheduled, bucketOneViewed, bucketTwoViewed, attestationSigned, decided,
+-- sent and dismissed; opened records the filing), as trades and disputes
+-- already share that log. No foreign keys; the services keep the references
+-- straight.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS break_glass_cases (
+  case_id    BYTEA       PRIMARY KEY CHECK (octet_length(case_id) = 32),
+  anopod_id  BYTEA       NOT NULL CHECK (octet_length(anopod_id) = 32),
+  status     TEXT        NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'inReview', 'decided', 'dismissed')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS break_glass_cases_status_created_at_idx ON break_glass_cases (status, created_at DESC);
+
+CREATE OR REPLACE TRIGGER break_glass_cases_set_updated_at
+  BEFORE UPDATE ON break_glass_cases
+  FOR EACH ROW
+  WHEN (OLD.* IS DISTINCT FROM NEW.*)
+  EXECUTE FUNCTION set_updated_at();
+
+COMMENT ON TABLE  break_glass_cases            IS 'One row per recovery case whose finish filed break-glass moves: the recovery case seen by the attestors. The recovered pod and the status; the moves are break_glass_moves rows, everything that happens is an attestor_events row with this case id. Stand-alone; no foreign keys.';
+COMMENT ON COLUMN break_glass_cases.case_id    IS 'The recovery case''s id (recovery_cases.case_id), 32 raw bytes: a break-glass case is the recovery case seen by the attestors. Written by /file-break-glass-moves at the finish; the moves and the attestor_events of the case name it.';
+COMMENT ON COLUMN break_glass_cases.anopod_id  IS 'The recovered pod: the person whose old accounts the moves empty, the caller of /file-break-glass-moves (recovery_cases.anopod_id).';
+COMMENT ON COLUMN break_glass_cases.status     IS 'open, inReview, decided or dismissed (spec 14.5), the statuses of a trade case. decided and dismissed are final.';
+COMMENT ON COLUMN break_glass_cases.created_at IS 'When the row was inserted (the first filing). Set by default, never changed.';
+COMMENT ON COLUMN break_glass_cases.updated_at IS 'When the row last changed. Maintained by the break_glass_cases_set_updated_at trigger.';
+
+CREATE TABLE IF NOT EXISTS break_glass_moves (
+  transaction_id BYTEA       PRIMARY KEY CHECK (octet_length(transaction_id) = 32),
+  case_id        BYTEA       NOT NULL CHECK (octet_length(case_id) = 32),
+  account_id     BYTEA       NOT NULL CHECK (octet_length(account_id) = 32),
+  account_id_to  BYTEA       NOT NULL CHECK (octet_length(account_id_to) = 32),
+  account_type   TEXT        NOT NULL CHECK (account_type IN ('spending', 'guarded', 'vault', 'assisted')),
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS break_glass_moves_case_id_idx ON break_glass_moves (case_id);
+CREATE OR REPLACE TRIGGER break_glass_moves_append_only
+  BEFORE UPDATE OR DELETE ON break_glass_moves
+  FOR EACH ROW EXECUTE FUNCTION refuse_change();
+
+COMMENT ON TABLE  break_glass_moves                IS 'One row per break-glass move a recovery''s finish filed: the breakGlassTransfer on the validators, the old account it empties, the new account of the same type it fills, the type. One move per transaction (the primary key). Append-only; the attestors sign one attestation per row.';
+COMMENT ON COLUMN break_glass_moves.transaction_id IS 'The breakGlassTransfer''s transaction id on the validators, 32 raw bytes. The attestations the attestors sign name it.';
+COMMENT ON COLUMN break_glass_moves.case_id        IS 'The break-glass case the move belongs to: a break_glass_cases row, and so a recovery_cases row.';
+COMMENT ON COLUMN break_glass_moves.account_id     IS 'The old account, whose keys died with the passkey: the move''s sender (an anos_accounts row of the recovered pod''s).';
+COMMENT ON COLUMN break_glass_moves.account_id_to  IS 'The new account the finish made: the move''s receiver (an anos_accounts row of the same pod''s, of the same type).';
+COMMENT ON COLUMN break_glass_moves.account_type   IS 'spending, guarded, vault or assisted: the type both accounts have, checked at filing (the validators check it again).';
+COMMENT ON COLUMN break_glass_moves.created_at     IS 'When the row was inserted (the filing). Set by default, never changed.';
