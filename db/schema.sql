@@ -308,6 +308,42 @@ COMMENT ON COLUMN super_seeds.updated_at             IS 'When the row last chang
 
 
 -- ---------------------------------------------------------------------------
+-- appointments: the pods that are moderators or attestors (docs/schemas.md
+-- section 16). Written by scripts/appoint.js and scripts/revoke.js; no
+-- route writes it.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS appointments (
+  anopod_id    BYTEA       NOT NULL CHECK (octet_length(anopod_id) = 32),
+  role         TEXT        NOT NULL CHECK (role IN ('moderator', 'attestor')),
+  appointed_by TEXT        NOT NULL CHECK (appointed_by = 'operator' OR appointed_by ~ '^[0-9a-f]{64}$'),
+  appointed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  revoked_at   TIMESTAMPTZ,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (anopod_id, appointed_at)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS appointments_one_live_per_pod
+  ON appointments (anopod_id) WHERE revoked_at IS NULL;
+
+CREATE OR REPLACE TRIGGER appointments_set_updated_at
+  BEFORE UPDATE ON appointments
+  FOR EACH ROW
+  WHEN (OLD.* IS DISTINCT FROM NEW.*)
+  EXECUTE FUNCTION set_updated_at();
+
+COMMENT ON TABLE  appointments              IS 'One row per appointment of a pod as a moderator or an attestor. A pod holds the role while its row has no revoked_at; at most one such row per pod.';
+COMMENT ON COLUMN appointments.anopod_id    IS 'The appointed pod.';
+COMMENT ON COLUMN appointments.role         IS 'moderator or attestor.';
+COMMENT ON COLUMN appointments.appointed_by IS 'operator for the scripts; otherwise the hex id of the pod that appointed.';
+COMMENT ON COLUMN appointments.appointed_at IS 'When the appointment was made. With anopod_id the primary key, so a pod appointed again after a revocation gets a new row.';
+COMMENT ON COLUMN appointments.revoked_at   IS 'When the appointment ended; null while it stands.';
+COMMENT ON COLUMN appointments.created_at   IS 'When the row was inserted. Set by default, never changed.';
+COMMENT ON COLUMN appointments.updated_at   IS 'When the row last changed. Maintained by the appointments_set_updated_at trigger.';
+
+
+-- ---------------------------------------------------------------------------
 -- notifications: what the phone polls.
 -- ---------------------------------------------------------------------------
 

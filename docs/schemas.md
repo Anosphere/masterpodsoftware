@@ -69,7 +69,10 @@ Three middlewares: `requireSession`, `requireVouched`, `requireSetup`.
 Failing them: `401` (session), `403 anopod not vouched`, `403 setup not
 complete`.
 
-Two more levels, `moderator` and `recovery`, are in section 12.2 (2026-10-26).
+Two more levels, `moderator` and `recovery`, are in section 12.2 (2026-10-26),
+and `attestor` in 13.2. Since 2026-11-08 the `moderator` and `attestor`
+levels read the `appointments` table (section 16) in place of the username
+prefix and the super seed's vouch.
 
 ## 3. Request signing and the session
 
@@ -296,6 +299,32 @@ CREATE TABLE IF NOT EXISTS super_seeds (
 A pod vouched by a super seed joins `seeds` with `vouched_by` = that super
 seed's hex id. Super seeds are made only by the genesis script (section 9),
 `vouched_by = 'genesis'`. `trust_score` starts at 0 and nothing reads it yet.
+
+### appointments
+
+```sql
+CREATE TABLE IF NOT EXISTS appointments (
+  anopod_id    BYTEA       NOT NULL CHECK (octet_length(anopod_id) = 32),
+  role         TEXT        NOT NULL CHECK (role IN ('moderator', 'attestor')),
+  appointed_by TEXT        NOT NULL CHECK (appointed_by = 'operator' OR appointed_by ~ '^[0-9a-f]{64}$'),
+  appointed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  revoked_at   TIMESTAMPTZ,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (anopod_id, appointed_at)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS appointments_one_live_per_pod
+  ON appointments (anopod_id) WHERE revoked_at IS NULL;
+```
+
+The pods that are moderators or attestors (section 16, 2026-11-08). A pod
+holds the role while its row has no `revoked_at`, at most one such row per
+pod (the partial unique index); appointing a pod again after a revocation
+adds a row, and the old one stays. `appointed_by` is `operator` for the
+scripts, otherwise the hex id of the pod that appointed. Written only by
+`scripts/appoint.js` and `scripts/revoke.js` (section 9); no route writes
+it.
 
 ### notifications
 
@@ -724,11 +753,13 @@ Answer: `201 { vouchIdNumber }`.
 Body: `{}`. Read only.
 
 Answer: `200 { anopodId, vouched, vouchCount, setupComplete, isSeed,
-isSuperSeed, bucketOneImages, bucketTwoImages, bucketTwoInfos }`.
+isSuperSeed, role, bucketOneImages, bucketTwoImages, bucketTwoInfos }`.
 `vouchCount` is the number of `vouches` rows for the caller; the three
 counts (added 2026-10-25) are the caller's rows in `security_images` with
 `type = 1`, in `security_images` with `type = 2` and in `security_info`
-with `type = 2`. The wallet's next-step rule reads them.
+with `type = 2`. The wallet's next-step rule reads them. `role` (added
+2026-11-08, section 16) is the caller's live appointment, `"moderator"`,
+`"attestor"` or `null`; the wallet's Stake for list reads it.
 
 ### POST /list-notifications (session)
 
@@ -1145,13 +1176,15 @@ hex, `submittedAt` ISO 8601 or null.
 ### POST /get-anos-account (none)
 
 Body: `{ accountId }`. Unsigned, like `/get-anopod-session-keys`: for the
-validators, which ask before accepting an account's creation.
+validators, which ask before accepting an account's creation and (since
+2026-11-08) before accepting a stake for moderator or attestor.
 
 Checks: the shape and the id (`400 bad request shape`); the row (`404
 unknown account`).
 
-Answer: `200 { accountId, anopodId, vouched }`, `vouched` read from the
-pod's row.
+Answer: `200 { accountId, anopodId, vouched, role }`, `vouched` read from
+the pod's row; `role` (added 2026-11-08, section 16) the pod's live
+appointment, `"moderator"`, `"attestor"` or `null`.
 
 ### POST /add-noted-transaction (setup)
 
@@ -1336,6 +1369,18 @@ npm run make-super-seed -- <anopod id, hex>
 
 sets `vouched = true` and inserts the `super_seeds` row with `vouched_by =
 'genesis'`. Idempotent. There is no route for it.
+
+Moderators and attestors are appointed the same way (section 16,
+2026-11-08): the pod is created through the web app, then
+
+```bash
+npm run appoint -- <anopod id, hex> <moderator|attestor>
+npm run revoke -- <anopod id, hex>
+```
+
+inserts the `appointments` row with `appointed_by = 'operator'`, or ends
+the pod's live appointment. Running `appoint` again for the same role
+changes nothing and says so. There is no route for either.
 
 ## 10. Deferred, by decision
 
@@ -1596,23 +1641,18 @@ draft's flows 4.6 and 4.7 are superseded by 12.4.5 and 12.4.7.
 
 ### 12.2 Who is a moderator, and two new levels
 
-A moderator is a pod whose `username` starts with `moderator` and that a
-super seed has vouched for:
-
-```sql
-SELECT EXISTS (SELECT 1 FROM vouches v
-               JOIN super_seeds s ON s.anopod_id = v.anopod_id_vouched_by
-               WHERE v.anopod_id_vouched_for = $1)
-```
-
-No table and no script: the operator's vouch is the appointment (it also
-makes the pod a seed, as every super-seed vouch does). The masterpod does
-not check the stake; the keyholders do, where the secrets are, on every
-bucket key request. Revoking a moderator is not built (12.9).
+A moderator is a pod that holds a live appointment as one: an
+`appointments` row with `role = 'moderator'` and no `revoked_at` (section
+16). The operator appoints by `npm run appoint` and revokes by `npm run
+revoke` (16.3); no route writes the table. The masterpod does not check
+the stake; the keyholders do, where the secrets are, on every bucket key
+request. Rewritten 2026-11-08 to the appointment rule of section 16; until
+then a moderator was a pod whose `username` started with `moderator` and
+that a super seed had vouched for, with no table and no script.
 
 | Level | Meaning | Routes |
 | ----- | ------- | ------ |
-| moderator | session, and the caller is a moderator as above. `requireModerator` runs `requireSession`, then the username prefix, then the query; failing them `403 not a moderator`. | `/list-recovery-cases`, `/get-recovery-case`, `/list-case-security-records`, `/schedule-recovery-case`, `/sign-off-recovery-case`, `/dismiss-recovery-case` |
+| moderator | session, and the pod holds a live appointment for the role (`appointments`, section 16; the stake is the keyholders' check). `requireModerator` runs `requireSession`, then the query; failing them `403 not a moderator`. | `/list-recovery-cases`, `/get-recovery-case`, `/list-case-security-records`, `/schedule-recovery-case`, `/sign-off-recovery-case`, `/dismiss-recovery-case` |
 | recovery | signed by a recovery pod's ephemeral keys (12.4.1). `requireRecoverySession`. | `/get-recovery-pod`, `/complete-recovery-case` |
 
 The other new routes are level none (`/open-recovery-case`,
@@ -2105,7 +2145,9 @@ Nothing else in existing code changes. The new routes live in
 
 - One approval and one rejection on a case; a rejection is recorded and
   the case waits for two approvals or a dismissal.
-- Revoking a moderator; a moderator's record of past cases.
+- Revoking a moderator (built 2026-11-08: `npm run revoke`, section 16; the
+  stake the pod holds at the validators comes back through the guardians'
+  payout); a moderator's record of past cases.
 - Sending the meeting link by email; the moderator writes by hand.
 - Limits on opening cases; a dispute when a lookup id's one open case is
   not the person's.
@@ -2438,17 +2480,21 @@ evidence copies like a decided one.
 
 ### 13.2 Who is an attestor, and the new level
 
-An attestor is a pod whose `username` starts with `attestor` and that a
-super seed has vouched for: the moderator rule of 12.2 with the other
-prefix, the same query. No table and no script; the vouch is the
-appointment. The masterpod does not check the stake: the validators do on
-every read and every follow-up, and the keyholders on every bucket key
-request. A username has one prefix, so a pod is a moderator or an
-attestor, never both. Revoking an attestor is not built (13.9).
+An attestor is a pod that holds a live appointment as one: an
+`appointments` row with `role = 'attestor'` and no `revoked_at` (section
+16), the moderator rule of 12.2 with the other role, the same query. The
+operator appoints and revokes by script (16.3); no route writes the
+table. The masterpod does not check the stake: the validators do on every
+read and every follow-up, and the keyholders on every bucket key request.
+A pod has one live appointment at a time (the partial unique index of
+16.1), so a pod is a moderator or an attestor, never both. Rewritten
+2026-11-08 to the appointment rule of section 16; until then an attestor
+was a pod whose `username` started with `attestor` and that a super seed
+had vouched for, with no table and no script.
 
 | Level | Meaning | Routes |
 | ----- | ------- | ------ |
-| attestor | session, and the caller is an attestor as above. `requireAttestor` runs `requireSession`, then the username prefix, then the super-seed query; failing them `403 not an attestor`. | the fourteen routes of 13.4.3 and 13.4.4, and the seven break-glass routes of 14.4.2 (2026-11-08) |
+| attestor | session, and the pod holds a live appointment for the role (`appointments`, section 16; the stake is the validators' and the keyholders' check). `requireAttestor` runs `requireSession`, then the query; failing them `403 not an attestor`. | the fourteen routes of 13.4.3 and 13.4.4, and the seven break-glass routes of 14.4.2 (2026-11-08) |
 
 The person's four routes (13.4.5) are level setup: the person needs their
 encryption key, their identity blob and their anos accounts.
@@ -2973,7 +3019,9 @@ profiles from `anopods.service.js` `profileWithSelfie`, the chat keys from
 
 ### 13.9 Deferred, by decision
 
-- Revoking an attestor; an attestor's history of cases.
+- Revoking an attestor (built 2026-11-08: `npm run revoke`, section 16; the
+  stake the pod holds at the validators comes back through the guardians'
+  payout); an attestor's history of cases.
 - A party deleting or replacing their own evidence; evidence other than
   the four content types or larger than `MAX_IMAGE_BYTES`.
 - A time limit on open cases; a case on a trade whose accounts the
@@ -4115,3 +4163,219 @@ decided:
   middlewares, `package.json`, the scripts; in the README the level table
   and the paragraph after the routes table (the plan names the routes
   list, the tables list, the folder list and the variables table).
+
+## 16. Appointments (2026-11-08)
+
+Design settled 2026-11-08 in a planning chat of one round (the plan is
+`~/Desktop/Z-TestNet/forclaude/appointments-plan-1.md`, FINAL). Why: until
+this section a moderator was a pod whose `username` started with
+`moderator` and that any super seed had vouched for, and an attestor the
+same with `attestor` (12.2 and 13.2 as they were). Nothing reserved the
+usernames, so the rule was really "any super seed vouched for you", and at
+the production launch about a thousand pods will be super seeds. The
+validators and the keyholders check only that the signing account holds
+the stake, and anyone with a spending account and the minimum may stake.
+Moderator and attestor are positions of trust, so one list decides: the
+`appointments` table on this server, written by the operator's scripts,
+read by the two gates and by the two answers that carry a pod's role.
+Three repos in order: this server (this section, step 1 of the plan: the
+table, the two scripts, the gates, the two answers), the validator
+(anossoftware spec section 24, step 2: the receiving validator asks
+`/get-anos-account` for the pod's role before it accepts a stake for
+moderator or attestor, the way it asks at create-account whether a vouched
+pod made the account) and the wallet (its section 11, step 3: the Stake
+for list offers moderator and attestor only to a pod appointed for it),
+then the two record folders. Nothing is reset: the table is new, and the
+Test Net 2 relaunch starts this server's database fresh anyway. The
+keyholders, the doorman and the signing server are not touched. Nothing
+above this section changes except the items in 16.5.
+
+### 16.1 The table
+
+```sql
+CREATE TABLE IF NOT EXISTS appointments (
+  anopod_id    BYTEA       NOT NULL CHECK (octet_length(anopod_id) = 32),
+  role         TEXT        NOT NULL CHECK (role IN ('moderator', 'attestor')),
+  appointed_by TEXT        NOT NULL CHECK (appointed_by = 'operator' OR appointed_by ~ '^[0-9a-f]{64}$'),
+  appointed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  revoked_at   TIMESTAMPTZ,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (anopod_id, appointed_at)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS appointments_one_live_per_pod
+  ON appointments (anopod_id) WHERE revoked_at IS NULL;
+```
+
+One row per appointment of a pod as a moderator or an attestor. A pod
+holds the role while its row has no `revoked_at`; the partial unique index
+`appointments_one_live_per_pod` keeps that to one row per pod, so a pod is
+a moderator or an attestor, never both: revoke, then appoint again for the
+other role. Revoking sets `revoked_at`; the row stays, so who held what
+when is on record, and appointing the pod again adds a row (the primary
+key is the pod and `appointed_at`). `appointed_by` is `operator` for the
+scripts; a pod's hex id is for a DAO proposal kind that appoints, later.
+The `set_updated_at` trigger and a `COMMENT ON` for the table and every
+column, as every other table has them; the block sits after the
+`super_seeds` block in `db/schema.sql`. No foreign keys, as everywhere.
+
+### 16.2 The rule
+
+A moderator is a pod with a live `appointments` row with `role =
+'moderator'`; an attestor, one with `role = 'attestor'`:
+
+```sql
+SELECT EXISTS (SELECT 1 FROM appointments
+               WHERE anopod_id = $1 AND role = $2 AND revoked_at IS NULL)
+```
+
+`src/appointments/appointments.queries.js` holds it (`isAppointed`), with
+`findLiveRole` (the pod's live role, `'moderator'`, `'attestor'` or
+`null`), `listAppointedPods` (the pods with a live row for a role whose
+setup is complete, username order, as `listAttestorPods` filtered before)
+and the two writes of the scripts, `insertAppointment` and
+`revokeAppointment`. The gates: `mustBeModerator`
+(`src/auth/require-moderator.js`) is `isAppointed(anopodId, 'moderator')`,
+else `403 not a moderator`; `mustBeAttestor`
+(`src/auth/require-attestor.js`) the same with `'attestor'`, else `403 not
+an attestor`. `isAttestorPod` and `listAttestorPods` in that file, which
+`attesting.service.js` uses for `/list-attestors` and for the pods a case
+key is wrapped to in `/open-dispute-case` and `/share-case-key`, are the
+two queries with `'attestor'`; their callers (`attesting.service.js`,
+`recovery.router.js`, `attesting.router.js`, `break-glass.router.js`) do
+not change, and the levels of 12.2 and 13.2 keep their routes. The
+username prefix rule is gone: `MODERATOR_PREFIX`, `ATTESTOR_PREFIX` and
+`vouchedBySuperSeed` are removed, usernames are free, and a super seed's
+vouch appoints nobody (the build notes of 12.10 and 13.10 describe the
+prefix rule as it was). The masterpod still does not check the stake: the
+keyholders do on every bucket key request, the validators on every
+attestor read and follow-up; and from step 2 the validators accept a
+moderator or attestor stake only from an account whose pod is appointed
+for it, so the stake checks there stand unchanged.
+
+### 16.3 The scripts
+
+No route writes the table. On a prod box, as the masterpod user in the
+checkout, after the pod is made at the wallet like any other:
+
+```bash
+npm run appoint -- <anopod id, 64 hex> <moderator|attestor>
+npm run revoke -- <anopod id, 64 hex>
+```
+
+`scripts/appoint.js`, the shape of `scripts/make-super-seed.js`: the id
+and the role parsed (exit 2 with the usage line on a malformed one); one
+transaction: the pod's row read by id (exit 1, `<id>: no anopod with this
+id`); a live row with the same role, `<username> (<id>): already appointed
+as attestor`, exit 0; a live row with the other role, `<username> (<id>):
+is a moderator; revoke first`, exit 1; otherwise the row inserted with
+`appointed_by 'operator'` and `<username> (<id>): appointed as attestor`.
+It requires the pod to exist and nothing else, not `vouched`, not setup:
+the operator appoints whom they choose, and the stake needs a vouched pod
+anyway. `scripts/revoke.js`: `<username> (<id>): revoked as attestor`, or
+`<username> (<id>): holds no appointment`, exit 0 both; exit 1 on an
+unknown id, 2 on a malformed one. Revoking takes effect here at once; the
+stake the pod holds at the validators comes back through the guardians'
+fund proposal payout with `stakeFor`, which already drops the role at the
+validators and the keyholders, and until that payout is written the stake
+still counts there (the plan's decision 6, accepted for the production
+launch and listed as a follow-up). `package.json`: `appoint` and `revoke`,
+each `node --env-file=.env scripts/<name>.js`.
+
+### 16.4 The two answers
+
+- `/get-anos-account` (none): `200 { accountId, anopodId, vouched, role }`,
+  `role` the pod's live role, `"moderator"`, `"attestor"` or `null`, read
+  by `findLiveRole`. For the validators' appointment check at stake time
+  (step 2), beside the binding check they already run at create-account.
+  Nothing new is given away: the chain already shows which accounts staked
+  for which purpose, and the route already maps any account to its pod.
+- `/check-anopod-status` (session): the answer gains `role` the same way,
+  after `isSuperSeed`. The wallet's Stake for list reads it (step 3). An
+  older wallet ignores the field.
+
+### 16.5 Files
+
+- `db/schema.sql`: the `appointments` block after the `super_seeds` block.
+- `src/appointments/appointments.queries.js`, new.
+- `src/auth/require-moderator.js`, `src/auth/require-attestor.js`: the
+  gates on the table; the prefixes, `vouchedBySuperSeed` and the import
+  between the two files gone.
+- `src/anos-accounts/anos-accounts.service.js` (`getAnosAccount`) and
+  `src/anopods/anopods.service.js` (`status`): `role`.
+- `scripts/appoint.js` and `scripts/revoke.js`, new; `package.json`, the
+  two script lines.
+- Here: section 2 (a dated pointer), section 4 (`### appointments`),
+  section 5 (the two answers), section 9 (the scripts), 12.2 and 13.2
+  (rewritten in place), 12.9 and 13.9 (the revoking items). `README.md`:
+  the scripts table, the levels table, the tables list, the two route
+  rows, and, on the user's word after the build, the paragraph after the
+  routes table, the Genesis section and the folder lists.
+
+Nothing else in existing code changes. No env variable, no npm package,
+no new route.
+
+### 16.6 Notes from the build
+
+#### Build 1, the masterpod (2026-11-08)
+
+Built from `~/Desktop/Z-TestNet/forclaude/appointments-plan-1.md` section
+1, on main at 68b8ba2 (DAO voting). No new npm package, no test script
+and no rig (none was asked for). The schema was not applied to any
+database for keeps: the user applies the whole file by psql as the
+superuser with `SET ROLE masterpodsoftware`, as 13.10 records, and
+locally with `npm run db:setup`. A masterpod that keeps its database
+needs `npm run appoint` for every moderator and attestor pod it already
+has, or the two editions refuse them (the plan's section 5). What the
+plan left open and how it was decided:
+
+- Section 2's level table has no `moderator` or `attestor` row (the two
+  levels have their tables in 12.2 and 13.2), so the plan's wording for
+  those rows went on the rows of 12.2 and 13.2, and section 2's closing
+  sentence gained the dated pointer to section 16.
+- The plan gave the comments of the table, `appointed_by` and
+  `revoked_at`; the other columns got one each in the file's words, the
+  `appointed_at` comment saying why it is in the primary key.
+- The scripts read the pod's row inline (`SELECT username ... WHERE
+  anopod_id = $1`), as `make-super-seed.js` runs its own `UPDATE`; the
+  exits that write nothing roll back. `appoint.js` parses the role
+  against the two words and spells the refusal "is a moderator" or "is an
+  attestor". `decodeId` takes base64 as well as hex, as everywhere.
+- `isAttestorPod(anopodId, db)` and `listAttestorPods(db)` pass `db`
+  through to the two queries; left out, it falls to the queries' pool
+  default, so the callers in `attesting.service.js` did not change.
+- `status` runs `findLiveRole` in the same `Promise.all` as its three
+  other reads; `getAnosAccount` runs it after the account is found.
+- Checks (1.7): `node --check` on the seven changed source files
+  (`appointments.queries.js`, the two gates, the two services, the two
+  scripts), clean; every name imported by them is exported where it is
+  imported from; `grep -rn "PREFIX\|startsWith" src` finds only the SPKI
+  key prefixes of `crypto/signatures.js`. The SQL by psql against the
+  local `masterpod` database as the superuser `codex` with `SET LOCAL ROLE
+  masterpodsoftware`, three transactions, each rolled back: the block
+  applied (owner `masterpodsoftware`, seven columns, the primary key and
+  the partial unique index, the trigger, a comment on the table and every
+  column) and gone after the rollback; the block applied twice (the
+  `IF NOT EXISTS` notices, the comments overwritten), a throwaway pod
+  appointed as attestor, the same pod inserted again with another
+  `appointed_at` (inside one transaction `now()` is one value, so a
+  second insert at the default would hit the primary key first) and
+  refused by `appointments_one_live_per_pod`, a role of `guardian` refused
+  by the role check, the three reads of 1.2 run by hand (`findLiveRole`
+  `attestor`, and no row for a pod without one; `isAppointed` true for
+  `attestor` and false for `moderator`; `listAppointedPods('attestor')`
+  empty while the throwaway pod has no `anopods` row, then two real local
+  pods appointed and the one with setup complete listed alone), the
+  revoke (`UPDATE 1`, `updated_at` moved to `now()` by the trigger,
+  `created_at` untouched, then no live role, a second revoke `UPDATE 0`),
+  the pod appointed again as moderator with the revoked row kept (two
+  rows, one live); and `appointed_by = 'genesis'` refused by its check
+  while a 64-hex `appointed_by` is accepted. After each rollback the table
+  was gone and the real pods untouched. No server was booted.
+- Not touched: `src/attesting/`, `src/recovery/`, `src/break-glass/`,
+  `src/vouching/`, `src/dao/`, `app.js`, `env.js`, `.example.env`, the
+  three shell scripts. Three README places the plan did not name still
+  described the username rule after the build (the paragraph after the
+  routes table, the Genesis section, the folder lists); the user asked
+  for them to be brought in line, and they were, before the commit.

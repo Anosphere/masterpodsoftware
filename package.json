@@ -10,7 +10,9 @@
     "dev": "node --watch --env-file=.env src/server.js",
     "db:setup": "sh scripts/setup-db.sh",
     "db:reset": "sh scripts/reset-db.sh",
-    "make-super-seed": "node --env-file=.env scripts/make-super-seed.js"
+    "make-super-seed": "node --env-file=.env scripts/make-super-seed.js",
+    "appoint": "node --env-file=.env scripts/appoint.js",
+    "revoke": "node --env-file=.env scripts/revoke.js"
   },
   "engines": {
     "node": ">=22"

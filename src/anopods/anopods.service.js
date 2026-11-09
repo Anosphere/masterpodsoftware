@@ -1,3 +1,4 @@
+import { findLiveRole } from '../appointments/appointments.queries.js';
 import { find as findChallenge, take as takeChallenge } from '../auth/challenges.queries.js';
 import { hasSignatureShape, verifySignatures } from '../auth/signed-request.js';
 import {
@@ -259,13 +260,16 @@ export async function checkUsername(body) {
 /**
  * POST /check-anopod-status. Read only; the caller is req.anopod. The three
  * counts (wallet spec 4.3) are the caller's rows in each bucket; the
- * wallet's next-step rule reads them.
+ * wallet's next-step rule reads them. role (spec section 16) is the pod's
+ * live appointment, "moderator", "attestor" or null; the wallet's Stake
+ * for list reads it.
  */
 export async function status(anopod) {
-  const [vouchCount, seeds, buckets] = await Promise.all([
+  const [vouchCount, seeds, buckets, role] = await Promise.all([
     countVouches(anopod.anopodId),
     seedStatus(anopod.anopodId),
     countBucketRows(anopod.anopodId),
+    findLiveRole(anopod.anopodId),
   ]);
   return ok(200, {
     anopodId: toHex(anopod.anopodId),
@@ -274,6 +278,7 @@ export async function status(anopod) {
     setupComplete: anopod.setupComplete,
     isSeed: seeds.isSeed,
     isSuperSeed: seeds.isSuperSeed,
+    role,
     bucketOneImages: buckets.bucketOneImages,
     bucketTwoImages: buckets.bucketTwoImages,
     bucketTwoInfos: buckets.bucketTwoInfos,
