@@ -1612,10 +1612,14 @@ draft's flows 4.6 and 4.7 are superseded by 12.4.5 and 12.4.7.
 1. A locked-out person opens the wallet on any device: Recover account,
    I'm locked out. They type the nine birth-record fields (the lookup id is
    recomputed on the device as `docs/public-ledger-id.md` says; the public
-   ledger id is dropped), their username and a contact email, and register
-   a passkey. The masterpod opens a recovery case and a recovery pod for it
-   (12.4.2). Of the birth record only the lookup id reaches the server; the
-   email is the one plaintext fact about the person the masterpod keeps.
+   ledger id is dropped). The wallet asks every keyholder who owns the
+   lookup id (keyholder spec section 15, `/get-owner`) and the masterpod
+   names the account (`/challenge` openCase, 12.4.2), so the person reads
+   the username of the pod found and types none (since 2026-11-08; before
+   that they typed it). Then a contact email, and they register a passkey.
+   The masterpod opens a recovery case and a recovery pod for it (12.4.2).
+   Of the birth record only the lookup id reaches the server; the email is
+   the one plaintext fact about the person the masterpod keeps.
 2. A moderator (12.2) sees the case, schedules a video call (the meeting
    link shows to the person in the app; the email is for the moderator to
    write by hand, nothing is sent), pulls the bucket one key from three
@@ -1740,7 +1744,8 @@ ALTER TABLE challenges ADD CONSTRAINT challenges_purpose_check
 
 `recovery_cases`: one row per case. `lookup_id` is what the person
 recomputed; the public ledger id is never stored. `anopod_id` is the pod the
-typed username named. `status` moves as 12.5 says; the partial unique index
+keyholders named for the lookup id (since 2026-11-08; before, the pod the
+typed username named). `status` moves as 12.5 says; the partial unique index
 is the one-open-case-per-lookup-id rule. Nothing else about a case is a
 column: everything that happens is a `recovery_events` row.
 
@@ -1796,10 +1801,14 @@ case, `req.body` is `payload.body`.
 #### 12.4.2 Level none
 
 **POST /challenge**, three more purposes. `openCase` takes `{ purpose,
-username }`: the username is lowercased and looked up (`404 unknown
-username`); the challenge row is bound to that pod's id and the answer is
-`200 { challenge, anopodId, expiresAt }`, the id being the user handle the
-phone registers the recovery passkey with. `unlockCase` and `recover` take
+anopodId }`, the anoPod id the keyholders named for the person's lookup id
+(keyholder spec section 15; until 2026-11-08 it took the username): a
+string, else `400 bad request shape`; 32 bytes, else `400 invalid
+anopodId`; a pod's id, else `404 unknown anopod`. The challenge row is
+bound to that pod and the answer is `200 { challenge, anopodId, username,
+expiresAt }`, the id being the user handle the phone registers the
+recovery passkey with and `username` the pod row's, so the wallet shows
+the account found before any case opens. `unlockCase` and `recover` take
 `{ purpose }` alone and answer without `anopodId`, like `unlock`. The two
 existing purposes are untouched.
 
@@ -1811,7 +1820,6 @@ existing purposes are untouched.
   "payload": {
     "anopodId":           "<hex, from /challenge openCase>",
     "challenge":          "<hex, from /challenge openCase>",
-    "username":           "alice",
     "lookupId":           "<hex 32>",
     "contactEmail":       "alice@example.com",
     "passkey":            { "...": "the registration PublicKeyCredential.toJSON(), prf.results removed" },
@@ -1827,9 +1835,10 @@ existing purposes are untouched.
 Checks:
 
 1. Shape; `400 bad request shape`.
-2. The challenge row exists with purpose `openCase`, unexpired, and its
-   `anopod_id` equals `payload.anopodId`, which is the pod `username` names;
-   else `401 unknown or expired challenge`.
+2. The challenge row exists with purpose `openCase`, unexpired, its
+   `anopod_id` equals `payload.anopodId`, and a pod with that id exists:
+   the pod the keyholders named for the lookup id; else `401 unknown or
+   expired challenge`.
 3. Both signatures verify against the payload's own ephemeral keys; `401
    bad signature`.
 4. `passkey.clientExtensionResults.prf.enabled` true and no `prf.results`;
@@ -2379,6 +2388,48 @@ variable. What this section left open and how it was decided:
 - The user's masterpod on 3100 runs under `npm run dev` (`--watch`) and
   restarted itself on the file changes, so it serves the five routes; no
   variable was added and no DDL was applied.
+
+#### The lookup through the keyholders (2026-11-08)
+
+Built 2026-11-08 from
+`~/Desktop/Z-TestNet/forclaude/recovery-lookup-plan-1.md` (FINAL,
+2026-11-08), step 3 of five; the keyholder's `docs/schemas.md` section 15
+is the route the wallet asks. The locked-out person no longer types a
+username: the wallet computes the lookup id, asks every keyholder
+`/get-owner` which pod deposited for it, and brings the anoPod id here.
+The masterpod is not in the lookup: it has no standing at the keyholders
+and stays unable to link a birth record to a pod, as designed. Where the
+plan was silent the simplest thing was chosen and is recorded here.
+
+- `/challenge openCase` takes `{ purpose, anopodId }` and answers the
+  pod's `username` beside `anopodId`. In `auth.handlers.js` `findById`
+  replaces `findByUsername`, `decodeId` comes from `util/ids.js`, and the
+  refusals are `400 bad request shape` (not a string), `400 invalid
+  anopodId` (not 32 bytes) and `404 unknown anopod`, the word
+  `require-session.js` uses. The pod row is kept in a variable beside the
+  id so the username is added to the body after `anopodId`; the body is
+  otherwise built as before, so a JSON reader sees `challenge`,
+  `expiresAt`, `anopodId`, `username`.
+- `/open-recovery-case` drops `username`: the field list of check 1 loses
+  it, and check 2 is the challenge row (purpose openCase, unexpired,
+  `anopod_id` equal to `payload.anopodId`) and then `findAnopod(anopodId)`
+  not null, both `401 unknown or expired challenge` as before.
+  `findByUsername` left the import; that check was its only use. The case
+  row's `anopod_id` is the challenge's pod, as before; nothing after check
+  2 used the pod row.
+- `db/schema.sql` changed in comments only: `challenges.anopod_id`, the
+  `recovery_cases` block comment, its `COMMENT ON TABLE` and the
+  `anopod_id` column, each rewritten within its line, so the file stays
+  1283 lines and only its hash changes (the Test Net 2 deploy list notes
+  both). `COMMENT ON` overwrites, so `npm run db:setup` applies them to a
+  live database.
+- 12.3's paragraph under the `recovery_cases` DDL said `anopod_id` "is
+  the pod the typed username named"; the plan named the schema comments
+  and not that paragraph, so it was fixed on the user's word, in the build
+  chat, before the step was committed. The build-1 notes above that
+  describe the username lookup stay as history, as the plan says.
+- `node --check` passed on the three JavaScript files. Nothing booted, no
+  database touched; the wallet's step 4 is the first caller.
 
 ## 13. Attestation: assisted trades and escrow disputes
 

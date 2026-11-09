@@ -106,7 +106,7 @@ are base64 / base64url as the browser produces them.
 
 | Route                           | Level   | Does                                                                                     |
 | ------------------------------- | ------- | ---------------------------------------------------------------------------------------- |
-| `/challenge`                    | none    | Issues a single-use WebAuthn challenge for `create` or `unlock`; `create` also mints the new pod's id |
+| `/challenge`                    | none    | Issues a single-use WebAuthn challenge for `create`, `unlock`, `openCase`, `unlockCase` or `recover`; `create` also mints the new pod's id; `openCase` takes the anoPod id the keyholders named for the lookup id and answers its username (2026-11-08) |
 | `/create-anopod`                | none    | Creates a pod: profile, selfie, passkey registration (PRF required), first session        |
 | `/unlock`                       | none    | Opens a session: passkey assertion, new ephemeral keys; answers the blobs to unwrap, `identityBlob` included |
 | `/check-username`               | none    | Lowercases the username, checks the rule, says whether it is free                        |
@@ -152,7 +152,7 @@ are base64 / base64url as the browser produces them.
 | `/set-wallet-settings`          | setup   | Stores the caller's wallet settings blob whole: one row per pod, replaced in place        |
 
 | `/get-anos-account`             | none    | For the validators' binding check and their appointment check: the pod that made an account, whether it is vouched, and its role (`moderator`, `attestor` or null) |
-| `/open-recovery-case`           | none    | A locked-out person's recovery case and its recovery pod: the lookup id, the username, a contact email, a new passkey (PRF required) registered under the pod's id, the hybrid key the bankers encrypt shares to; `409` while a case for the lookup id is open |
+| `/open-recovery-case`           | none    | A locked-out person's recovery case and its recovery pod: the lookup id, a contact email, a new passkey (PRF required) registered under the pod's id (the one the keyholders named, from `/challenge` openCase), the hybrid key the bankers encrypt shares to; `409` while a case for the lookup id is open |
 | `/unlock-recovery-pod`          | none    | Opens a recovery session on a return visit: the recovery passkey's assertion, new ephemeral keys; answers the hybrid key blob to open |
 | `/get-recovery-pod`             | recovery | The person's view of their case: status, the events they may see, the shares the keyholders posted, `blob2` once the case is approved |
 | `/list-recovery-cases`          | moderator | The cases by status (the four in-progress ones by default), newest first, each with the pod's names and the count of approving pods |

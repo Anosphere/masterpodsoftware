@@ -1,4 +1,4 @@
-import { adoptRecoveryPasskey, findById as findAnopod, findByUsername, replaceBackupCode } from '../anopods/anopods.queries.js';
+import { adoptRecoveryPasskey, findById as findAnopod, replaceBackupCode } from '../anopods/anopods.queries.js';
 import { profileWithSelfie } from '../anopods/anopods.service.js';
 import { findAccount, setBreakGlassBlob } from '../anos-accounts/anos-accounts.queries.js';
 
@@ -118,21 +118,20 @@ export async function openRecoveryCase(body) {
   // 1. Shape.
   if (!hasEnvelopeShape(body)) return refuse(400, BAD_SHAPE);
   const { payload, signatures } = body;
-  for (const field of ['anopodId', 'challenge', 'username', 'lookupId', 'contactEmail', 'hybridKeyBlob', 'ephemeralAuthKey', 'ephemeralAuthKeyPq']) {
+  for (const field of ['anopodId', 'challenge', 'lookupId', 'contactEmail', 'hybridKeyBlob', 'ephemeralAuthKey', 'ephemeralAuthKeyPq']) {
     if (typeof payload[field] !== 'string') return refuse(400, BAD_SHAPE);
   }
   if (!isObject(payload.passkey) || !isObject(payload.hybridKey)) return refuse(400, BAD_SHAPE);
   if (typeof payload.hybridKey.x25519 !== 'string' || typeof payload.hybridKey.mlkem !== 'string') return refuse(400, BAD_SHAPE);
 
-  // 2. The challenge: issued for openCase, unexpired, bound to this id, which is the pod the username names.
+  // 2. The challenge: issued for openCase, unexpired, bound to this id, the pod the keyholders named for the lookup id, which must exist.
   const anopodId = decodeId(payload.anopodId);
   const challenge = decodeId(payload.challenge);
   const issued = anopodId !== null && challenge !== null ? await findChallenge(challenge, 'openCase') : null;
   if (issued === null || issued.anopodId === null || !issued.anopodId.equals(anopodId)) {
     return refuse(401, 'unknown or expired challenge');
   }
-  const anopod = await findByUsername(payload.username.toLowerCase());
-  if (anopod === null || !anopod.anopodId.equals(anopodId)) return refuse(401, 'unknown or expired challenge');
+  if ((await findAnopod(anopodId)) === null) return refuse(401, 'unknown or expired challenge');
 
   // 3. Both signatures, by the ephemeral keys inside the payload.
   const keys = ephemeralKeysOf(payload);

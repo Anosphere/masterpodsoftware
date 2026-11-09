@@ -179,7 +179,7 @@ CREATE TABLE IF NOT EXISTS challenges (
 COMMENT ON TABLE  challenges            IS 'Single-use WebAuthn challenges from /challenge. Deleted inside the transaction that uses one; the expired ones are swept when a new one is issued.';
 COMMENT ON COLUMN challenges.challenge  IS 'Random, 32 raw bytes. The phone passes it to WebAuthn.';
 COMMENT ON COLUMN challenges.purpose    IS 'create for a sign-up, unlock for a session; openCase, unlockCase and recover for the recovery routes (spec 12.4.2).';
-COMMENT ON COLUMN challenges.anopod_id  IS 'For create, the id minted for this sign-up, which becomes the row''s id at the write; for openCase, the pod the username named. Null for unlock, unlockCase and recover.';
+COMMENT ON COLUMN challenges.anopod_id  IS 'For create, the id minted for this sign-up, which becomes the row''s id at the write; for openCase, the pod the phone named, found through the keyholders. Null for unlock, unlockCase and recover.';
 COMMENT ON COLUMN challenges.expires_at IS 'Issued + CHALLENGE_SECONDS.';
 COMMENT ON COLUMN challenges.created_at IS 'When the row was inserted. Set by default, never changed.';
 
@@ -659,7 +659,7 @@ COMMENT ON COLUMN anos_accounts.updated_at   IS 'When the row last changed. Main
 -- ---------------------------------------------------------------------------
 
 -- recovery_cases: one row per case. The lookup id the person recomputed,
--- the pod the typed username named, the contact email (the one plaintext
+-- the pod the keyholders named for it, the contact email (the one plaintext
 -- fact about the person this server keeps) and the status. Nothing else
 -- about a case is a column: everything that happens is a recovery_events
 -- row. The partial unique index is the one-open-case-per-lookup-id rule.
@@ -683,10 +683,10 @@ CREATE OR REPLACE TRIGGER recovery_cases_set_updated_at
   WHEN (OLD.* IS DISTINCT FROM NEW.*)
   EXECUTE FUNCTION set_updated_at();
 
-COMMENT ON TABLE  recovery_cases               IS 'One row per recovery case: the lookup id the person recomputed, the pod the typed username named, the contact email and the status. Everything that happens to a case is a recovery_events row. One open case per lookup id (the partial unique index).';
+COMMENT ON TABLE  recovery_cases               IS 'One row per recovery case: the lookup id the person recomputed, the pod the keyholders named for the lookup id, the contact email and the status. Everything that happens to a case is a recovery_events row. One open case per lookup id (the partial unique index).';
 COMMENT ON COLUMN recovery_cases.case_id       IS 'Random id, 32 raw bytes, minted by /open-recovery-case. The recovery pod, the shares and the events hang off it.';
 COMMENT ON COLUMN recovery_cases.lookup_id     IS 'The lookup id (wallet docs/public-ledger-id.md section 6) the person recomputed on their device, 32 raw bytes. The public ledger id is never stored.';
-COMMENT ON COLUMN recovery_cases.anopod_id     IS 'The pod the typed username named: the one being recovered.';
+COMMENT ON COLUMN recovery_cases.anopod_id     IS 'The pod the keyholders named for the lookup id: the one being recovered.';
 COMMENT ON COLUMN recovery_cases.contact_email IS 'Where a moderator can reach the person: 3 to 254 characters with an @ that is not first. The one plaintext fact about the person this server keeps. Nothing is sent; the moderator writes by hand.';
 COMMENT ON COLUMN recovery_cases.status        IS 'open, inReview, approved, delivering, completed or dismissed (spec 12.5). completed and dismissed are final.';
 COMMENT ON COLUMN recovery_cases.created_at    IS 'When the row was inserted. Set by default, never changed.';
