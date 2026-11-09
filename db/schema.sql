@@ -179,7 +179,7 @@ CREATE TABLE IF NOT EXISTS challenges (
 COMMENT ON TABLE  challenges            IS 'Single-use WebAuthn challenges from /challenge. Deleted inside the transaction that uses one; the expired ones are swept when a new one is issued.';
 COMMENT ON COLUMN challenges.challenge  IS 'Random, 32 raw bytes. The phone passes it to WebAuthn.';
 COMMENT ON COLUMN challenges.purpose    IS 'create for a sign-up, unlock for a session; openCase, unlockCase and recover for the recovery routes (spec 12.4.2).';
-COMMENT ON COLUMN challenges.anopod_id  IS 'For create, the id minted for this sign-up, which becomes the row''s id at the write; for openCase, the pod the username named. Null for unlock, unlockCase and recover.';
+COMMENT ON COLUMN challenges.anopod_id  IS 'For create, the id minted for this sign-up, which becomes the row''s id at the write; for openCase, the pod the phone named, found through the keyholders. Null for unlock, unlockCase and recover.';
 COMMENT ON COLUMN challenges.expires_at IS 'Issued + CHALLENGE_SECONDS.';
 COMMENT ON COLUMN challenges.created_at IS 'When the row was inserted. Set by default, never changed.';
 
@@ -305,6 +305,42 @@ COMMENT ON COLUMN super_seeds.trust_score            IS 'Starts at 0. Nothing re
 COMMENT ON COLUMN super_seeds.vouched_by             IS 'genesis for the first super seeds; otherwise the hex id of the pod that vouched.';
 COMMENT ON COLUMN super_seeds.created_at             IS 'When the row was inserted. Set by default, never changed.';
 COMMENT ON COLUMN super_seeds.updated_at             IS 'When the row last changed. Maintained by the super_seeds_set_updated_at trigger.';
+
+
+-- ---------------------------------------------------------------------------
+-- appointments: the pods that are moderators or attestors (docs/schemas.md
+-- section 16). Written by scripts/appoint.js and scripts/revoke.js; no
+-- route writes it.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS appointments (
+  anopod_id    BYTEA       NOT NULL CHECK (octet_length(anopod_id) = 32),
+  role         TEXT        NOT NULL CHECK (role IN ('moderator', 'attestor')),
+  appointed_by TEXT        NOT NULL CHECK (appointed_by = 'operator' OR appointed_by ~ '^[0-9a-f]{64}$'),
+  appointed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  revoked_at   TIMESTAMPTZ,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (anopod_id, appointed_at)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS appointments_one_live_per_pod
+  ON appointments (anopod_id) WHERE revoked_at IS NULL;
+
+CREATE OR REPLACE TRIGGER appointments_set_updated_at
+  BEFORE UPDATE ON appointments
+  FOR EACH ROW
+  WHEN (OLD.* IS DISTINCT FROM NEW.*)
+  EXECUTE FUNCTION set_updated_at();
+
+COMMENT ON TABLE  appointments              IS 'One row per appointment of a pod as a moderator or an attestor. A pod holds the role while its row has no revoked_at; at most one such row per pod.';
+COMMENT ON COLUMN appointments.anopod_id    IS 'The appointed pod.';
+COMMENT ON COLUMN appointments.role         IS 'moderator or attestor.';
+COMMENT ON COLUMN appointments.appointed_by IS 'operator for the scripts; otherwise the hex id of the pod that appointed.';
+COMMENT ON COLUMN appointments.appointed_at IS 'When the appointment was made. With anopod_id the primary key, so a pod appointed again after a revocation gets a new row.';
+COMMENT ON COLUMN appointments.revoked_at   IS 'When the appointment ended; null while it stands.';
+COMMENT ON COLUMN appointments.created_at   IS 'When the row was inserted. Set by default, never changed.';
+COMMENT ON COLUMN appointments.updated_at   IS 'When the row last changed. Maintained by the appointments_set_updated_at trigger.';
 
 
 -- ---------------------------------------------------------------------------
@@ -623,7 +659,7 @@ COMMENT ON COLUMN anos_accounts.updated_at   IS 'When the row last changed. Main
 -- ---------------------------------------------------------------------------
 
 -- recovery_cases: one row per case. The lookup id the person recomputed,
--- the pod the typed username named, the contact email (the one plaintext
+-- the pod the keyholders named for it, the contact email (the one plaintext
 -- fact about the person this server keeps) and the status. Nothing else
 -- about a case is a column: everything that happens is a recovery_events
 -- row. The partial unique index is the one-open-case-per-lookup-id rule.
@@ -647,10 +683,10 @@ CREATE OR REPLACE TRIGGER recovery_cases_set_updated_at
   WHEN (OLD.* IS DISTINCT FROM NEW.*)
   EXECUTE FUNCTION set_updated_at();
 
-COMMENT ON TABLE  recovery_cases               IS 'One row per recovery case: the lookup id the person recomputed, the pod the typed username named, the contact email and the status. Everything that happens to a case is a recovery_events row. One open case per lookup id (the partial unique index).';
+COMMENT ON TABLE  recovery_cases               IS 'One row per recovery case: the lookup id the person recomputed, the pod the keyholders named for the lookup id, the contact email and the status. Everything that happens to a case is a recovery_events row. One open case per lookup id (the partial unique index).';
 COMMENT ON COLUMN recovery_cases.case_id       IS 'Random id, 32 raw bytes, minted by /open-recovery-case. The recovery pod, the shares and the events hang off it.';
 COMMENT ON COLUMN recovery_cases.lookup_id     IS 'The lookup id (wallet docs/public-ledger-id.md section 6) the person recomputed on their device, 32 raw bytes. The public ledger id is never stored.';
-COMMENT ON COLUMN recovery_cases.anopod_id     IS 'The pod the typed username named: the one being recovered.';
+COMMENT ON COLUMN recovery_cases.anopod_id     IS 'The pod the keyholders named for the lookup id: the one being recovered.';
 COMMENT ON COLUMN recovery_cases.contact_email IS 'Where a moderator can reach the person: 3 to 254 characters with an @ that is not first. The one plaintext fact about the person this server keeps. Nothing is sent; the moderator writes by hand.';
 COMMENT ON COLUMN recovery_cases.status        IS 'open, inReview, approved, delivering, completed or dismissed (spec 12.5). completed and dismissed are final.';
 COMMENT ON COLUMN recovery_cases.created_at    IS 'When the row was inserted. Set by default, never changed.';
@@ -947,7 +983,8 @@ COMMENT ON COLUMN escrow_dispute_evidence.created_at   IS 'When the row was inse
 COMMENT ON COLUMN escrow_dispute_evidence.updated_at   IS 'When the row last changed (the case-key copy removed). Maintained by the escrow_dispute_evidence_set_updated_at trigger.';
 
 
--- attestor_events: the log of both kinds of case, append-only. One row per
+-- attestor_events: the log of both kinds of case, and since 2026-11-08 of
+-- the break-glass cases too (section 14), append-only. One row per
 -- thing that happened (spec 13.5); anopod_id is the acting pod, an attestor
 -- or a party, null for the server's own events (decided, lookupIdCleared,
 -- evidenceDeleted); details holds what the kind carries, the signed
@@ -971,12 +1008,12 @@ CREATE OR REPLACE TRIGGER attestor_events_append_only
   BEFORE UPDATE OR DELETE ON attestor_events
   FOR EACH ROW EXECUTE FUNCTION refuse_change();
 
-COMMENT ON TABLE  attestor_events            IS 'The log of both kinds of attestor case (assisted_trades and escrow_disputes), append-only: one row per thing that happened (spec 13.5). anopod_id is the acting pod, an attestor or a party; null for the server''s own events.';
+COMMENT ON TABLE  attestor_events            IS 'The log of the attestor cases (assisted_trades, escrow_disputes and, since 2026-11-08, break_glass_cases), append-only: one row per thing that happened (spec 13.5 and 14.5). anopod_id is the acting pod, an attestor or a party; null for the server''s own events.';
 COMMENT ON COLUMN attestor_events.event_id   IS 'Random id, 32 raw bytes.';
-COMMENT ON COLUMN attestor_events.case_id    IS 'The case the event belongs to: an assisted_trades or an escrow_disputes row (a case id names one row in one table).';
+COMMENT ON COLUMN attestor_events.case_id    IS 'The case the event belongs to: an assisted_trades, an escrow_disputes or a break_glass_cases row (a case id names one row in one table).';
 COMMENT ON COLUMN attestor_events.kind       IS 'opened, lookupIdShared, evidenceAdded, scheduled, bucketOneViewed, bucketTwoViewed, caseKeyShared, attestationSigned, verdictSigned, decided, lookupIdCleared, evidenceDeleted, sent or dismissed. A new duty later is a new kind, not a new column.';
 COMMENT ON COLUMN attestor_events.anopod_id  IS 'The acting pod: an attestor, or a party (lookupIdShared, evidenceAdded). Null for the server''s own events: decided, lookupIdCleared, evidenceDeleted.';
-COMMENT ON COLUMN attestor_events.details    IS 'What the kind carries (spec 13.5): { transactionId, accountId } or { transactionId, accountId, accountIdTo, disputedBy, keyHolders } for opened; {} for lookupIdShared and lookupIdCleared; { evidenceIds } for evidenceAdded; { at, meetLink } for scheduled; { keyIds } for the bucket views; { anopodId } for caseKeyShared; { attestorId, attestation } for attestationSigned and { arbitratorId, verdict, object } for verdictSigned, the whole signed follow-up object included; { attestorIds } or { verdict, arbitratorIds } for decided; { evidence, keys } (the counts) for evidenceDeleted; { validator, results } for sent; { reason, note } for dismissed.';
+COMMENT ON COLUMN attestor_events.details    IS 'What the kind carries (spec 13.5): { transactionId, accountId } or { transactionId, accountId, accountIdTo, disputedBy, keyHolders } for opened; {} for lookupIdShared and lookupIdCleared; { evidenceIds } for evidenceAdded; { at, meetLink } for scheduled; { keyIds } for the bucket views; { anopodId } for caseKeyShared; { attestorId, attestation } for attestationSigned and { arbitratorId, verdict, object } for verdictSigned, the whole signed follow-up object included; { attestorIds } or { verdict, arbitratorIds } for decided; on a break-glass case (spec 14.5) { moves } for opened and { attestorId, attestations } for attestationSigned, the whole objects in move order; { evidence, keys } (the counts) for evidenceDeleted; { validator, results } for sent; { reason, note } for dismissed.';
 COMMENT ON COLUMN attestor_events.created_at IS 'When the row was inserted: the statement''s clock (clock_timestamp()), so events one transaction writes keep their order.';
 
 
@@ -1079,3 +1116,168 @@ COMMENT ON COLUMN wallet_settings.anopod_id     IS 'The pod.';
 COMMENT ON COLUMN wallet_settings.settings_blob IS 'Ciphertext of the settings object (iv || ciphertext || tag), at most 16384 bytes, under the pod''s encryption key.';
 COMMENT ON COLUMN wallet_settings.created_at    IS 'When the row was inserted. Set by default, never changed.';
 COMMENT ON COLUMN wallet_settings.updated_at    IS 'When the row last changed. Maintained by the wallet_settings_set_updated_at trigger.';
+
+
+-- ---------------------------------------------------------------------------
+-- The break-glass block (added 2026-11-08, spec section 14): the recovery
+-- case as the attestors see it. The key blobs of a pod's anos accounts open
+-- under a key from the passkey's PRF output alone (wallet spec 7, 2026-11-08),
+-- so a lost passkey kills the old accounts' keys for good. At the finish of
+-- the recovery the wallet makes a new account of the same type for each old
+-- account that holds anos, posts a breakGlassTransfer for each to a
+-- validator, signed by the account's break-glass pair (anossoftware spec 22),
+-- and files the moves here (/file-break-glass-moves). Two attestors list the
+-- case beside the trades, check the person once more against the recovery
+-- case's two moderator approvals and sign one attestation per move; the
+-- deciding attestor's app posts them to a validator. break_glass_cases: one
+-- row per recovery case the finish filed moves for, keyed by the recovery
+-- case's own id. break_glass_moves: one row per move, append-only. The
+-- attestors' actions are attestor_events rows with the case id (the kinds
+-- scheduled, bucketOneViewed, bucketTwoViewed, attestationSigned, decided,
+-- sent and dismissed; opened records the filing), as trades and disputes
+-- already share that log. No foreign keys; the services keep the references
+-- straight.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS break_glass_cases (
+  case_id    BYTEA       PRIMARY KEY CHECK (octet_length(case_id) = 32),
+  anopod_id  BYTEA       NOT NULL CHECK (octet_length(anopod_id) = 32),
+  status     TEXT        NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'inReview', 'decided', 'dismissed')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS break_glass_cases_status_created_at_idx ON break_glass_cases (status, created_at DESC);
+
+CREATE OR REPLACE TRIGGER break_glass_cases_set_updated_at
+  BEFORE UPDATE ON break_glass_cases
+  FOR EACH ROW
+  WHEN (OLD.* IS DISTINCT FROM NEW.*)
+  EXECUTE FUNCTION set_updated_at();
+
+COMMENT ON TABLE  break_glass_cases            IS 'One row per recovery case whose finish filed break-glass moves: the recovery case seen by the attestors. The recovered pod and the status; the moves are break_glass_moves rows, everything that happens is an attestor_events row with this case id. Stand-alone; no foreign keys.';
+COMMENT ON COLUMN break_glass_cases.case_id    IS 'The recovery case''s id (recovery_cases.case_id), 32 raw bytes: a break-glass case is the recovery case seen by the attestors. Written by /file-break-glass-moves at the finish; the moves and the attestor_events of the case name it.';
+COMMENT ON COLUMN break_glass_cases.anopod_id  IS 'The recovered pod: the person whose old accounts the moves empty, the caller of /file-break-glass-moves (recovery_cases.anopod_id).';
+COMMENT ON COLUMN break_glass_cases.status     IS 'open, inReview, decided or dismissed (spec 14.5), the statuses of a trade case. decided and dismissed are final.';
+COMMENT ON COLUMN break_glass_cases.created_at IS 'When the row was inserted (the first filing). Set by default, never changed.';
+COMMENT ON COLUMN break_glass_cases.updated_at IS 'When the row last changed. Maintained by the break_glass_cases_set_updated_at trigger.';
+
+CREATE TABLE IF NOT EXISTS break_glass_moves (
+  transaction_id BYTEA       PRIMARY KEY CHECK (octet_length(transaction_id) = 32),
+  case_id        BYTEA       NOT NULL CHECK (octet_length(case_id) = 32),
+  account_id     BYTEA       NOT NULL CHECK (octet_length(account_id) = 32),
+  account_id_to  BYTEA       NOT NULL CHECK (octet_length(account_id_to) = 32),
+  account_type   TEXT        NOT NULL CHECK (account_type IN ('spending', 'guarded', 'vault', 'assisted')),
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS break_glass_moves_case_id_idx ON break_glass_moves (case_id);
+CREATE OR REPLACE TRIGGER break_glass_moves_append_only
+  BEFORE UPDATE OR DELETE ON break_glass_moves
+  FOR EACH ROW EXECUTE FUNCTION refuse_change();
+
+COMMENT ON TABLE  break_glass_moves                IS 'One row per break-glass move a recovery''s finish filed: the breakGlassTransfer on the validators, the old account it empties, the new account of the same type it fills, the type. One move per transaction (the primary key). Append-only; the attestors sign one attestation per row.';
+COMMENT ON COLUMN break_glass_moves.transaction_id IS 'The breakGlassTransfer''s transaction id on the validators, 32 raw bytes. The attestations the attestors sign name it.';
+COMMENT ON COLUMN break_glass_moves.case_id        IS 'The break-glass case the move belongs to: a break_glass_cases row, and so a recovery_cases row.';
+COMMENT ON COLUMN break_glass_moves.account_id     IS 'The old account, whose keys died with the passkey: the move''s sender (an anos_accounts row of the recovered pod''s).';
+COMMENT ON COLUMN break_glass_moves.account_id_to  IS 'The new account the finish made: the move''s receiver (an anos_accounts row of the same pod''s, of the same type).';
+COMMENT ON COLUMN break_glass_moves.account_type   IS 'spending, guarded, vault or assisted: the type both accounts have, checked at filing (the validators check it again).';
+COMMENT ON COLUMN break_glass_moves.created_at     IS 'When the row was inserted (the filing). Set by default, never changed.';
+
+
+-- ---------------------------------------------------------------------------
+-- The DAO voting block (added 2026-11-08, spec section 15): plain-text
+-- proposals and stake-weighted votes, the ledger of the DAO. One staked anos
+-- of the daoVote purpose is one vote (anossoftware spec 2): a pod's weight is
+-- the whole anos of dao_vote_stake summed over its anos accounts, read from a
+-- validator (/list-dao-stakes) and boiled down to one weight per pod when a
+-- proposal is posted and again when it goes to a vote. dao_proposals: one row
+-- per proposal, pending while it collects support like a petition, open while
+-- it takes votes, then accepted, rejected or expired. dao_votes: one row per
+-- pod per stage, a support in the pending stage or a vote for or against in
+-- the official stage, append-only; the row keeps the voter's weight, so the
+-- archive stands on its own. dao_snapshot_weights: the weights of the
+-- proposal's current snapshot, replaced when the proposal goes open and
+-- deleted when it finishes, so no trigger on it. A clock in the masterpod
+-- (src/dao/dao-clock.js) runs the expiry, the flip to open and the close
+-- every minute. No foreign keys; the service keeps the references straight.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS dao_proposals (
+  proposal_id    BYTEA       PRIMARY KEY CHECK (octet_length(proposal_id) = 32),
+  anopod_id      BYTEA       NOT NULL CHECK (octet_length(anopod_id) = 32),
+  title          TEXT        NOT NULL CHECK (char_length(title) BETWEEN 1 AND 100),
+  body           TEXT        NOT NULL CHECK (char_length(body) BETWEEN 1 AND 5000),
+  status         TEXT        NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'open', 'accepted', 'rejected', 'expired')),
+  snapshot_total BIGINT      NOT NULL CHECK (snapshot_total >= 0),
+  snapshot_at    TIMESTAMPTZ NOT NULL,
+  needed         BIGINT      NOT NULL CHECK (needed >= 1),
+  pending_until  TIMESTAMPTZ NOT NULL,
+  opened_at      TIMESTAMPTZ,
+  vote_closes_at TIMESTAMPTZ,
+  decided_at     TIMESTAMPTZ,
+  result_for     BIGINT,
+  result_against BIGINT,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS dao_proposals_status_created_at_idx ON dao_proposals (status, created_at DESC);
+CREATE INDEX IF NOT EXISTS dao_proposals_status_decided_at_idx ON dao_proposals (status, decided_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS dao_proposals_one_pending_per_pod_idx ON dao_proposals (anopod_id) WHERE status = 'pending';
+
+CREATE OR REPLACE TRIGGER dao_proposals_set_updated_at
+  BEFORE UPDATE ON dao_proposals
+  FOR EACH ROW
+  WHEN (OLD.* IS DISTINCT FROM NEW.*)
+  EXECUTE FUNCTION set_updated_at();
+
+COMMENT ON TABLE  dao_proposals                IS 'One row per DAO proposal (spec 15.3): plain text, the proposer''s pod, the status, the current snapshot''s total, the support needed, the stage times and the result. Pending while it collects support, open while it takes votes, then accepted, rejected or expired; never deleted. Stand-alone; no foreign keys.';
+COMMENT ON COLUMN dao_proposals.proposal_id    IS 'Random id, 32 raw bytes, minted by /create-dao-proposal.';
+COMMENT ON COLUMN dao_proposals.anopod_id      IS 'The proposer''s pod. One pending proposal per pod at a time: the partial unique index dao_proposals_one_pending_per_pod_idx.';
+COMMENT ON COLUMN dao_proposals.title          IS 'Plain text, 1 to 100 characters, trimmed, shown as typed.';
+COMMENT ON COLUMN dao_proposals.body           IS 'Plain text, 1 to 5000 characters, trimmed, shown as typed; no links, no formatting.';
+COMMENT ON COLUMN dao_proposals.status         IS 'pending (collecting support), open (taking votes), accepted, rejected or expired (spec 15.5). The flip and the clock move it; the last three are final. Expired proposals leave the lists but stay here.';
+COMMENT ON COLUMN dao_proposals.snapshot_total IS 'All DAO votes (whole anos, never millionths) in the current snapshot: the posting snapshot''s total while pending, replaced by the fresh snapshot''s when the proposal goes open.';
+COMMENT ON COLUMN dao_proposals.snapshot_at    IS 'The validator''s asOf of the current snapshot; replaced together with snapshot_total.';
+COMMENT ON COLUMN dao_proposals.needed         IS 'The support (whole anos) that takes the proposal to a vote: max(1, ceil(the posting snapshot''s total * DAO_PROPOSAL_PERCENT / 100)). Never changes.';
+COMMENT ON COLUMN dao_proposals.pending_until  IS 'When the pending stage ends: the posting + DAO_PENDING_MINUTES. A proposal still pending then expires.';
+COMMENT ON COLUMN dao_proposals.opened_at      IS 'When the proposal went open (the flip). Null before.';
+COMMENT ON COLUMN dao_proposals.vote_closes_at IS 'When the vote ends: opened_at + DAO_VOTE_MINUTES. Null before the flip.';
+COMMENT ON COLUMN dao_proposals.decided_at     IS 'When the proposal finished: the close (accepted or rejected) or the expiry. Null before.';
+COMMENT ON COLUMN dao_proposals.result_for     IS 'The votes for (whole anos) at the close. Null before it, and on an expired proposal.';
+COMMENT ON COLUMN dao_proposals.result_against IS 'The votes against (whole anos) at the close. Null before it, and on an expired proposal.';
+COMMENT ON COLUMN dao_proposals.created_at     IS 'When the row was inserted (the posting). Set by default, never changed.';
+COMMENT ON COLUMN dao_proposals.updated_at     IS 'When the row last changed. Maintained by the dao_proposals_set_updated_at trigger.';
+
+CREATE TABLE IF NOT EXISTS dao_votes (
+  proposal_id BYTEA       NOT NULL CHECK (octet_length(proposal_id) = 32),
+  anopod_id   BYTEA       NOT NULL CHECK (octet_length(anopod_id) = 32),
+  stage       TEXT        NOT NULL CHECK (stage IN ('pending', 'official')),
+  vote        TEXT        NOT NULL CHECK (vote IN ('for', 'against')),
+  weight      BIGINT      NOT NULL CHECK (weight >= 1),
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (proposal_id, anopod_id, stage),
+  CHECK (stage = 'official' OR vote = 'for')
+);
+CREATE INDEX IF NOT EXISTS dao_votes_anopod_id_created_at_idx ON dao_votes (anopod_id, created_at DESC);
+CREATE OR REPLACE TRIGGER dao_votes_append_only
+  BEFORE UPDATE OR DELETE ON dao_votes
+  FOR EACH ROW EXECUTE FUNCTION refuse_change();
+
+COMMENT ON TABLE  dao_votes             IS 'One row per pod per stage of a DAO proposal (spec 15.3): a support while the proposal was pending, a vote for or against while it was open, each with the pod''s weight at the time. Append-only: one action per pod per stage, no undo. Every row is public.';
+COMMENT ON COLUMN dao_votes.proposal_id IS 'The proposal (a dao_proposals row).';
+COMMENT ON COLUMN dao_votes.anopod_id   IS 'The pod that supported or voted. One row per pod per stage: the primary key.';
+COMMENT ON COLUMN dao_votes.stage       IS 'pending: a support, given while the proposal collected support. official: a vote, given while it was open. A support is not a vote; everyone votes fresh.';
+COMMENT ON COLUMN dao_votes.vote        IS 'for or against. In the pending stage always for (the check): a support.';
+COMMENT ON COLUMN dao_votes.weight      IS 'The pod''s DAO votes (whole anos) in the proposal''s snapshot at the time: the posting snapshot in the pending stage, the fresh one in the official stage. Kept here, so the archive stands once the snapshot rows are gone.';
+COMMENT ON COLUMN dao_votes.created_at  IS 'When the row was inserted. Set by default, never changed.';
+
+CREATE TABLE IF NOT EXISTS dao_snapshot_weights (
+  proposal_id BYTEA  NOT NULL CHECK (octet_length(proposal_id) = 32),
+  anopod_id   BYTEA  NOT NULL CHECK (octet_length(anopod_id) = 32),
+  weight      BIGINT NOT NULL CHECK (weight >= 1),
+  PRIMARY KEY (proposal_id, anopod_id)
+);
+
+COMMENT ON TABLE  dao_snapshot_weights             IS 'The current snapshot of a DAO proposal (spec 15.6): one row per pod with DAO votes, as a validator answered them when the proposal was posted, replaced by a fresh read when it goes open, deleted when it finishes. The weight a support or a vote is recorded with. No trigger: the service replaces and deletes these rows.';
+COMMENT ON COLUMN dao_snapshot_weights.proposal_id IS 'The proposal (a dao_proposals row).';
+COMMENT ON COLUMN dao_snapshot_weights.anopod_id   IS 'A pod with DAO votes in the snapshot. Pods at 0 have no row.';
+COMMENT ON COLUMN dao_snapshot_weights.weight      IS 'The pod''s DAO votes (whole anos): the millionths of dao_vote_stake summed over the pod''s anos accounts, floored.';

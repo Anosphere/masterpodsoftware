@@ -63,13 +63,16 @@ Four levels. A route's level is given with the route in section 5.
 | none | Plain JSON body, no signature. | `/challenge`, `/check-username`, `/get-anopod-session-keys`, `/get-anos-account`, and `/create-anopod`, `/unlock`, which are signed by the ephemeral keys inside them |
 | session | Signed by the pod's current ephemeral keys (section 3). Vouched or not. | `/search-usernames`, `/send-vouch-request`, `/check-anopod-status`, `/list-notifications`, `/mark-notifications-read`, `/get-anopod-profile` |
 | vouched | session, and `anopods.vouched` is true. | `/list-vouch-requests`, `/approve-vouch-request`, `/decline-vouch-request`, `/complete-setup`, `/add-to-security-bucket-one`, `/add-to-security-bucket-two`, `/list-security-records` |
-| setup | vouched, and setup is complete (`anopod_encryption_key_blob_2` is set, so the pod has chat keys). | every chat and marketplace route; `/create-anos-account`, `/mark-anos-account-submitted`, `/list-anos-accounts`; the six wallet memory routes, `/add-noted-transaction` to `/set-wallet-settings` (2026-11-07) |
+| setup | vouched, and setup is complete (`anopod_encryption_key_blob_2` is set, so the pod has chat keys). | every chat and marketplace route; `/create-anos-account`, `/mark-anos-account-submitted`, `/list-anos-accounts`; the six wallet memory routes, `/add-noted-transaction` to `/set-wallet-settings` (2026-11-07); the person's two break-glass routes, `/file-break-glass-moves` and `/list-my-break-glass-moves` (2026-11-08, section 14); the six DAO routes, `/create-dao-proposal` to `/list-dao-votes` (2026-11-08, section 15) |
 
 Three middlewares: `requireSession`, `requireVouched`, `requireSetup`.
 Failing them: `401` (session), `403 anopod not vouched`, `403 setup not
 complete`.
 
-Two more levels, `moderator` and `recovery`, are in section 12.2 (2026-10-26).
+Two more levels, `moderator` and `recovery`, are in section 12.2 (2026-10-26),
+and `attestor` in 13.2. Since 2026-11-08 the `moderator` and `attestor`
+levels read the `appointments` table (section 16) in place of the username
+prefix and the super seed's vouch.
 
 ## 3. Request signing and the session
 
@@ -296,6 +299,32 @@ CREATE TABLE IF NOT EXISTS super_seeds (
 A pod vouched by a super seed joins `seeds` with `vouched_by` = that super
 seed's hex id. Super seeds are made only by the genesis script (section 9),
 `vouched_by = 'genesis'`. `trust_score` starts at 0 and nothing reads it yet.
+
+### appointments
+
+```sql
+CREATE TABLE IF NOT EXISTS appointments (
+  anopod_id    BYTEA       NOT NULL CHECK (octet_length(anopod_id) = 32),
+  role         TEXT        NOT NULL CHECK (role IN ('moderator', 'attestor')),
+  appointed_by TEXT        NOT NULL CHECK (appointed_by = 'operator' OR appointed_by ~ '^[0-9a-f]{64}$'),
+  appointed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  revoked_at   TIMESTAMPTZ,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (anopod_id, appointed_at)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS appointments_one_live_per_pod
+  ON appointments (anopod_id) WHERE revoked_at IS NULL;
+```
+
+The pods that are moderators or attestors (section 16, 2026-11-08). A pod
+holds the role while its row has no `revoked_at`, at most one such row per
+pod (the partial unique index); appointing a pod again after a revocation
+adds a row, and the old one stays. `appointed_by` is `operator` for the
+scripts, otherwise the hex id of the pod that appointed. Written only by
+`scripts/appoint.js` and `scripts/revoke.js` (section 9); no route writes
+it.
 
 ### notifications
 
@@ -575,8 +604,7 @@ transaction.
 
 A "profile" in an answer is
 `{ anopodId, username, firstName, lastName, vouched, isSeed, isSuperSeed }`;
-only `/get-anopod-profile`, `/search-usernames` and `/list-vouch-requests`
-add the selfie.
+only `/get-anopod-profile` and `/search-usernames` add the selfie.
 
 ### POST /challenge (none)
 
@@ -725,11 +753,13 @@ Answer: `201 { vouchIdNumber }`.
 Body: `{}`. Read only.
 
 Answer: `200 { anopodId, vouched, vouchCount, setupComplete, isSeed,
-isSuperSeed, bucketOneImages, bucketTwoImages, bucketTwoInfos }`.
+isSuperSeed, role, bucketOneImages, bucketTwoImages, bucketTwoInfos }`.
 `vouchCount` is the number of `vouches` rows for the caller; the three
 counts (added 2026-10-25) are the caller's rows in `security_images` with
 `type = 1`, in `security_images` with `type = 2` and in `security_info`
-with `type = 2`. The wallet's next-step rule reads them.
+with `type = 2`. The wallet's next-step rule reads them. `role` (added
+2026-11-08, section 16) is the caller's live appointment, `"moderator"`,
+`"attestor"` or `null`; the wallet's Stake for list reads it.
 
 ### POST /list-notifications (session)
 
@@ -758,9 +788,10 @@ Answer: `200 { profile..., selfie }` or `404 anopod not found`.
 
 Body: `{}`. The open requests addressed to the caller, oldest first.
 
-Answer: `200 { requests: [ { vouchIdNumber, from: { profile..., selfie },
-createdAt } ] }`; the selfie is the requester's public selfie, so the seed
-sees who is asking. A caller who is not a seed gets an empty list.
+Answer: `200 { requests: [ { vouchIdNumber, from: profile, createdAt } ] }`.
+A caller who is not a seed gets an empty list. (2026-11-08) The selfie left
+this list: the wallet reads each requester's picture through
+`/get-anopod-profile`, so a seed with many requests sees the list at once.
 
 ### POST /approve-vouch-request (vouched)
 
@@ -1145,13 +1176,15 @@ hex, `submittedAt` ISO 8601 or null.
 ### POST /get-anos-account (none)
 
 Body: `{ accountId }`. Unsigned, like `/get-anopod-session-keys`: for the
-validators, which ask before accepting an account's creation.
+validators, which ask before accepting an account's creation and (since
+2026-11-08) before accepting a stake for moderator or attestor.
 
 Checks: the shape and the id (`400 bad request shape`); the row (`404
 unknown account`).
 
-Answer: `200 { accountId, anopodId, vouched }`, `vouched` read from the
-pod's row.
+Answer: `200 { accountId, anopodId, vouched, role }`, `vouched` read from
+the pod's row; `role` (added 2026-11-08, section 16) the pod's live
+appointment, `"moderator"`, `"attestor"` or `null`.
 
 ### POST /add-noted-transaction (setup)
 
@@ -1310,6 +1343,12 @@ Keys live in RAM and die with the tab. Nothing secret is stored on the phone.
 | `TIMESTAMP_WINDOW_SECONDS` | `120` | Allowed clock difference on a signed request, each way |
 | `MAX_IMAGE_BYTES` | `10485760` | Largest image, decoded |
 | `MAX_IMAGES_PER_REQUEST` | `5` | Images per bucket request |
+| `VALIDATOR_URLS` | `http://localhost:3001` to `3005` | The validators asked for the DAO stake list, comma-separated, tried in order; on the servers the doormen's URLs (section 15.7) |
+| `DAO_PROPOSE_MIN_VOTES` | `1` | The least DAO votes (whole staked anos) a pod needs in the snapshot to post a proposal |
+| `DAO_PROPOSAL_PERCENT` | `15` | The percent of all DAO votes a pending proposal needs in support to go to a vote; at most 100 |
+| `DAO_PASS_PERCENT` | `50` | For must be more than this percent of the votes cast; at most 99, so a tie fails |
+| `DAO_PENDING_MINUTES` | `10080` | How long a proposal may collect support (a week) |
+| `DAO_VOTE_MINUTES` | `20160` | How long an open proposal takes votes (two weeks) |
 
 All have defaults, so the existing `.env` keeps working. The JSON body
 limit is computed from the last two: `MAX_IMAGES_PER_REQUEST *
@@ -1330,6 +1369,18 @@ npm run make-super-seed -- <anopod id, hex>
 
 sets `vouched = true` and inserts the `super_seeds` row with `vouched_by =
 'genesis'`. Idempotent. There is no route for it.
+
+Moderators and attestors are appointed the same way (section 16,
+2026-11-08): the pod is created through the web app, then
+
+```bash
+npm run appoint -- <anopod id, hex> <moderator|attestor>
+npm run revoke -- <anopod id, hex>
+```
+
+inserts the `appointments` row with `appointed_by = 'operator'`, or ends
+the pod's live appointment. Running `appoint` again for the same role
+changes nothing and says so. There is no route for either.
 
 ## 10. Deferred, by decision
 
@@ -1406,6 +1457,14 @@ thing was chosen and is recorded here; nothing above was changed.
   A keyholder fetches a pod's current session public keys with it, on every
   `/receive-share`, to verify the pod's signature (keyholdersoftware spec 3.1
   and 5.10). Public keys are public, so the route is unsigned.
+- `/list-vouch-requests` answers each requester's profile without the selfie
+  since 2026-11-08 (step 1 of
+  `~/Desktop/Z-TestNet/forclaude/wallet-vouch-requests-plan-1.md`): the
+  wallet reads each requester's picture through `/get-anopod-profile`, so a
+  seed with many requests sees the list at once instead of waiting for every
+  picture. `listOpenFor` lost its join on `public_selfies`; the order, the
+  body and the other two selfie routes are unchanged, and no schema or
+  environment change came with it.
 
 ### The wallet build (2026-10-25)
 
@@ -1553,10 +1612,14 @@ draft's flows 4.6 and 4.7 are superseded by 12.4.5 and 12.4.7.
 1. A locked-out person opens the wallet on any device: Recover account,
    I'm locked out. They type the nine birth-record fields (the lookup id is
    recomputed on the device as `docs/public-ledger-id.md` says; the public
-   ledger id is dropped), their username and a contact email, and register
-   a passkey. The masterpod opens a recovery case and a recovery pod for it
-   (12.4.2). Of the birth record only the lookup id reaches the server; the
-   email is the one plaintext fact about the person the masterpod keeps.
+   ledger id is dropped). The wallet asks every keyholder who owns the
+   lookup id (keyholder spec section 15, `/get-owner`) and the masterpod
+   names the account (`/challenge` openCase, 12.4.2), so the person reads
+   the username of the pod found and types none (since 2026-11-08; before
+   that they typed it). Then a contact email, and they register a passkey.
+   The masterpod opens a recovery case and a recovery pod for it (12.4.2).
+   Of the birth record only the lookup id reaches the server; the email is
+   the one plaintext fact about the person the masterpod keeps.
 2. A moderator (12.2) sees the case, schedules a video call (the meeting
    link shows to the person in the app; the email is for the moderator to
    write by hand, nothing is sent), pulls the bucket one key from three
@@ -1582,23 +1645,18 @@ draft's flows 4.6 and 4.7 are superseded by 12.4.5 and 12.4.7.
 
 ### 12.2 Who is a moderator, and two new levels
 
-A moderator is a pod whose `username` starts with `moderator` and that a
-super seed has vouched for:
-
-```sql
-SELECT EXISTS (SELECT 1 FROM vouches v
-               JOIN super_seeds s ON s.anopod_id = v.anopod_id_vouched_by
-               WHERE v.anopod_id_vouched_for = $1)
-```
-
-No table and no script: the operator's vouch is the appointment (it also
-makes the pod a seed, as every super-seed vouch does). The masterpod does
-not check the stake; the keyholders do, where the secrets are, on every
-bucket key request. Revoking a moderator is not built (12.9).
+A moderator is a pod that holds a live appointment as one: an
+`appointments` row with `role = 'moderator'` and no `revoked_at` (section
+16). The operator appoints by `npm run appoint` and revokes by `npm run
+revoke` (16.3); no route writes the table. The masterpod does not check
+the stake; the keyholders do, where the secrets are, on every bucket key
+request. Rewritten 2026-11-08 to the appointment rule of section 16; until
+then a moderator was a pod whose `username` started with `moderator` and
+that a super seed had vouched for, with no table and no script.
 
 | Level | Meaning | Routes |
 | ----- | ------- | ------ |
-| moderator | session, and the caller is a moderator as above. `requireModerator` runs `requireSession`, then the username prefix, then the query; failing them `403 not a moderator`. | `/list-recovery-cases`, `/get-recovery-case`, `/list-case-security-records`, `/schedule-recovery-case`, `/sign-off-recovery-case`, `/dismiss-recovery-case` |
+| moderator | session, and the pod holds a live appointment for the role (`appointments`, section 16; the stake is the keyholders' check). `requireModerator` runs `requireSession`, then the query; failing them `403 not a moderator`. | `/list-recovery-cases`, `/get-recovery-case`, `/list-case-security-records`, `/schedule-recovery-case`, `/sign-off-recovery-case`, `/dismiss-recovery-case` |
 | recovery | signed by a recovery pod's ephemeral keys (12.4.1). `requireRecoverySession`. | `/get-recovery-pod`, `/complete-recovery-case` |
 
 The other new routes are level none (`/open-recovery-case`,
@@ -1686,7 +1744,8 @@ ALTER TABLE challenges ADD CONSTRAINT challenges_purpose_check
 
 `recovery_cases`: one row per case. `lookup_id` is what the person
 recomputed; the public ledger id is never stored. `anopod_id` is the pod the
-typed username named. `status` moves as 12.5 says; the partial unique index
+keyholders named for the lookup id (since 2026-11-08; before, the pod the
+typed username named). `status` moves as 12.5 says; the partial unique index
 is the one-open-case-per-lookup-id rule. Nothing else about a case is a
 column: everything that happens is a `recovery_events` row.
 
@@ -1742,10 +1801,14 @@ case, `req.body` is `payload.body`.
 #### 12.4.2 Level none
 
 **POST /challenge**, three more purposes. `openCase` takes `{ purpose,
-username }`: the username is lowercased and looked up (`404 unknown
-username`); the challenge row is bound to that pod's id and the answer is
-`200 { challenge, anopodId, expiresAt }`, the id being the user handle the
-phone registers the recovery passkey with. `unlockCase` and `recover` take
+anopodId }`, the anoPod id the keyholders named for the person's lookup id
+(keyholder spec section 15; until 2026-11-08 it took the username): a
+string, else `400 bad request shape`; 32 bytes, else `400 invalid
+anopodId`; a pod's id, else `404 unknown anopod`. The challenge row is
+bound to that pod and the answer is `200 { challenge, anopodId, username,
+expiresAt }`, the id being the user handle the phone registers the
+recovery passkey with and `username` the pod row's, so the wallet shows
+the account found before any case opens. `unlockCase` and `recover` take
 `{ purpose }` alone and answer without `anopodId`, like `unlock`. The two
 existing purposes are untouched.
 
@@ -1757,7 +1820,6 @@ existing purposes are untouched.
   "payload": {
     "anopodId":           "<hex, from /challenge openCase>",
     "challenge":          "<hex, from /challenge openCase>",
-    "username":           "alice",
     "lookupId":           "<hex 32>",
     "contactEmail":       "alice@example.com",
     "passkey":            { "...": "the registration PublicKeyCredential.toJSON(), prf.results removed" },
@@ -1773,9 +1835,10 @@ existing purposes are untouched.
 Checks:
 
 1. Shape; `400 bad request shape`.
-2. The challenge row exists with purpose `openCase`, unexpired, and its
-   `anopod_id` equals `payload.anopodId`, which is the pod `username` names;
-   else `401 unknown or expired challenge`.
+2. The challenge row exists with purpose `openCase`, unexpired, its
+   `anopod_id` equals `payload.anopodId`, and a pod with that id exists:
+   the pod the keyholders named for the lookup id; else `401 unknown or
+   expired challenge`.
 3. Both signatures verify against the payload's own ephemeral keys; `401
    bad signature`.
 4. `passkey.clientExtensionResults.prf.enabled` true and no `prf.results`;
@@ -2002,7 +2065,9 @@ the blob 1 to 1024 bytes (60 in practice, 12.6). The row exists and is the
 caller's (`404 unknown account`). Writes `break_glass_blob`; a second call
 replaces it. Answer: `200 { accountId, stored: true }`.
 `/list-anos-accounts` answers `breakGlassBlob` (hex or null) on every item
-from this build on.
+from this build on. The wallet stopped calling this route on 2026-11-08
+(section 14): the finish uses the recovered seed once, to sign the moves,
+and wipes it; the route and `anos_accounts.break_glass_blob` stay, unused.
 
 ### 12.5 Statuses and events
 
@@ -2089,11 +2154,14 @@ Nothing else in existing code changes. The new routes live in
 
 - One approval and one rejection on a case; a rejection is recorded and
   the case waits for two approvals or a dismissal.
-- Revoking a moderator; a moderator's record of past cases.
+- Revoking a moderator (built 2026-11-08: `npm run revoke`, section 16; the
+  stake the pod holds at the validators comes back through the guardians'
+  payout); a moderator's record of past cases.
 - Sending the meeting link by email; the moderator writes by hand.
 - Limits on opening cases; a dispute when a lookup id's one open case is
   not the person's.
-- Moving anos with the break-glass keys; this build stores the seeds.
+- Moving anos with the break-glass keys; this build stores the seeds
+  (built 2026-11-08, section 14).
 - Notifications for case events; the person opens the app.
 - The attestor app.
 
@@ -2321,6 +2389,48 @@ variable. What this section left open and how it was decided:
   restarted itself on the file changes, so it serves the five routes; no
   variable was added and no DDL was applied.
 
+#### The lookup through the keyholders (2026-11-08)
+
+Built 2026-11-08 from
+`~/Desktop/Z-TestNet/forclaude/recovery-lookup-plan-1.md` (FINAL,
+2026-11-08), step 3 of five; the keyholder's `docs/schemas.md` section 15
+is the route the wallet asks. The locked-out person no longer types a
+username: the wallet computes the lookup id, asks every keyholder
+`/get-owner` which pod deposited for it, and brings the anoPod id here.
+The masterpod is not in the lookup: it has no standing at the keyholders
+and stays unable to link a birth record to a pod, as designed. Where the
+plan was silent the simplest thing was chosen and is recorded here.
+
+- `/challenge openCase` takes `{ purpose, anopodId }` and answers the
+  pod's `username` beside `anopodId`. In `auth.handlers.js` `findById`
+  replaces `findByUsername`, `decodeId` comes from `util/ids.js`, and the
+  refusals are `400 bad request shape` (not a string), `400 invalid
+  anopodId` (not 32 bytes) and `404 unknown anopod`, the word
+  `require-session.js` uses. The pod row is kept in a variable beside the
+  id so the username is added to the body after `anopodId`; the body is
+  otherwise built as before, so a JSON reader sees `challenge`,
+  `expiresAt`, `anopodId`, `username`.
+- `/open-recovery-case` drops `username`: the field list of check 1 loses
+  it, and check 2 is the challenge row (purpose openCase, unexpired,
+  `anopod_id` equal to `payload.anopodId`) and then `findAnopod(anopodId)`
+  not null, both `401 unknown or expired challenge` as before.
+  `findByUsername` left the import; that check was its only use. The case
+  row's `anopod_id` is the challenge's pod, as before; nothing after check
+  2 used the pod row.
+- `db/schema.sql` changed in comments only: `challenges.anopod_id`, the
+  `recovery_cases` block comment, its `COMMENT ON TABLE` and the
+  `anopod_id` column, each rewritten within its line, so the file stays
+  1283 lines and only its hash changes (the Test Net 2 deploy list notes
+  both). `COMMENT ON` overwrites, so `npm run db:setup` applies them to a
+  live database.
+- 12.3's paragraph under the `recovery_cases` DDL said `anopod_id` "is
+  the pod the typed username named"; the plan named the schema comments
+  and not that paragraph, so it was fixed on the user's word, in the build
+  chat, before the step was committed. The build-1 notes above that
+  describe the username lookup stay as history, as the plan says.
+- `node --check` passed on the three JavaScript files. Nothing booted, no
+  database touched; the wallet's step 4 is the first caller.
+
 ## 13. Attestation: assisted trades and escrow disputes
 
 Design settled 2026-10-26 over three rounds of questions (the chat is
@@ -2421,17 +2531,21 @@ evidence copies like a decided one.
 
 ### 13.2 Who is an attestor, and the new level
 
-An attestor is a pod whose `username` starts with `attestor` and that a
-super seed has vouched for: the moderator rule of 12.2 with the other
-prefix, the same query. No table and no script; the vouch is the
-appointment. The masterpod does not check the stake: the validators do on
-every read and every follow-up, and the keyholders on every bucket key
-request. A username has one prefix, so a pod is a moderator or an
-attestor, never both. Revoking an attestor is not built (13.9).
+An attestor is a pod that holds a live appointment as one: an
+`appointments` row with `role = 'attestor'` and no `revoked_at` (section
+16), the moderator rule of 12.2 with the other role, the same query. The
+operator appoints and revokes by script (16.3); no route writes the
+table. The masterpod does not check the stake: the validators do on every
+read and every follow-up, and the keyholders on every bucket key request.
+A pod has one live appointment at a time (the partial unique index of
+16.1), so a pod is a moderator or an attestor, never both. Rewritten
+2026-11-08 to the appointment rule of section 16; until then an attestor
+was a pod whose `username` started with `attestor` and that a super seed
+had vouched for, with no table and no script.
 
 | Level | Meaning | Routes |
 | ----- | ------- | ------ |
-| attestor | session, and the caller is an attestor as above. `requireAttestor` runs `requireSession`, then the username prefix, then the super-seed query; failing them `403 not an attestor`. | the fourteen routes of 13.4.3 and 13.4.4 |
+| attestor | session, and the pod holds a live appointment for the role (`appointments`, section 16; the stake is the validators' and the keyholders' check). `requireAttestor` runs `requireSession`, then the query; failing them `403 not an attestor`. | the fourteen routes of 13.4.3 and 13.4.4, and the seven break-glass routes of 14.4.2 (2026-11-08) |
 
 The person's four routes (13.4.5) are level setup: the person needs their
 encryption key, their identity blob and their anos accounts.
@@ -2956,7 +3070,9 @@ profiles from `anopods.service.js` `profileWithSelfie`, the chat keys from
 
 ### 13.9 Deferred, by decision
 
-- Revoking an attestor; an attestor's history of cases.
+- Revoking an attestor (built 2026-11-08: `npm run revoke`, section 16; the
+  stake the pod holds at the validators comes back through the guardians'
+  payout); an attestor's history of cases.
 - A party deleting or replacing their own evidence; evidence other than
   the four content types or larger than `MAX_IMAGE_BYTES`.
 - A time limit on open cases; a case on a trade whose accounts the
@@ -3105,3 +3221,1212 @@ how it was decided:
 - Not touched: `src/recovery/`, `src/security/`, `src/vouching/`,
   `src/anos-accounts/`, `src/chat/`, `signed-request.js`, the moderator
   routes. The validators and the keyholders are build 1's, unchanged.
+
+## 14. Break-glass moves
+
+Design settled 2026-11-08 in a planning chat of five rounds (the plan is
+`~/Desktop/Z-TestNet/forclaude/break-glass-plan-1.md`, FINAL). Why: the
+key blobs of a pod's anos accounts were wrapped under the anoPod encryption
+key, which the backup code also opens, so whoever rebuilt a backup code held
+the original signing keys, and the recovery of 2026-10-26 handed a
+recovered person exactly those keys back while the break-glass seed
+deposited for this very case went unused. From 2026-11-08 the wallet wraps
+the signing keys under a key from the passkey's PRF output alone, so a lost
+passkey kills the old accounts' keys for good, and the break-glass key is
+what moves the money: a new ledger transaction type, `breakGlassTransfer`,
+signed by the account's break-glass pair alone and attested by two
+attestors like an assisted transfer, from each old account to a new account
+of the same type. Four repos in order: the validator (anossoftware spec
+section 22), the doorman (its section 5), this server (this section, step 3
+of the plan) and the wallet (its section 11); deployed after a reset of the
+testnet with a fresh genesis, the wallet last. This section is the
+masterpod's part: the break-glass cases the attestors work from, a case per
+recovery case with one row per move, filed by the wallet at the finish and
+listed to the attestor edition beside the trades. Nothing above this
+section changes except the items in 14.8.
+
+### 14.1 The flow
+
+1. The finish of a recovery (12.4.2 and 12.4.5: after
+   `/recover-with-backup-code` and the rotation, before the completion)
+   reads each old account's balance from a validator with the recovered
+   break-glass pair, makes a new account of the same type for each old
+   account that holds anos (12.4.5's `/store-break-glass-blob` is not called
+   any more), posts a `breakGlassTransfer` per account to a validator, signed
+   by the break-glass pair alone, and files the moves here (14.4.1,
+   `/file-break-glass-moves`): the recovery case's id and, per move, the old
+   account, the new one and the transaction id. The break-glass case is the
+   recovery case seen by the attestors; a second call (Retry) adds moves.
+   The seed is wiped; nothing of it is stored here.
+2. The attestor edition lists the break-glass cases beside the trades
+   (14.4.2, `/list-break-glass-cases`) and opens one
+   (`/get-break-glass-case`): the person's profile with the selfie, the
+   recovery case's lookup id and its two moderator approvals, the moves and
+   the events. The amounts and the stage of each move come from a
+   validator's `/list-assisted-transfers`, which answers `type` since
+   2026-11-08 (anossoftware 13.2).
+3. The attestor pulls the bucket keys from the keyholders by the lookup id,
+   as for a trade, reads the buckets (`/list-break-glass-case-security-records`),
+   schedules a video call (`/schedule-break-glass-case`) and checks the
+   person once more. A mismatch is a dismissal with a preset reason
+   (`/dismiss-break-glass-case`); the held moves stay on the ledger until a
+   cancel (14.9).
+4. The attestor signs one attestation per move, the validators' own
+   follow-up object (13.4.2), in one tap, and posts them together
+   (`/sign-off-break-glass-case`); the masterpod verifies each against the
+   attestor's stored creation and records them. A second attestor, from a
+   different pod, does the same; two sign-offs decide the case.
+5. The app of the attestor whose sign-off decided the case posts both
+   attestors' stored attestations, two per move, to a validator and records
+   the answers (`/mark-break-glass-case-sent`). The validators write each
+   move once both attestations are approved, no cancel is present and its
+   unlock moment has passed; the sender's stakes row moves with the money
+   (anossoftware 4.5).
+6. The person's wallet reads the case's progress from
+   `/list-my-break-glass-moves`: the lost account's card shows it. No
+   notification is sent (14.7).
+
+### 14.2 Who
+
+The person at level setup (section 2): after the finish they hold their
+pod's session again (the recovery passkey is the pod's passkey from
+`/recover-with-backup-code` on) and setup is complete. The attestors at
+level attestor (13.2): the same pods and the same `requireAttestor`; the
+masterpod does not check the stake, the validators do on every read and
+every follow-up, and the keyholders on every bucket key request.
+
+| Level | Routes |
+| ----- | ------ |
+| setup | `/file-break-glass-moves`, `/list-my-break-glass-moves` |
+| attestor | `/list-break-glass-cases`, `/get-break-glass-case`, `/list-break-glass-case-security-records`, `/schedule-break-glass-case`, `/sign-off-break-glass-case`, `/mark-break-glass-case-sent`, `/dismiss-break-glass-case` |
+
+### 14.3 Tables
+
+Two new tables, no new column, no widened check. DDL into `db/schema.sql`
+after the wallet memory block, in the file's style (header comment,
+`COMMENT ON` for every table and column, `set_updated_at` on the cases,
+`refuse_change` on the moves). The whole file, idempotent, applies it to
+the live database (13.10).
+
+```sql
+CREATE TABLE IF NOT EXISTS break_glass_cases (
+  case_id    BYTEA       PRIMARY KEY CHECK (octet_length(case_id) = 32),
+  anopod_id  BYTEA       NOT NULL CHECK (octet_length(anopod_id) = 32),
+  status     TEXT        NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'inReview', 'decided', 'dismissed')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS break_glass_cases_status_created_at_idx ON break_glass_cases (status, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS break_glass_moves (
+  transaction_id BYTEA       PRIMARY KEY CHECK (octet_length(transaction_id) = 32),
+  case_id        BYTEA       NOT NULL CHECK (octet_length(case_id) = 32),
+  account_id     BYTEA       NOT NULL CHECK (octet_length(account_id) = 32),
+  account_id_to  BYTEA       NOT NULL CHECK (octet_length(account_id_to) = 32),
+  account_type   TEXT        NOT NULL CHECK (account_type IN ('spending', 'guarded', 'vault', 'assisted')),
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS break_glass_moves_case_id_idx ON break_glass_moves (case_id);
+CREATE OR REPLACE TRIGGER break_glass_moves_append_only
+  BEFORE UPDATE OR DELETE ON break_glass_moves
+  FOR EACH ROW EXECUTE FUNCTION refuse_change();
+```
+
+`break_glass_cases`: one row per recovery case whose finish filed moves.
+`case_id` is the recovery case's id (`recovery_cases.case_id`): a
+break-glass case is the recovery case seen by the attestors, and the
+recovery case's lookup id and approvals are read from its own tables.
+`anopod_id` is the recovered pod (`recovery_cases.anopod_id`), the caller
+of the filing. `status` moves as 14.5 says, the statuses of a trade case.
+Nothing else about a case is a column: everything that happens is an
+`attestor_events` row with that `case_id`, the kinds `scheduled`,
+`bucketOneViewed`, `bucketTwoViewed`, `attestationSigned`, `decided`,
+`sent` and `dismissed`, which the column's check already allows; `opened`
+records the filing. As trades and disputes already share that log, a case
+id names one row in one of three tables.
+
+`break_glass_moves`: one row per move, append-only. `transaction_id` is the
+`breakGlassTransfer`'s id on the validators and the key: one move per
+transaction, so a second filing of the same transaction is refused.
+`account_id` is the old account, `account_id_to` the new one, both
+`anos_accounts` rows of the pod's, `account_type` the type both have,
+checked at filing (the validators check it again). No foreign keys, as
+everywhere.
+
+### 14.4 Routes
+
+Conventions of section 5 throughout: every route a `POST`, checks in
+order, first failure answers, every multi-row write one transaction. "The
+case" is the `break_glass_cases` row a route resolved by `caseId`; "the
+recovery case" the `recovery_cases` row of the same id; "the case's pod"
+the `anopods` row `case.anopod_id` names. Every write to a case runs with
+the row locked (`SELECT ... FOR UPDATE`, as 12.10's `withLockedCase`),
+re-checking the status under the lock; a status that moved on meanwhile
+answers `409 case closed` (`409 case not decided` on the sent route). The
+filing locks the row too, right after inserting it when it is new. Review
+statuses are `open` and `inReview`; `decided` and `dismissed` are final. A
+profile is a pod's profile with its public selfie, as `/get-anopod-profile`
+answers it, null when the pod's row is gone.
+
+#### 14.4.1 Level setup, the person
+
+**POST /file-break-glass-moves**. Body:
+
+```json
+{
+  "caseId": "<hex 32, the recovery case>",
+  "moves":  [ { "accountId": "<hex 32, the old account>", "accountIdTo": "<hex 32, the new account>", "transactionId": "<hex 32, the breakGlassTransfer>" } ]
+}
+```
+
+1 to 20 moves. Checks:
+
+1. Shape: `caseId` a string, `moves` a list of 1 to 20 objects each with
+   the three strings; `400 bad request shape`. Then every id decodes to 32
+   bytes: `400 invalid caseId`, and per move `400 invalid accountId`,
+   `invalid accountIdTo`, `invalid transactionId`, in that order.
+2. The recovery case exists and its `anopod_id` is the caller's; `404
+   unknown case`. Its status is `delivering` or `completed`; `409 case not
+   ready`.
+3. For each move, in order: both `anos_accounts` rows exist and belong to
+   the caller's pod (`404 unknown account`); the two differ (`400 same
+   account`); their `account_type` is equal (`400 account types differ`);
+   no move with this `transactionId` yet (`409 move already filed`, also
+   on a unique violation at the write).
+
+Writes, one transaction with the case row locked: the `break_glass_cases`
+row if none (status `open`), the moves with the shared `account_type`, the
+`opened` attestor event with `{ moves }` (the count in this call) and the
+caller as `anopod_id`.
+
+Answer: `201 { caseId, status, moves }`, `status` the case's and `moves`
+the count now on the case. A second call for the same case adds moves: the
+wallet calls it once per finish and again on Retry for the moves that
+failed. The break-glass case's own status is not checked: a later filing
+adds to a case under review as to a fresh one.
+
+**POST /list-my-break-glass-moves**. Body `{}`. The caller's break-glass
+cases, newest first, each with its moves and the person's subset of the
+events. What the lost account's card reads.
+
+Answer: `200 { cases: [ { caseId, status, signOffs, moves: [ { accountId,
+accountIdTo, transactionId, accountType, createdAt } ], events: [ { kind,
+details, createdAt } ], createdAt, updatedAt } ] }`. `signOffs` is the
+count of distinct pods that signed; `moves` are in account order; `events`
+carries `scheduled` (`at`, `meetLink`), `decided` (`{}`), `sent` (`{}`) and
+`dismissed` (`reason` only), never an attestor's id, note or signature,
+and not the filing, the bucket views or the sign-offs themselves.
+
+#### 14.4.2 Level attestor
+
+**POST /list-break-glass-cases**. Body `{ statuses? }`, a list of statuses;
+default `open`, `inReview`; an empty list answers no cases; a status that
+is not one of the four is `400 bad request shape`. Newest first.
+
+Answer: `200 { cases: [ { caseId, status, username, firstName, lastName,
+signOffs, moves: [ { accountId, accountIdTo, transactionId, accountType }
+], createdAt, updatedAt } ] }`. The names come from a LEFT JOIN on
+`anopods`, null when the row is gone; `signOffs` is the count of distinct
+pods with an `attestationSigned` event on the case; `moves` are in account
+order.
+
+**POST /get-break-glass-case**. Body `{ caseId }`; `404 unknown case`.
+
+Answer: `200 { case: { caseId, status, lookupId, recoveryStatus, approvals:
+[ { username, signedAt } ], createdAt, updatedAt }, profile, moves: [ {
+accountId, accountIdTo, transactionId, accountType, createdAt } ], events:
+[ { eventId, kind, anopodId, username, details, createdAt } ] }`.
+`lookupId` and `recoveryStatus` are the recovery case's (null when its row
+is gone, never in practice); `approvals` are the `approvalSigned` recovery
+events in time order, each with the moderator's username (a LEFT JOIN, null
+when the pod's row is gone) and `signedAt` from the event's details;
+`profile` is the case's pod's with the public selfie; `events` are the
+attestor events of this case with the acting pod's username and the
+details complete, as `/get-trade-case` answers them: the stored attestations
+are in the `attestationSigned` events, for the posting after the decision.
+
+**POST /list-break-glass-case-security-records**. Body `{ caseId, bucket }`,
+`bucket` the number 1 or 2; `404 unknown case`. The case's pod's rows of
+that bucket, the shape of `/list-trade-case-security-records` (`images`
+with `type = bucket`; `info` only for bucket 2), oldest first. Writes the
+`bucketOneViewed` or `bucketTwoViewed` attestor event with `{ keyIds }`, the
+distinct key ids returned. No status check. The attestor pulls the bucket
+keys from the keyholders by the case's `lookupId`, as for a trade; the
+masterpod cannot open the rows.
+
+**POST /schedule-break-glass-case**. Body `{ caseId, at, meetLink }` as
+`/schedule-attestor-case`: `at` an ISO 8601 time, `meetLink` an `https` URL
+of at most 500 characters. Status `open` or `inReview` (`409 case closed`).
+Writes the `scheduled` event with `{ at, meetLink }` and `status =
+'inReview'` when it was `open`. Answer: `200 { caseId, status }`. No
+notification: the person's wallet reads the event from
+`/list-my-break-glass-moves`.
+
+**POST /sign-off-break-glass-case**. Body:
+
+```json
+{
+  "caseId":       "<hex>",
+  "attestations": [ { "transactionId": "<hex 32>", "attestation": { "payload": { "type": "attestation", "transactionId": "<hex>", "accountId": "<hex>", "attestorId": "<hex>", "signedAt": "..." }, "signatures": { "...": "as 13.4.2" } } } ]
+}
+```
+
+One attestation per move of the case, each the validators' attestation
+follow-up as it stands (13.4.2; anossoftware 5.2): `transactionId` and
+`accountId` the move's, `attestorId` the attestor's account, signed by that
+account's keys under any two pairs. Checks:
+
+1. Shape: `caseId` a string, `attestations` a list of 1 to 20 objects each
+   with a string `transactionId`; `400 bad request shape`.
+2. The case exists (`404 unknown case`) with status `open` or `inReview`
+   (`409 case closed`).
+3. The list names every move of the case exactly once and nothing else: a
+   `transactionId` that does not decode, names no move of the case or is
+   named twice, or a move left out, is `400 attestations do not match the
+   moves`.
+4. Each `attestation`, in move order, passes checks 1 to 4 of 13.4.2
+   against its move: the shape (`400 bad request shape`); `payload.type`
+   `attestation`; `payload.transactionId` and `payload.accountId` the
+   move's transaction and old account (`400 sign-off does not match the
+   case`); `attestorId` an `anos_accounts` row of the caller's pod (`403
+   not your account`); the signatures against that row's creation keys
+   (`401 bad signature`). The same `attestorId` on all; a second one is
+   `400 attestations differ in attestorId`.
+5. No `attestationSigned` event on this case by the caller's pod; `409
+   already signed off`.
+
+Writes, under the case lock: the `attestationSigned` event with `{
+attestorId, attestations }` (the attestor's account id as hex; the whole
+follow-up objects, in move order) and the caller as `anopod_id`; `status =
+'inReview'` when it was `open`; and when the distinct pods with an
+`attestationSigned` event now number two or more, `status = 'decided'` and
+the `decided` event with `{ attestorIds }`, the signers' account ids from
+the stored events in event order.
+
+Answer: `200 { caseId, status, signOffs }`, the count after the write.
+
+**POST /mark-break-glass-case-sent**. Body `{ caseId, validator, results }`
+as `/mark-attestor-case-sent`: `validator` an integer 1 to 99, `results` 1
+to 40 entries `{ signer, status, error? }` (two attestations per move;
+`signer` hex 32 bytes, `status` an integer, `error` a string of at most 500
+characters). Status `decided` (`409 case not decided`). Writes the `sent`
+event with `{ validator, results }`. Answer: `200 { caseId, status:
+"decided" }`. A failed post is recorded too; a later retry writes another
+event.
+
+**POST /dismiss-break-glass-case**. Body `{ caseId, reason, note }`,
+`reason` one of `selfieMismatch`, `documentsMismatch`, `noShow`,
+`withdrawn`, `other`; `note` 0 to 2000 characters. Status `open` or
+`inReview` (`409 case closed`). Writes `status = 'dismissed'` and the
+`dismissed` event with `{ reason, note }`. Answer: `200 { caseId, status:
+"dismissed" }`. Final. Nothing is cleared (the lookup id is the recovery
+case's) and nothing happens on the ledger: the held moves stay until a
+cancel, which the plan leaves to the later dispute work (its decisions 8
+and 11; 14.9).
+
+### 14.5 Statuses and events
+
+```
+open      -> inReview   an attestor schedules or signs off
+inReview  -> decided    the second sign-off from a different pod
+open, inReview -> dismissed   an attestor dismisses
+```
+
+The statuses of a trade case (13.5). `decided` and `dismissed` are final;
+the posting to a validator is an event, not a status. The recovery case's
+own status (12.5) is not touched by anything here; a filing needs it to be
+`delivering` or `completed`.
+
+| kind | by | details |
+| ---- | -- | ------- |
+| `opened` | the person | `{ moves }`, the count filed in that call; a Retry writes a second `opened` |
+| `scheduled` | an attestor | `{ at, meetLink }` |
+| `bucketOneViewed`, `bucketTwoViewed` | an attestor | `{ keyIds }` |
+| `attestationSigned` | an attestor | `{ attestorId, attestations }`, the whole follow-up objects in move order |
+| `decided` | the server | `{ attestorIds }` |
+| `sent` | an attestor | `{ validator, results }` |
+| `dismissed` | an attestor | `{ reason, note }` |
+
+Events written in one transaction with another (a sign-off and the
+`decided` it completes) keep their order by `clock_timestamp()`, as 12.10
+says. A new duty later is a new kind in the check, not a new column.
+
+### 14.6 Client crypto, new
+
+Nothing on the masterpod: it stores no new ciphertext and verifies an
+attestation as 13.4.2 verifies a trade's, against the stored creation. The
+wallet's side, the key the account key blobs are wrapped under
+(`masterpod/kek-keys/v1`, from the passkey's PRF output), the break-glass
+pair's signature on a `breakGlassTransfer` and the `/get-account` read
+signed with it, is the wallet's spec, section 7 (2026-11-08).
+
+### 14.7 Notifications
+
+None. The person's wallet reads the case's progress from
+`/list-my-break-glass-moves`, and the attestors list the cases; no
+notification kind is added (the plan's decision 14).
+
+### 14.8 Changes to what exists (all additive)
+
+- `db/schema.sql`: the two tables; the comments on `attestor_events` (the
+  table, `case_id`, `details`) and the paragraph above its `CREATE TABLE`
+  name the third kind of case and its two detail shapes.
+- `src/app.js`: the break-glass router mounted, with its comment line.
+- `src/auth/require-attestor.js`: the comment counting the routes the level
+  serves names the seven of this section.
+- `/store-break-glass-blob` (12.4.5) and `anos_accounts.break_glass_blob`
+  are unused since 2026-11-08: the finish uses the recovered seed once, to
+  sign the moves, and wipes it. The route and the column stay.
+- 12.9's "Moving anos with the break-glass keys" is built here; section 2's
+  and 13.2's level tables name the new routes.
+- `README.md`: the routes, the folder, the tables.
+
+Nothing else in existing code changes. New: `src/break-glass/` (router,
+handlers, service, `break-glass.queries.js`). The sign-off checks reuse
+`src/attesting/account-signatures.js` (`hasAccountSignatureShape`,
+`verifyAccountSignatures`) and `anos-accounts.queries.js` `findAccount`;
+the events go through `src/attesting/attestor-events.queries.js`
+(`insertEvent`, `listForCase`, `listForCaseWithUsernames`, `countSignOffs`,
+`signedOffBy`, `listDetails`); the statuses are
+`assisted-trades.queries.js`'s; the recovery case and its events come from
+`src/recovery/recovery-cases.queries.js` and `recovery-events.queries.js`;
+the bucket rows from `security.queries.js` `listFor`; the profile from
+`anopods.service.js` `profileWithSelfie`.
+
+### 14.9 Deferred, by decision
+
+- Notifications to the attestors when moves are filed and to the person
+  when the case moves; the attestor edition and the person's wallet read
+  the case.
+- A move filed after a cancel on the ledger (a `breakGlassCancel` or the
+  owner's `assistedTransferCancel`): the masterpod does not read the
+  ledger; the case stays as filed, and the attestor edition shows the move
+  as not listed on the validator.
+- Dismissing with an effect on the ledger: a dismissal records the
+  attestors' refusal; the held moves stay until a cancel (the plan's
+  decisions 8 and 11).
+- The owner's dispute path, forwarding and a repeat sweep for money that
+  lands in an old account after the move (the plan's section 9).
+
+### 14.10 Notes from the builds
+
+#### Build 1, the masterpod (2026-11-08)
+
+Built from `~/Desktop/Z-TestNet/forclaude/break-glass-plan-1.md` section
+3, on main at aa102ec (the wallet memory merge). No new npm package, no new
+variable, no test script and no rig (none was asked for). The schema was
+not applied to any database for keeps: the user applies the whole file by
+psql as the superuser with `SET ROLE masterpodsoftware`, as 13.10 records.
+What the plan left open and how it was decided:
+
+- The schema block sits at the end of `db/schema.sql`, after the wallet
+  memory block: the plan's DDL, aligned in the file's column style, with a
+  header comment and a `COMMENT ON` for every table and column. The
+  `attestor_events` comments (the table, `case_id`, `details`) and the
+  paragraph above its `CREATE TABLE` were reworded in place, since the
+  third kind of case had made them false.
+- `findMove(transactionId)` joins the plan's eight query functions: the
+  filing's "no move with this transactionId yet" needs a lookup by
+  transaction id before the write, so the refusals come in the plan's
+  order; the unique violation on the primary key is the backstop, and it
+  is also where the same transaction id twice in one request lands.
+- The two lists aggregate a case's moves as JSON in the database
+  (`json_agg ... ORDER BY account_id, transaction_id`), so those moves'
+  ids leave the queries file as lowercase hex (`encode(..., 'hex')`, the
+  wire form) rather than Buffers, and their `createdAt` as the database's
+  text, which the service normalises with `toISOString()`.
+  `/list-break-glass-cases` drops `createdAt` from the moves, as the plan's
+  answer reads; the person's list and `/get-break-glass-case` keep it.
+  `listMoves` and `findMove` return Buffers as every queries file does.
+- The filing: the shape first, then every id of every move decoded, then
+  the recovery case, then the per-move checks move by move in the plan's
+  order. The writes run in one transaction with the case row locked right
+  after the `ON CONFLICT DO NOTHING` insert, as every other write to a case
+  locks its row, so a filing and a sign-off racing see each other. `moves`
+  in the answer counts the case's rows after the write; `status` is the
+  locked row's. Nothing checks the break-glass case's own status on a
+  filing, as the plan reads; a duplicate within one request lands as `409
+  move already filed` at the write.
+- The statuses are imported from `assisted-trades.queries.js`
+  (`CASE_STATUSES`, `REVIEW_STATUSES`, `DEFAULT_LIST_STATUSES`) rather
+  than copied, since the plan makes the break-glass statuses a trade
+  case's; the private helpers of the attesting service (`isNote`,
+  `isMeetLink`, `isTime`, `pick`, `withLockedCase`, `profileOf`,
+  `attestorEvents`) are copied, as the attesting build copied the
+  recovery's, to leave `attesting.service.js` alone.
+- `/list-my-break-glass-moves` ignores the body, as `/list-my-cases` does;
+  the person's events are the four kinds the plan names (`scheduled`,
+  `decided`, `sent`, `dismissed`), so the `opened`, the bucket views and the
+  sign-offs are not answered. The events come from `listForCase` of the
+  attestor events module, the one read without usernames.
+- `/get-break-glass-case`: `lookupId` and `recoveryStatus` are null when
+  the recovery case row is gone (never, in practice); `approvals` are the
+  `approvalSigned` recovery events in time order with the moderator's
+  username from the LEFT JOIN and `signedAt` from the details (null when
+  a detail lacks it); `moves` carry `createdAt`.
+- `/sign-off-break-glass-case`: `attestations` must be a list of 1 to 20
+  objects each with a string `transactionId`, the filing's ceiling (`400
+  bad request shape`); the matching with the moves is one pass over the
+  list (a decode failure, an unknown or repeated id) and a count; checks 1
+  to 4 of 13.4.2 then run per attestation in move order with 13.4.2's
+  reason strings (`sign-off does not match the case` for a wrong
+  transaction or account); a second `attestorId` among them is `400
+  attestations differ in attestorId`, a reason the plan did not name;
+  check 5 (`409 already signed off`) runs once after them, and again under
+  the lock. The stored `attestations` are the follow-up objects exactly as
+  sent, in move order; `attestorId` beside them the account id as lowercase
+  hex, as a trade's event has it; `decided`'s `attestorIds` come from the
+  stored events through `listDetails`.
+- `/mark-break-glass-case-sent` is `/mark-attestor-case-sent` with 40
+  entries, each `{ signer, status, error? }` as 13.4.4 has them; nothing
+  names the move, since the plan keeps the shape.
+- `/dismiss-break-glass-case` clears nothing: a break-glass case holds no
+  lookup id and no evidence.
+- Checks: `node --check` on the five source files (`app.js` and the four
+  new ones). Beyond the plan, the whole app was imported once with dummy
+  environment values, to catch a wrong import name or an import cycle: it
+  imported, with the nine paths registered (the server was not started).
+  The SQL ran against the local `masterpod` database (no `masterpodrig`
+  exists on this machine) as the superuser inside one transaction, rolled
+  back: the block applied twice (`IF NOT EXISTS`, `OR REPLACE`, the
+  comments overwritten), a throwaway pod, two cases, three moves filed in
+  a shuffled order and the events; the real query functions on the
+  transaction's client (28 checks: `findCase`, `insertCase` inserting once
+  and doing nothing the second time, `lockCase`, `updateStatus` with the
+  trigger, `listMoves` in account order, `findMove`, `insertMove`'s unique
+  violation, `listCasesByStatus` with the pod's names, the moves as hex in
+  account order, `signOffs` counting two distinct pods once each, `[]` and
+  `0` for a case without moves, an empty status list, `listCasesForPod`;
+  the aggregated `createdAt` parsing back to the row's time; the
+  append-only trigger refusing an `UPDATE` and a `DELETE`; all seven kinds
+  and `opened` accepted by `attestor_events`), and the same by psql with
+  the list select's text; the tables and the throwaway pod gone after the
+  rollback. The whole file was also applied twice, with `SET ROLE
+  masterpodsoftware`, to a throwaway database made for it and dropped
+  after: the two tables owned by the app role, thirteen comments, the two
+  triggers.
+- Not touched: `src/attesting/` (its files are imported, their comments
+  still count two kinds of case), `src/recovery/` (`/store-break-glass-blob`
+  and `setBreakGlassBlob` stay as they are), `src/anos-accounts/`,
+  `src/security/`, `signed-request.js`, `package.json`, the scripts.
+
+## 15. DAO voting
+
+Design settled 2026-11-08 in a planning chat of five rounds (the plan is
+`~/Desktop/Z-TestNet/forclaude/dao-voting-plan-1.md`, FINAL). Why:
+`daoVote` has been one of the six stake purposes since 2026-10-23
+(anossoftware spec section 2), recorded only: a transferToFund for daoVote
+adds to `stakes.dao_vote_stake` and nothing read it. A DAO voting ledger,
+simple and quick, to be made more sophisticated after the production
+launch: plain-text proposals; a pending stage in which a proposal collects
+support like a petition collects signatures, so junk never reaches a vote;
+two weeks of for and against; one staked anos one vote; votes by anoPod
+id. Four repos in order: the validator (anossoftware spec section 23, one
+public read of every account's DAO stake), the doorman (its section 6, the
+line that lets the read through), this server (this section, step 3 of
+the plan: the tables, the six routes and the clock) and the wallet (its
+section 11, steps 4 and 5). No reset: everything is additive, deployed
+validators and doormen first, then this server, then the wallet. The
+guardians' fund proposals (anossoftware sections 3 to 6) are a different
+system and are not touched. Nothing above this section changes except the
+items in 15.8.
+
+### 15.1 The flow
+
+1. A pod posts a proposal (`/create-dao-proposal`, 15.4): a title and a
+   body, plain text. This server reads every account's DAO stake from a
+   validator once and boils it down to one weight per pod (15.6), the
+   posting snapshot, stored with the proposal. The proposer needs at least
+   `DAO_PROPOSE_MIN_VOTES` votes in it and no pending proposal of their
+   own. The proposal is `pending`, with `needed`, the support that takes it
+   to a vote (`DAO_PROPOSAL_PERCENT` of the snapshot's total), and
+   `pending_until`, `DAO_PENDING_MINUTES` ahead. The proposer's own weight
+   is the first support.
+2. Other pods support it (`/support-dao-proposal`), each with its weight in
+   the posting snapshot, once, no undo: a petition. A pod with no DAO votes
+   in the snapshot cannot.
+3. The flip (15.5): when the support reaches `needed`, right after the
+   support that reached it or on the clock's next tick, a fresh snapshot
+   replaces the posting one and fixes the voting power, and the proposal is
+   `open` with `vote_closes_at` `DAO_VOTE_MINUTES` ahead. A proposal that
+   reaches its support while no validator can be reached stays pending
+   with the support recorded; the clock retries every minute. A proposal
+   still pending at `pending_until` expires and leaves the lists.
+4. Pods vote for or against (`/vote-dao-proposal`), each with its weight in
+   the fresh snapshot, once, no undo. A support in the pending stage is not
+   a vote for in the official stage; everyone votes fresh. Every support
+   and every vote is public (`/list-dao-votes`): the voter's username,
+   weight and time.
+5. The close (15.5): at `vote_closes_at` the clock sums the votes;
+   `accepted` when for is more than `DAO_PASS_PERCENT` percent of the votes
+   cast, else `rejected` (a tie fails; no vote at all fails; there is no
+   quorum, the pending stage is the quorum). The results go on the row,
+   the snapshot rows are deleted, the proposal is in the Decided list.
+   Accepted means recorded: nothing moves money or changes a setting;
+   people act on it.
+
+### 15.2 Who
+
+Level setup (section 2) on every route: a vouched pod with setup complete,
+signed by its session keys like every other request. A vote is recorded by
+anoPod id, so it is exactly as trustworthy as this server (the plan's
+decision 3, accepted for now; signing with pair one of a staked account,
+verifiable against the chain, is the upgrade for later and changes no
+table). The weight comes from the proposal's snapshot (15.6), never from a
+live read: a pod's DAO votes are the whole anos of `dao_vote_stake` summed
+over its anos accounts (`anos_accounts` maps each account to its pod),
+millionths floored. `STAKE_MIN_DAO_VOTE_ANOS` on the validators stays the
+smallest single stake; the only other minimum is `DAO_PROPOSE_MIN_VOTES` to
+post. A pod with no votes in a proposal's snapshot may read it but neither
+support nor vote on it.
+
+### 15.3 Tables
+
+Three new tables, no new column, no widened check. DDL into
+`db/schema.sql` after the break-glass block, in the file's style (header
+comment, `COMMENT ON` for every table and column, `set_updated_at` on
+`dao_proposals`, `refuse_change` on `dao_votes`, neither on
+`dao_snapshot_weights`, whose rows the service replaces and deletes). The
+whole file, idempotent, applies it to the live database (13.10).
+
+```sql
+CREATE TABLE IF NOT EXISTS dao_proposals (
+  proposal_id    BYTEA       PRIMARY KEY CHECK (octet_length(proposal_id) = 32),
+  anopod_id      BYTEA       NOT NULL CHECK (octet_length(anopod_id) = 32),
+  title          TEXT        NOT NULL CHECK (char_length(title) BETWEEN 1 AND 100),
+  body           TEXT        NOT NULL CHECK (char_length(body) BETWEEN 1 AND 5000),
+  status         TEXT        NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'open', 'accepted', 'rejected', 'expired')),
+  snapshot_total BIGINT      NOT NULL CHECK (snapshot_total >= 0),
+  snapshot_at    TIMESTAMPTZ NOT NULL,
+  needed         BIGINT      NOT NULL CHECK (needed >= 1),
+  pending_until  TIMESTAMPTZ NOT NULL,
+  opened_at      TIMESTAMPTZ,
+  vote_closes_at TIMESTAMPTZ,
+  decided_at     TIMESTAMPTZ,
+  result_for     BIGINT,
+  result_against BIGINT,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS dao_proposals_status_created_at_idx ON dao_proposals (status, created_at DESC);
+CREATE INDEX IF NOT EXISTS dao_proposals_status_decided_at_idx ON dao_proposals (status, decided_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS dao_proposals_one_pending_per_pod_idx ON dao_proposals (anopod_id) WHERE status = 'pending';
+CREATE OR REPLACE TRIGGER dao_proposals_set_updated_at
+  BEFORE UPDATE ON dao_proposals
+  FOR EACH ROW
+  WHEN (OLD.* IS DISTINCT FROM NEW.*)
+  EXECUTE FUNCTION set_updated_at();
+
+CREATE TABLE IF NOT EXISTS dao_votes (
+  proposal_id BYTEA       NOT NULL CHECK (octet_length(proposal_id) = 32),
+  anopod_id   BYTEA       NOT NULL CHECK (octet_length(anopod_id) = 32),
+  stage       TEXT        NOT NULL CHECK (stage IN ('pending', 'official')),
+  vote        TEXT        NOT NULL CHECK (vote IN ('for', 'against')),
+  weight      BIGINT      NOT NULL CHECK (weight >= 1),
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (proposal_id, anopod_id, stage),
+  CHECK (stage = 'official' OR vote = 'for')
+);
+CREATE INDEX IF NOT EXISTS dao_votes_anopod_id_created_at_idx ON dao_votes (anopod_id, created_at DESC);
+CREATE OR REPLACE TRIGGER dao_votes_append_only
+  BEFORE UPDATE OR DELETE ON dao_votes
+  FOR EACH ROW EXECUTE FUNCTION refuse_change();
+
+CREATE TABLE IF NOT EXISTS dao_snapshot_weights (
+  proposal_id BYTEA  NOT NULL CHECK (octet_length(proposal_id) = 32),
+  anopod_id   BYTEA  NOT NULL CHECK (octet_length(anopod_id) = 32),
+  weight      BIGINT NOT NULL CHECK (weight >= 1),
+  PRIMARY KEY (proposal_id, anopod_id)
+);
+```
+
+`dao_proposals`: one row per proposal, never deleted. `snapshot_total`,
+`needed`, `result_for` and `result_against` are votes, whole anos, never
+millionths. `snapshot_total` and `snapshot_at` (the validator's `asOf`) are
+the current snapshot's, replaced when the proposal goes open; `needed` is
+the posting snapshot's number, `max(1, ceil(total * DAO_PROPOSAL_PERCENT /
+100))`, and never changes. `result_for` and `result_against` are written
+at the close and null before it (and on an expired proposal); `decided_at`
+is set at the close and at the expiry. The partial unique index is the
+"one pending proposal per pod" rule.
+
+`dao_votes`: one row per pod per stage, append-only; a vote never changes.
+`stage` `pending` is a support (always `for`, the check), `official` a
+vote. `weight` is the pod's votes in the proposal's snapshot at the time,
+the posting snapshot in the pending stage and the fresh one in the
+official stage, so the archive stands on its own once the snapshot rows
+are gone.
+
+`dao_snapshot_weights`: the proposal's current snapshot, one row per pod
+with votes (pods at 0 have no row), replaced at the flip and deleted at
+the end. Stake on an account the masterpod does not know counts in
+`snapshot_total` and in nobody's weight. No foreign keys, as everywhere.
+
+### 15.4 Routes
+
+Conventions of section 5 throughout: every route a `POST` at level setup,
+checks in order, first failure answers, every multi-row write one
+transaction. The caller is `req.anopod`. Ids on the wire are hex; weights,
+totals and sums are votes (whole anos) as JSON numbers, the BIGINT strings
+converted (they stay far below 2^53); times ISO 8601. Every write to a
+proposal runs with the row locked (`SELECT ... FOR UPDATE`) and the status
+checked under the lock, so a support racing the flip, or two flips on two
+boxes, see each other.
+
+**POST /create-dao-proposal**. Body `{ title, body }`. Checks, in order:
+
+1. Shape: both strings; `400 bad request shape`.
+2. `title` trimmed at both ends, 1 to 100 characters; `400 invalid title`.
+   `body` trimmed at both ends, 1 to 5,000 characters; `400 invalid body`.
+3. The snapshot (15.6); `503 validators unreachable` when no validator
+   answered.
+4. The caller's weight in it at least `DAO_PROPOSE_MIN_VOTES`; `403 not
+   enough DAO votes`.
+5. No pending proposal of the caller's; `409 a pending proposal is already
+   open`, also on the unique violation at the write.
+
+Writes, one transaction: the proposal (status `pending`, `snapshot_total`
+and `snapshot_at` from the snapshot, `needed` as 15.3 says, `pending_until
+= now() + DAO_PENDING_MINUTES`), the snapshot rows, the proposer's
+pending-stage `for` row with their weight. Then the flip (15.5), outside
+the transaction.
+
+Answer: `201 { proposalId, status }`, `status` after the flip attempt:
+`open` when the proposer alone reaches `needed`, else `pending`.
+
+**POST /support-dao-proposal**. Body `{ proposalId }`; `400 bad request
+shape`, `400 invalid proposalId`. One transaction with the row locked: the
+row exists (`404 unknown proposal`); status `pending` (`409 proposal not
+pending`); `pending_until` ahead (`409 proposal expired`); the caller's
+weight in the snapshot at least 1 (`403 no DAO votes in this proposal`);
+no pending-stage row of the caller's (`409 already supported`, also on the
+unique violation); the row inserted with the caller's weight. Then the
+flip.
+
+Answer: `200 { proposalId, status, support, needed }`: `support` the
+pending-stage sum after the write, `status` after the flip attempt.
+
+**POST /vote-dao-proposal**. Body `{ proposalId, vote }`; `400 bad request
+shape`, `400 invalid proposalId`; `vote` `for` or `against` (`400 invalid
+vote`). One transaction with the row locked: the row exists (`404 unknown
+proposal`); status `open` (`409 proposal not open`); `vote_closes_at`
+ahead (`409 voting closed`); the caller's weight in the (fresh) snapshot at
+least 1 (`403 no DAO votes in this proposal`); no official-stage row of the
+caller's (`409 already voted`, also on the unique violation); the row
+inserted.
+
+Answer: `200 { proposalId, for, against, yourVote }`, the official sums
+after the write.
+
+**POST /list-dao-proposals**. Body `{ status, from?, to?, limit?, offset?
+}`: `status` `pending`, `open` or `decided` (accepted and rejected
+together; `400 invalid status`); `from` and `to` ISO 8601 or absent (`400
+invalid from`, `400 invalid to`), `from` at or after and `to` before, on
+`created_at` for pending and open and on `decided_at` for decided; `limit`
+1 to 100, default 20 (`400 invalid limit`); `offset` 0 or more, default 0
+(`400 invalid offset`). Newest first by the same column. Expired proposals
+are never listed.
+
+Answer: `200 { proposals: [ item ], settings }`.
+
+```json
+{
+  "proposalId":    "<hex>",
+  "title":         "...",
+  "status":        "pending",
+  "proposer":      { "anopodId": "<hex>", "username": "..." },
+  "createdAt":     "2026-11-08T12:00:00.000Z",
+  "pendingUntil":  "2026-11-15T12:00:00.000Z",
+  "openedAt":      null,
+  "voteClosesAt":  null,
+  "decidedAt":     null,
+  "snapshotTotal": 1200,
+  "needed":        180,
+  "support":       25,
+  "for":           0,
+  "against":       0,
+  "yourWeight":    12,
+  "yourSupport":   true,
+  "yourVote":      null
+}
+```
+
+`for` and `against` are the stored results once decided and the live sums
+before; `yourWeight` is the caller's votes in the proposal's current
+snapshot (0 when none), `yourSupport` whether the caller supported it,
+`yourVote` the caller's vote or null. `username` is null when the pod's row
+is gone. `settings` is `{ proposeMinVotes, proposalPercent, passPercent,
+pendingMinutes, voteMinutes }`, the dials of 15.7, so the wallet's words
+carry the numbers.
+
+**POST /get-dao-proposal**. Body `{ proposalId }`; `400 bad request shape`,
+`400 invalid proposalId`, `404 unknown proposal`. Answer: `200 { proposal
+}`, the item of the list with `body` added. An expired proposal is answered
+too (status `expired`, its results null), so an old link resolves.
+
+**POST /list-dao-votes**. Body `{ proposalId, stage, limit?, offset? }`;
+`400 bad request shape`, `400 invalid proposalId`; `stage` `pending` (the
+supports) or `official` (the votes; `400 invalid stage`); `limit` 1 to 200,
+default 50 (`400 invalid limit`); `offset` 0 or more (`400 invalid
+offset`); `404 unknown proposal`. Answer: `200 { votes: [ { anopodId,
+username, vote, weight, createdAt } ] }`, newest first; `username` null
+when the pod's row is gone. The wallet marks the caller's own row by
+`anopodId`.
+
+### 15.5 Statuses and the clock
+
+```
+pending -> open      the flip: the support reached needed; a fresh snapshot fixes the voting power
+pending -> expired   the clock: pending_until passed with the support under needed
+open    -> accepted  the clock: vote_closes_at passed and for * 100 > DAO_PASS_PERCENT * (for + against)
+open    -> rejected  the clock: vote_closes_at passed, otherwise (a tie, or no vote at all)
+```
+
+`accepted`, `rejected` and `expired` are final. Expired proposals are kept
+with their rows and hidden from the lists, not deleted.
+
+The flip, `flipIfReached(proposalId)` in `src/dao/dao.service.js`, runs
+after a posting and after a support, and from the clock: a fresh snapshot
+(15.6); when no validator answers it logs `dao: the flip of <id> waits,
+validators unreachable` and answers `pending`. Then one transaction: the
+row locked; a status other than `pending` answers that status; a
+pending-stage sum under `needed` answers `pending`; else the fresh weights
+replace the snapshot rows, the row gets `status = 'open'`, the fresh total
+and `asOf`, `opened_at = now()` and `vote_closes_at = now() +
+DAO_VOTE_MINUTES`; `open`. `needed` is not recomputed: it is the posting
+snapshot's number, and the support rows carry that snapshot's weights.
+
+The clock, `src/dao/dao-clock.js`, in the shape of anossoftware's
+`src/held-transactions/unapproved-sweep.js`: `startDaoClock()` after
+`listen` in `src/server.js`, `stopDaoClock()` in its `shutdown`; one tick
+at boot, then every 60 seconds, `unref`'d. A tick:
+
+1. The expiry: one statement moves every pending proposal whose
+   `pending_until` has passed to `expired` with `decided_at = now()`; each
+   one's snapshot rows are deleted; one log line per proposal.
+2. The flip: every pending proposal whose pending-stage sum is at or above
+   `needed` goes through `flipIfReached`, the retry for a flip that found
+   the validators unreachable when the support arrived.
+3. The close, one transaction: the open proposals whose `vote_closes_at`
+   has passed, locked with `SKIP LOCKED`; for each, the official sums,
+   `accepted` when `for * 100 > DAO_PASS_PERCENT * (for + against)` else
+   `rejected`, the results and `decided_at` written, the snapshot rows
+   deleted; one log line per proposal.
+
+Three masterpods run the clock at once on prod1, prod2 and prod3: the
+expiry is one idempotent statement, the flip locks the row and re-checks
+the status, the close skips the rows another box holds. A tick that throws
+logs the error and the next tick runs.
+
+### 15.6 The validator read and the snapshot
+
+The one outbound call this server makes, `src/dao/validators.client.js`
+`fetchDaoStakes()`: for each URL of `VALIDATOR_URLS`, in order, `POST
+<url>/list-dao-stakes` with the header `Content-Type: application/json`,
+the body `{}` and a five-second timeout, the shape of anossoftware's
+`src/masterpod/masterpod.client.js`. The validator's answer (anossoftware
+spec 23) is `200 { asOf, total, stakes: [ { accountId, daoVoteStake } ]
+}`: `asOf` ISO 8601, `total` a decimal string of millionths, `stakes` every
+account with DAO stake above zero, `accountId` 64 lowercase hex,
+`daoVoteStake` a decimal string of millionths. The first `200` of that
+shape is the answer; anything else moves to the next URL with one log line:
+a doorman or a validator that has not pulled the route (`404`), a joiner
+(`503 not counted yet`), the doorman's own refusals (doormansoftware spec
+6: `400`, `413`, `429 too many requests`, `502`, `504`), a timeout, a body
+of the wrong shape. When every URL failed, null. The read is public and
+unsigned: everything in it is on the public chain, and this server has no
+anos account or validator key to sign with. The doormen's certificates are
+Let's Encrypt, so the fetch verifies them as any other.
+
+The snapshot, `src/dao/snapshot.js` `takeSnapshot()`: the stakes (null
+passed through); `findPodsForAccounts` (15.8) maps the accounts to pods;
+per pod the millionths are summed as BigInt and floored to whole anos
+(`weight = sum / 1,000,000`), pods at 0 dropped; `total` the answer's
+`total` floored the same way. Returns `{ asOf, total, weights: [ {
+anopodId, weight } ] }`. Taken when a proposal is posted (the posting
+snapshot: the support stage counts against it) and again at the flip (the
+fresh snapshot: the voting power for the two weeks). Stake added after a
+snapshot counts from the next one. Stake on an account the masterpod does
+not know (none today: every account is made through
+`/create-anos-account`) counts in `total` and in nobody's weight.
+
+### 15.7 Environment variables
+
+| Variable | Default | Meaning |
+| -------- | ------- | ------- |
+| `VALIDATOR_URLS` | `http://localhost:3001` to `3005`, the five local validators | the validators asked for the DAO stake list, comma-separated, tried in order; on the servers the doormen's URLs, the list of the wallet's `network/wallet.env`; a trailing slash is dropped |
+| `DAO_PROPOSE_MIN_VOTES` | `1` | the least DAO votes (whole staked anos) in the snapshot a pod needs to post |
+| `DAO_PROPOSAL_PERCENT` | `15` | the percent of all DAO votes a pending proposal needs in support; at most 100 |
+| `DAO_PASS_PERCENT` | `50` | for must be more than this percent of the votes cast; at most 99, so a tie fails |
+| `DAO_PENDING_MINUTES` | `10080` | how long a proposal may collect support (a week) |
+| `DAO_VOTE_MINUTES` | `20160` | how long an open proposal takes votes (two weeks) |
+
+`env.validatorUrls` and `env.dao` (`proposeMinVotes`, `proposalPercent`,
+`passPercent`, `pendingMinutes`, `voteMinutes`) in `src/config/env.js`;
+every integer a positive integer, the two percents also capped. All have
+defaults, so the existing `.env` keeps working; on the servers the user
+adds `VALIDATOR_URLS` (a masterpod with no validator to ask answers `503`
+to every posting). Locally the minutes may be set small to try the clock.
+
+### 15.8 Changes to what exists (all additive)
+
+- `db/schema.sql`: the three tables, as a block after the break-glass
+  block.
+- `src/anos-accounts/anos-accounts.queries.js`:
+  `findPodsForAccounts(accountIds, db)`, `SELECT account_id, anopod_id
+  FROM anos_accounts WHERE account_id = ANY($1)`, a Map from the account
+  id in hex to the pod's id as a Buffer; the snapshot's one lookup.
+- `src/config/env.js` and `.example.env`: the six variables of 15.7.
+- `src/app.js`: the DAO router mounted, with its comment line.
+- `src/server.js`: the clock started in the `listen` callback and stopped
+  first thing in `shutdown`; the one thing this server runs on its own
+  besides the listener.
+- Section 2's level table names the six routes; section 8's table the six
+  variables.
+- `README.md`: the routes, the tables, the folder, the variables.
+
+Nothing else in existing code changes. New: `src/dao/` (`dao.router.js`,
+`dao.handlers.js`, `dao.service.js`, `dao.queries.js`,
+`validators.client.js`, `snapshot.js`, `dao-clock.js`). No new npm package.
+
+### 15.9 Deferred, by decision
+
+- A moderator hide for a proposal's text (on the user's own after-launch
+  list).
+- Votes signed by pair one of a staked account, verifiable against the
+  chain; changes no table.
+- Notifications; the wallet reads the lists, and Home's "Things to do" line
+  counts the open proposals the pod has not voted on.
+- Editing or withdrawing a proposal.
+- A cursor on the lists (`offset` paging today).
+- A vote list export.
+- A logged-out public view of the proposals.
+- Also out (the plan's section 8): comments on a proposal (the chat is
+  there); a quorum (the pending stage is the quorum); any weighting but one
+  anos one vote; the stake withdrawal lock, which the guardians work by
+  hand from the vote rows' times.
+
+### 15.10 Notes from the build
+
+#### Build 1, the masterpod (2026-11-08)
+
+Built from `~/Desktop/Z-TestNet/forclaude/dao-voting-plan-1.md` section 3,
+on main at 846111b (the vouching selfie change). No new npm package, no
+test script and no rig (none was asked for). The schema was not applied to
+any database for keeps: the user applies the whole file by psql as the
+superuser with `SET ROLE masterpodsoftware`, as 13.10 records, and
+locally with `npm run db:setup`. What the plan left open and how it was
+decided:
+
+- The schema block sits at the end of `db/schema.sql`, after the
+  break-glass block: the plan's DDL, aligned in the file's column style,
+  with a header comment and a `COMMENT ON` for every table and column.
+  `dao_snapshot_weights` has no `created_at` and no trigger, as the plan's
+  DDL has it; the file's header comment, which names the blocks that hold
+  the ALTERs, is unchanged, since this block has none.
+- The validator client's shape check requires `asOf` too (a string
+  `Date.parse` understands), beside the plan's `total` and `stakes`: it
+  lands in `snapshot_at`, which is NOT NULL, so an answer without it is a
+  body of the wrong shape and moves to the next URL. `accountId` must be
+  lowercase hex, as the validator's spec answers it; `total` and
+  `daoVoteStake` digits with no leading zero. The log line names the URL
+  and the reason: the HTTP status with the answer's `error` when there is
+  one, the fetch error's message (a timeout included), or `bad shape`.
+- Two queries join the plan's list: `hasPendingProposal(anopodId)`, the
+  posting's "no pending proposal of the caller" before the write (the
+  partial unique index is the backstop, as the plan says), and
+  `findVote(client, proposalId, anopodId, stage)`, the "no row of the
+  caller in this stage" check under the lock on a support and on a vote
+  (the primary key the backstop). `PROPOSAL_STATUSES`, `DECIDED_STATUSES`
+  and `STAGES` are exported from the queries file for the service.
+- The times: `pending_until`, `opened_at` and `vote_closes_at` are
+  computed in the service from the server's clock and passed to the
+  queries, as the plan's signatures read; `decided_at` is the database's
+  `now()` at the expiry and at the close. `snapshot_at` is the validator's
+  `asOf`, parsed and passed as a Date. The support route's "pending_until
+  ahead" and the vote route's "vote_closes_at ahead" compare the locked
+  row's time with the server's clock.
+- The flip takes the snapshot before looking at the support, as 3.5
+  orders it, so a support that leaves the proposal far from `needed` costs
+  one validator read too (and, while no validator answers, the "waits"
+  log line and up to five seconds per URL before the `200`). A check of
+  the sum before the read is a one-line change for later. The flip logs
+  one line when it opens a proposal (the support reached, the closing
+  time), beside the plan's line for the unreachable validators.
+- The lists: `from` is at or after and `to` before, as `listNotes` reads
+  its bounds; a bad `limit` or `offset` is `400 invalid limit` or `400
+  invalid offset`, the marketplace's and the chat's reasons. A `vote`,
+  `stage` or `status` that is not one of its words is `400 invalid vote`,
+  `invalid stage` or `invalid status` whatever its type, after the shape
+  check of the strings the route needs. The item's `for` and `against`
+  read the stored result when it is set and the live sum otherwise, so an
+  expired proposal (results null) reads 0 and 0. `settings` is `env.dao`
+  itself, a frozen object of the five dials.
+- `/list-dao-votes` checks that the proposal exists through
+  `findProposal`, the one read of a proposal by id; `/get-dao-proposal`
+  answers the same row with the body.
+- `findPendingReached` does not look at `pending_until`: the expiry runs
+  before the flip in every tick, so a proposal past its time is expired
+  before the flip pass looks. The tick is one try/catch over the three
+  steps, as the sweep's, with no guard against a tick that outlives the
+  minute: the flip is safe to repeat (the lock and the status check), so
+  an overlap costs a validator read at most. The expiry's `deleteSnapshot`
+  runs on the pool, one proposal at a time; the close's on the close's
+  client. `replaceSnapshot` is `deleteSnapshot` and then the one `INSERT
+  ... SELECT` over `unnest`; an empty snapshot inserts nothing.
+- `VALIDATOR_URLS`' default is built as `http://localhost:300<n>` for 1 to
+  5; `optionalPercent` is `optionalInteger` with a ceiling, for the two
+  percents (100 and 99).
+- Checks (3.8): `node --check` on the eleven changed source files (the
+  seven of `src/dao/`, `anos-accounts.queries.js`, `env.js`, `app.js`,
+  `server.js`), clean; every name imported by the new files is exported
+  where it is imported from. The SQL by psql against the local `masterpod`
+  database (as the superuser `codex`; the app's role `masterpodsoftware`
+  is not one) inside one transaction, rolled back: the DAO block applied
+  twice (`IF NOT EXISTS`, `OR REPLACE`, the comments overwritten; the
+  three tables with 16, 6 and 3 columns, a comment on each table and
+  column, the two triggers, the seven indexes); every query of
+  `dao.queries.js` and `findPodsForAccounts` prepared with its exact text
+  (twenty statements, the text taken from the functions by a throwaway
+  client that recorded what they sent, outside the repo) and executed on
+  throwaway rows (one pod with an `anopods` row, one without, three
+  proposals): the partial unique index refusing a second pending proposal
+  of the pod, `set_updated_at` overriding a backdated `updated_at`, the
+  replace (the delete and the `unnest` insert, a pod dropped on the
+  second replace, an empty replace), the append-only trigger refusing an
+  `UPDATE` and a `DELETE`, the primary key refusing a second row of the
+  pod in the stage, the check refusing a pending `against`,
+  `findProposal` with the username, the three sums and the caller's part
+  for two callers, the list for pending and for open with a `from` bound,
+  a `to` bound, `limit` and `offset`, the lock, the sums, the votes list
+  with the username and a null for the pod without a row, `findWeight`,
+  `findVote`, `hasPendingProposal`, the clock's three steps (the expiry of
+  the proposal past `pending_until`, the reached one found and opened by
+  `setOpen`, the closable one locked and decided accepted 7 to 3 with its
+  snapshot rows gone), the decided list with the stored and the live sums
+  equal, the expired proposal in no list but still found by id. After the
+  rollback the three tables and the throwaway pod were gone.
+  `findPodsForAccounts` ran once more, read-only, on two live account ids
+  and one unknown id: the two mapped to their pods, the unknown absent,
+  an empty list answering no rows.
+- Not touched: `src/attesting/`, `src/break-glass/`, `src/recovery/`,
+  `src/wallet-memory/`, `src/marketplace/`, `src/chat/`, the auth
+  middlewares, `package.json`, the scripts; in the README the level table
+  and the paragraph after the routes table (the plan names the routes
+  list, the tables list, the folder list and the variables table).
+
+## 16. Appointments (2026-11-08)
+
+Design settled 2026-11-08 in a planning chat of one round (the plan is
+`~/Desktop/Z-TestNet/forclaude/appointments-plan-1.md`, FINAL). Why: until
+this section a moderator was a pod whose `username` started with
+`moderator` and that any super seed had vouched for, and an attestor the
+same with `attestor` (12.2 and 13.2 as they were). Nothing reserved the
+usernames, so the rule was really "any super seed vouched for you", and at
+the production launch about a thousand pods will be super seeds. The
+validators and the keyholders check only that the signing account holds
+the stake, and anyone with a spending account and the minimum may stake.
+Moderator and attestor are positions of trust, so one list decides: the
+`appointments` table on this server, written by the operator's scripts,
+read by the two gates and by the two answers that carry a pod's role.
+Three repos in order: this server (this section, step 1 of the plan: the
+table, the two scripts, the gates, the two answers), the validator
+(anossoftware spec section 24, step 2: the receiving validator asks
+`/get-anos-account` for the pod's role before it accepts a stake for
+moderator or attestor, the way it asks at create-account whether a vouched
+pod made the account) and the wallet (its section 11, step 3: the Stake
+for list offers moderator and attestor only to a pod appointed for it),
+then the two record folders. Nothing is reset: the table is new, and the
+Test Net 2 relaunch starts this server's database fresh anyway. The
+keyholders, the doorman and the signing server are not touched. Nothing
+above this section changes except the items in 16.5.
+
+### 16.1 The table
+
+```sql
+CREATE TABLE IF NOT EXISTS appointments (
+  anopod_id    BYTEA       NOT NULL CHECK (octet_length(anopod_id) = 32),
+  role         TEXT        NOT NULL CHECK (role IN ('moderator', 'attestor')),
+  appointed_by TEXT        NOT NULL CHECK (appointed_by = 'operator' OR appointed_by ~ '^[0-9a-f]{64}$'),
+  appointed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  revoked_at   TIMESTAMPTZ,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (anopod_id, appointed_at)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS appointments_one_live_per_pod
+  ON appointments (anopod_id) WHERE revoked_at IS NULL;
+```
+
+One row per appointment of a pod as a moderator or an attestor. A pod
+holds the role while its row has no `revoked_at`; the partial unique index
+`appointments_one_live_per_pod` keeps that to one row per pod, so a pod is
+a moderator or an attestor, never both: revoke, then appoint again for the
+other role. Revoking sets `revoked_at`; the row stays, so who held what
+when is on record, and appointing the pod again adds a row (the primary
+key is the pod and `appointed_at`). `appointed_by` is `operator` for the
+scripts; a pod's hex id is for a DAO proposal kind that appoints, later.
+The `set_updated_at` trigger and a `COMMENT ON` for the table and every
+column, as every other table has them; the block sits after the
+`super_seeds` block in `db/schema.sql`. No foreign keys, as everywhere.
+
+### 16.2 The rule
+
+A moderator is a pod with a live `appointments` row with `role =
+'moderator'`; an attestor, one with `role = 'attestor'`:
+
+```sql
+SELECT EXISTS (SELECT 1 FROM appointments
+               WHERE anopod_id = $1 AND role = $2 AND revoked_at IS NULL)
+```
+
+`src/appointments/appointments.queries.js` holds it (`isAppointed`), with
+`findLiveRole` (the pod's live role, `'moderator'`, `'attestor'` or
+`null`), `listAppointedPods` (the pods with a live row for a role whose
+setup is complete, username order, as `listAttestorPods` filtered before)
+and the two writes of the scripts, `insertAppointment` and
+`revokeAppointment`. The gates: `mustBeModerator`
+(`src/auth/require-moderator.js`) is `isAppointed(anopodId, 'moderator')`,
+else `403 not a moderator`; `mustBeAttestor`
+(`src/auth/require-attestor.js`) the same with `'attestor'`, else `403 not
+an attestor`. `isAttestorPod` and `listAttestorPods` in that file, which
+`attesting.service.js` uses for `/list-attestors` and for the pods a case
+key is wrapped to in `/open-dispute-case` and `/share-case-key`, are the
+two queries with `'attestor'`; their callers (`attesting.service.js`,
+`recovery.router.js`, `attesting.router.js`, `break-glass.router.js`) do
+not change, and the levels of 12.2 and 13.2 keep their routes. The
+username prefix rule is gone: `MODERATOR_PREFIX`, `ATTESTOR_PREFIX` and
+`vouchedBySuperSeed` are removed, usernames are free, and a super seed's
+vouch appoints nobody (the build notes of 12.10 and 13.10 describe the
+prefix rule as it was). The masterpod still does not check the stake: the
+keyholders do on every bucket key request, the validators on every
+attestor read and follow-up; and from step 2 the validators accept a
+moderator or attestor stake only from an account whose pod is appointed
+for it, so the stake checks there stand unchanged.
+
+### 16.3 The scripts
+
+No route writes the table. On a prod box, as the masterpod user in the
+checkout, after the pod is made at the wallet like any other:
+
+```bash
+npm run appoint -- <anopod id, 64 hex> <moderator|attestor>
+npm run revoke -- <anopod id, 64 hex>
+```
+
+`scripts/appoint.js`, the shape of `scripts/make-super-seed.js`: the id
+and the role parsed (exit 2 with the usage line on a malformed one); one
+transaction: the pod's row read by id (exit 1, `<id>: no anopod with this
+id`); a live row with the same role, `<username> (<id>): already appointed
+as attestor`, exit 0; a live row with the other role, `<username> (<id>):
+is a moderator; revoke first`, exit 1; otherwise the row inserted with
+`appointed_by 'operator'` and `<username> (<id>): appointed as attestor`.
+It requires the pod to exist and nothing else, not `vouched`, not setup:
+the operator appoints whom they choose, and the stake needs a vouched pod
+anyway. `scripts/revoke.js`: `<username> (<id>): revoked as attestor`, or
+`<username> (<id>): holds no appointment`, exit 0 both; exit 1 on an
+unknown id, 2 on a malformed one. Revoking takes effect here at once; the
+stake the pod holds at the validators comes back through the guardians'
+fund proposal payout with `stakeFor`, which already drops the role at the
+validators and the keyholders, and until that payout is written the stake
+still counts there (the plan's decision 6, accepted for the production
+launch and listed as a follow-up). `package.json`: `appoint` and `revoke`,
+each `node --env-file=.env scripts/<name>.js`.
+
+### 16.4 The two answers
+
+- `/get-anos-account` (none): `200 { accountId, anopodId, vouched, role }`,
+  `role` the pod's live role, `"moderator"`, `"attestor"` or `null`, read
+  by `findLiveRole`. For the validators' appointment check at stake time
+  (step 2), beside the binding check they already run at create-account.
+  Nothing new is given away: the chain already shows which accounts staked
+  for which purpose, and the route already maps any account to its pod.
+- `/check-anopod-status` (session): the answer gains `role` the same way,
+  after `isSuperSeed`. The wallet's Stake for list reads it (step 3). An
+  older wallet ignores the field.
+
+### 16.5 Files
+
+- `db/schema.sql`: the `appointments` block after the `super_seeds` block.
+- `src/appointments/appointments.queries.js`, new.
+- `src/auth/require-moderator.js`, `src/auth/require-attestor.js`: the
+  gates on the table; the prefixes, `vouchedBySuperSeed` and the import
+  between the two files gone.
+- `src/anos-accounts/anos-accounts.service.js` (`getAnosAccount`) and
+  `src/anopods/anopods.service.js` (`status`): `role`.
+- `scripts/appoint.js` and `scripts/revoke.js`, new; `package.json`, the
+  two script lines.
+- Here: section 2 (a dated pointer), section 4 (`### appointments`),
+  section 5 (the two answers), section 9 (the scripts), 12.2 and 13.2
+  (rewritten in place), 12.9 and 13.9 (the revoking items). `README.md`:
+  the scripts table, the levels table, the tables list, the two route
+  rows, and, on the user's word after the build, the paragraph after the
+  routes table, the Genesis section and the folder lists.
+
+Nothing else in existing code changes. No env variable, no npm package,
+no new route.
+
+### 16.6 Notes from the build
+
+#### Build 1, the masterpod (2026-11-08)
+
+Built from `~/Desktop/Z-TestNet/forclaude/appointments-plan-1.md` section
+1, on main at 68b8ba2 (DAO voting). No new npm package, no test script
+and no rig (none was asked for). The schema was not applied to any
+database for keeps: the user applies the whole file by psql as the
+superuser with `SET ROLE masterpodsoftware`, as 13.10 records, and
+locally with `npm run db:setup`. A masterpod that keeps its database
+needs `npm run appoint` for every moderator and attestor pod it already
+has, or the two editions refuse them (the plan's section 5). What the
+plan left open and how it was decided:
+
+- Section 2's level table has no `moderator` or `attestor` row (the two
+  levels have their tables in 12.2 and 13.2), so the plan's wording for
+  those rows went on the rows of 12.2 and 13.2, and section 2's closing
+  sentence gained the dated pointer to section 16.
+- The plan gave the comments of the table, `appointed_by` and
+  `revoked_at`; the other columns got one each in the file's words, the
+  `appointed_at` comment saying why it is in the primary key.
+- The scripts read the pod's row inline (`SELECT username ... WHERE
+  anopod_id = $1`), as `make-super-seed.js` runs its own `UPDATE`; the
+  exits that write nothing roll back. `appoint.js` parses the role
+  against the two words and spells the refusal "is a moderator" or "is an
+  attestor". `decodeId` takes base64 as well as hex, as everywhere.
+- `isAttestorPod(anopodId, db)` and `listAttestorPods(db)` pass `db`
+  through to the two queries; left out, it falls to the queries' pool
+  default, so the callers in `attesting.service.js` did not change.
+- `status` runs `findLiveRole` in the same `Promise.all` as its three
+  other reads; `getAnosAccount` runs it after the account is found.
+- Checks (1.7): `node --check` on the seven changed source files
+  (`appointments.queries.js`, the two gates, the two services, the two
+  scripts), clean; every name imported by them is exported where it is
+  imported from; `grep -rn "PREFIX\|startsWith" src` finds only the SPKI
+  key prefixes of `crypto/signatures.js`. The SQL by psql against the
+  local `masterpod` database as the superuser `codex` with `SET LOCAL ROLE
+  masterpodsoftware`, three transactions, each rolled back: the block
+  applied (owner `masterpodsoftware`, seven columns, the primary key and
+  the partial unique index, the trigger, a comment on the table and every
+  column) and gone after the rollback; the block applied twice (the
+  `IF NOT EXISTS` notices, the comments overwritten), a throwaway pod
+  appointed as attestor, the same pod inserted again with another
+  `appointed_at` (inside one transaction `now()` is one value, so a
+  second insert at the default would hit the primary key first) and
+  refused by `appointments_one_live_per_pod`, a role of `guardian` refused
+  by the role check, the three reads of 1.2 run by hand (`findLiveRole`
+  `attestor`, and no row for a pod without one; `isAppointed` true for
+  `attestor` and false for `moderator`; `listAppointedPods('attestor')`
+  empty while the throwaway pod has no `anopods` row, then two real local
+  pods appointed and the one with setup complete listed alone), the
+  revoke (`UPDATE 1`, `updated_at` moved to `now()` by the trigger,
+  `created_at` untouched, then no live role, a second revoke `UPDATE 0`),
+  the pod appointed again as moderator with the revoked row kept (two
+  rows, one live); and `appointed_by = 'genesis'` refused by its check
+  while a 64-hex `appointed_by` is accepted. After each rollback the table
+  was gone and the real pods untouched. No server was booted.
+- Not touched: `src/attesting/`, `src/recovery/`, `src/break-glass/`,
+  `src/vouching/`, `src/dao/`, `app.js`, `env.js`, `.example.env`, the
+  three shell scripts. Three README places the plan did not name still
+  described the username rule after the build (the paragraph after the
+  routes table, the Genesis section, the folder lists); the user asked
+  for them to be brought in line, and they were, before the commit.

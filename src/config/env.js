@@ -25,6 +25,16 @@ function optionalInteger(name, fallback) {
 }
 
 /**
+ * An optional percent: a positive integer of at most `max` when set;
+ * `fallback` when it is not set.
+ */
+function optionalPercent(name, fallback, max) {
+  const value = optionalInteger(name, fallback);
+  if (value > max) throw new Error(`${name} must be at most ${max}, got "${value}"`);
+  return value;
+}
+
+/**
  * An optional comma-separated list; `fallback` when it is not set. Items are
  * trimmed and empty ones dropped; a value with no item at all is an error.
  */
@@ -35,6 +45,9 @@ function optionalList(name, fallback) {
   if (items.length === 0) throw new Error(`${name} must list at least one item, got "${value}"`);
   return Object.freeze(items);
 }
+
+/** The five local validators of a development machine, the default VALIDATOR_URLS. */
+const LOCAL_VALIDATOR_URLS = Object.freeze([1, 2, 3, 4, 5].map((n) => `http://localhost:300${n}`));
 
 export const env = Object.freeze({
   nodeEnv: process.env.NODE_ENV ?? 'development',
@@ -80,4 +93,26 @@ export const env = Object.freeze({
   // limit in src/app.js.
   maxImageBytes: optionalInteger('MAX_IMAGE_BYTES', 10_485_760),
   maxImagesPerRequest: optionalInteger('MAX_IMAGES_PER_REQUEST', 5),
+
+  // The validators asked for the DAO stake list (src/dao/validators.client.js,
+  // spec 15.6), a comma-separated list tried in order: the five local
+  // validators by default, the doormen's URLs on the servers (the wallet's
+  // list). A trailing slash is dropped.
+  validatorUrls: Object.freeze(
+    optionalList('VALIDATOR_URLS', LOCAL_VALIDATOR_URLS).map((url) => url.replace(/\/+$/, '')),
+  ),
+
+  // The DAO's dials (spec 15.7), answered to the wallet as `settings` by
+  // /list-dao-proposals: the least DAO votes (whole staked anos) a pod needs
+  // in the snapshot to post; the percent of all DAO votes a pending proposal
+  // needs in support to go to a vote; the percent of the votes cast that for
+  // must exceed (at most 99, so a tie fails); how long a proposal may collect
+  // support (a week); how long an open proposal takes votes (two weeks).
+  dao: Object.freeze({
+    proposeMinVotes: optionalInteger('DAO_PROPOSE_MIN_VOTES', 1),
+    proposalPercent: optionalPercent('DAO_PROPOSAL_PERCENT', 15, 100),
+    passPercent: optionalPercent('DAO_PASS_PERCENT', 50, 99),
+    pendingMinutes: optionalInteger('DAO_PENDING_MINUTES', 10_080),
+    voteMinutes: optionalInteger('DAO_VOTE_MINUTES', 20_160),
+  }),
 });

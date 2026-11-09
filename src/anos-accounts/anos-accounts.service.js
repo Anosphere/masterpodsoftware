@@ -1,3 +1,4 @@
+import { findLiveRole } from '../appointments/appointments.queries.js';
 import { decodeBytes } from '../crypto/bytes.js';
 import { isUniqueViolation } from '../db/transaction.js';
 import { decodeId, toHex } from '../util/ids.js';
@@ -108,8 +109,11 @@ export async function listAnosAccounts(anopod) {
 
 /**
  * POST /get-anos-account (none). Body { accountId }. For the validators'
- * binding check: the pod that made the account and whether it is vouched,
- * read from the pod's row. Unsigned, like /get-anopod-session-keys.
+ * binding check at create-account and their appointment check at a
+ * moderator or attestor stake (spec section 16): the pod that made the
+ * account, whether it is vouched, read from the pod's row, and its live
+ * role, "moderator", "attestor" or null, read from appointments. Unsigned,
+ * like /get-anopod-session-keys.
  */
 export async function getAnosAccount(body) {
   if (!isObject(body) || typeof body.accountId !== 'string') return refuse(400, BAD_SHAPE);
@@ -117,5 +121,6 @@ export async function getAnosAccount(body) {
   if (accountId === null) return refuse(400, BAD_SHAPE);
   const found = await findAccountOf(accountId);
   if (found === null) return refuse(404, 'unknown account');
-  return ok(200, { accountId: toHex(accountId), anopodId: toHex(found.anopodId), vouched: found.vouched });
+  const role = await findLiveRole(found.anopodId);
+  return ok(200, { accountId: toHex(accountId), anopodId: toHex(found.anopodId), vouched: found.vouched, role });
 }

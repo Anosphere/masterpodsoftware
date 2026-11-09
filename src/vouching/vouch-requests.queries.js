@@ -1,7 +1,6 @@
 import { PROFILE_COLUMNS, profileFromRow } from '../anopods/anopods.queries.js';
 import { pool } from '../db/pool.js';
 import { toHex } from '../util/ids.js';
-import { encodeImage } from '../util/images.js';
 
 /**
  * SQL for the vouch_requests table: the open requests only. Ids are 32-byte
@@ -50,30 +49,22 @@ export async function deleteRequest(client, vouchIdNumber) {
 
 /**
  * The open requests addressed to `anopodIdTo`, oldest first, each in its
- * wire form: { vouchIdNumber, from: { profile..., selfie }, createdAt }. The
- * selfie is the requester's public selfie, { contentType, image }, so the
- * seed sees who is asking; null for a pod without one.
+ * wire form: { vouchIdNumber, from: { profile... }, createdAt }. No selfie
+ * here (2026-11-08): the wallet reads each requester's picture through
+ * /get-anopod-profile, so a seed with many requests sees the list at once.
  */
 export async function listOpenFor(anopodIdTo) {
   const { rows } = await pool.query(
-    `SELECT r.vouch_id_number, r.created_at, ${PROFILE_COLUMNS},
-            ps.content_type AS selfie_content_type, ps.image AS selfie_image
+    `SELECT r.vouch_id_number, r.created_at, ${PROFILE_COLUMNS}
      FROM vouch_requests r
      JOIN anopods a ON a.anopod_id = r.anopod_id_from
-     LEFT JOIN public_selfies ps ON ps.anopod_id = a.anopod_id
      WHERE r.anopod_id_to = $1
      ORDER BY r.created_at, r.vouch_id_number`,
     [anopodIdTo],
   );
   return rows.map((row) => ({
     vouchIdNumber: toHex(row.vouch_id_number),
-    from: {
-      ...profileFromRow(row),
-      selfie:
-        row.selfie_image === null
-          ? null
-          : encodeImage({ content_type: row.selfie_content_type, image: row.selfie_image }),
-    },
+    from: profileFromRow(row),
     createdAt: row.created_at.toISOString(),
   }));
 }

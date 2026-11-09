@@ -9,7 +9,10 @@ of listings, and, since 2026-10-26, the recovery cases of locked-out people:
 their moderation, the keyholders' shares and the finish (`docs/schemas.md`
 section 12), and the attestors' cases on assisted trades and disputed
 escrows: the person's lookup id, the parties' encrypted evidence, the
-sign-offs that are the validators' own follow-up objects (section 13).
+sign-offs that are the validators' own follow-up objects (section 13), and,
+since 2026-11-08, the break-glass cases: the moves a recovery's finish files
+out of the accounts whose keys died with the lost passkey, into new accounts
+of the same type, and the attestors' sign-offs on them (section 14).
 
 Everything a pod keeps private reaches the server as ciphertext;
 the server checks shapes, lengths, signatures and who may do what, and stores
@@ -42,6 +45,8 @@ Then open <http://localhost:3100>. The web app that drives it is
 | `npm run db:setup`        | Create the role, the database and its schema (idempotent). Pass an env file to use another one. Adds new tables to a live database without a reset. |
 | `npm run db:reset`        | Drop the database and run setup again. Local data is lost; use after a change to an existing table. |
 | `npm run make-super-seed -- <id>` | Genesis: make the pod with this hex id a super seed (see below).    |
+| `npm run appoint -- <id> <role>` | Appoint the pod with this hex id as a `moderator` or an `attestor` (`docs/schemas.md` section 16). |
+| `npm run revoke -- <id>` | End the pod's appointment; the row stays on record.                   |
 
 ## Who may call what
 
@@ -53,11 +58,11 @@ Every route is a `POST` with a JSON body. Four pod levels and three more:
 
 | session  | Signed by the pod's current ephemeral keys (the envelope below). Vouched or not.          |
 | vouched  | session, and `anopods.vouched` is true.                                                  |
-| setup    | vouched, and setup is complete (the pod has chat keys): every chat and marketplace route, the three anos account routes, the six wallet memory routes, `/rotate-backup-code` and `/store-break-glass-blob` after a recovery, and the person's four attestation routes `/list-my-cases`, `/get-my-case`, `/share-lookup-id`, `/add-dispute-evidence`. |
+| setup    | vouched, and setup is complete (the pod has chat keys): every chat and marketplace route, the three anos account routes, the six wallet memory routes, `/rotate-backup-code` and `/store-break-glass-blob` after a recovery, the person's four attestation routes `/list-my-cases`, `/get-my-case`, `/share-lookup-id`, `/add-dispute-evidence`, and the person's two break-glass routes `/file-break-glass-moves`, `/list-my-break-glass-moves`. |
 | recovery | Signed by a recovery pod's current ephemeral keys: the same envelope with `caseId` in place of `anopodId` (`src/auth/require-recovery-session.js`); `/get-recovery-pod`, `/complete-recovery-case`. |
 
-| moderator | session, and the pod's username starts with `moderator` and a super seed vouched for it (`src/auth/require-moderator.js`; the stake is the keyholders' check); the six moderation routes. |
-| attestor | session, and the pod's username starts with `attestor` and a super seed vouched for it (`src/auth/require-attestor.js`, the moderator rule with the other prefix; the stake is the validators' and the keyholders' check); the fourteen attestor routes of section 13. |
+| moderator | session, and the pod holds a live appointment for the role (`appointments`, `docs/schemas.md` section 16, written by `npm run appoint`; `src/auth/require-moderator.js`; the stake is the keyholders' check); the six moderation routes. |
+| attestor | session, and the pod holds a live appointment for the role (`appointments`, section 16; `src/auth/require-attestor.js`, the moderator rule with the other role; the stake is the validators' and the keyholders' check); the fourteen attestor routes of section 13 and the seven break-glass routes of section 14. |
 
 Failing a level: `401` for anything wrong with the signature or the session,
 `403 anopod not vouched`, `403 setup not complete`, `403 not a moderator`, `403 not an attestor`. Other errors are
@@ -101,18 +106,18 @@ are base64 / base64url as the browser produces them.
 
 | Route                           | Level   | Does                                                                                     |
 | ------------------------------- | ------- | ---------------------------------------------------------------------------------------- |
-| `/challenge`                    | none    | Issues a single-use WebAuthn challenge for `create` or `unlock`; `create` also mints the new pod's id |
+| `/challenge`                    | none    | Issues a single-use WebAuthn challenge for `create`, `unlock`, `openCase`, `unlockCase` or `recover`; `create` also mints the new pod's id; `openCase` takes the anoPod id the keyholders named for the lookup id and answers its username (2026-11-08) |
 | `/create-anopod`                | none    | Creates a pod: profile, selfie, passkey registration (PRF required), first session        |
 | `/unlock`                       | none    | Opens a session: passkey assertion, new ephemeral keys; answers the blobs to unwrap, `identityBlob` included |
 | `/check-username`               | none    | Lowercases the username, checks the rule, says whether it is free                        |
-| `/check-anopod-status`          | session | The caller's vouched, vouchCount, setupComplete, isSeed, isSuperSeed, and its rows in each bucket (bucketOneImages, bucketTwoImages, bucketTwoInfos) |
+| `/check-anopod-status`          | session | The caller's vouched, vouchCount, setupComplete, isSeed, isSuperSeed, role (`moderator`, `attestor` or null, section 16), and its rows in each bucket (bucketOneImages, bucketTwoImages, bucketTwoInfos) |
 | `/get-anopod-profile`           | session | A pod's public profile with its selfie                                                   |
 | `/get-anopod-session-keys`      | none    | A pod's current session public keys and their expiry, for the keyholders' pod check      |
 | `/search-usernames`             | session | Any pod by exact username, with selfie and seed flags; finds a seed to ask and a pod to invite |
 | `/send-vouch-request`           | session | Asks a seed to vouch for the caller                                                      |
 | `/list-notifications`           | session | The caller's notifications, newest first (`unreadOnly`, `limit`)                        |
 | `/mark-notifications-read`      | session | Marks notifications read                                                                 |
-| `/list-vouch-requests`          | vouched | The open requests addressed to the caller (a seed), oldest first, each with the requester's selfie |
+| `/list-vouch-requests`          | vouched | The open requests addressed to the caller (a seed), oldest first, each with the requester's profile (no selfie since 2026-11-08; the wallet reads it through `/get-anopod-profile`) |
 | `/approve-vouch-request`        | vouched | Records the vouch; flips `vouched` on a super seed's approval or the second vouch; a super seed's approval also makes a seed |
 | `/decline-vouch-request`        | vouched | Drops the request and notifies the requester                                             |
 | `/complete-setup`               | vouched | Stores the two encryption key blobs, the backup code keys, the chat keys and the identity blob (eight fields), once |
@@ -146,8 +151,8 @@ are base64 / base64url as the browser produces them.
 | `/get-wallet-settings`          | setup   | The caller's wallet settings blob and when it was set, null before the first set         |
 | `/set-wallet-settings`          | setup   | Stores the caller's wallet settings blob whole: one row per pod, replaced in place        |
 
-| `/get-anos-account`             | none    | For the validators' binding check: the pod that made an account and whether it is vouched |
-| `/open-recovery-case`           | none    | A locked-out person's recovery case and its recovery pod: the lookup id, the username, a contact email, a new passkey (PRF required) registered under the pod's id, the hybrid key the bankers encrypt shares to; `409` while a case for the lookup id is open |
+| `/get-anos-account`             | none    | For the validators' binding check and their appointment check: the pod that made an account, whether it is vouched, and its role (`moderator`, `attestor` or null) |
+| `/open-recovery-case`           | none    | A locked-out person's recovery case and its recovery pod: the lookup id, a contact email, a new passkey (PRF required) registered under the pod's id (the one the keyholders named, from `/challenge` openCase), the hybrid key the bankers encrypt shares to; `409` while a case for the lookup id is open |
 | `/unlock-recovery-pod`          | none    | Opens a recovery session on a return visit: the recovery passkey's assertion, new ephemeral keys; answers the hybrid key blob to open |
 | `/get-recovery-pod`             | recovery | The person's view of their case: status, the events they may see, the shares the keyholders posted, `blob2` once the case is approved |
 | `/list-recovery-cases`          | moderator | The cases by status (the four in-progress ones by default), newest first, each with the pod's names and the count of approving pods |
@@ -179,6 +184,21 @@ are base64 / base64url as the browser produces them.
 | `/get-my-case`                  | setup   | The person's view of one case: their subset of the events; for a dispute the case key and their own evidence with `keyForMe` |
 | `/share-lookup-id`              | setup   | The person hands the attestor their lookup id on a trade case |
 | `/add-dispute-evidence`         | setup   | A party's evidence files, each ciphertext with its content key wrapped twice, or files of theirs supplied again under `existing` |
+| `/file-break-glass-moves`       | setup   | The finish of a recovery files its break-glass moves: the recovery case's id and, per move, the old account, the new account of the same type and the `breakGlassTransfer`'s id; a second call adds moves |
+| `/list-my-break-glass-moves`    | setup   | The caller's break-glass cases with their moves and the person's subset of the events: what a lost account's card shows |
+| `/list-break-glass-cases`       | attestor | The break-glass cases by status (`open` and `inReview` by default), newest first, with the person's names, the moves and the sign-off counts |
+| `/get-break-glass-case`         | attestor | One case: the recovery case's lookup id, status and two moderator approvals, the person's profile and selfie, the moves, every event with the acting pod and its details complete |
+| `/list-break-glass-case-security-records` | attestor | The person's rows of one bucket, ciphertext with their key ids; writes the viewed event |
+| `/schedule-break-glass-case`    | attestor | The video call: the `scheduled` event, status `inReview`; no notification |
+| `/sign-off-break-glass-case`    | attestor | One attestation per move of the case, each the validators' follow-up signed by two pairs of the caller's account and verified against the stored creation, posted together; the second distinct pod's decides the case |
+| `/mark-break-glass-case-sent`   | attestor | Records that the stored attestations, two per move, were posted to a validator, and the answers; a retry writes another event |
+| `/dismiss-break-glass-case`     | attestor | Closes the case with a preset reason and a note; final; the held moves stay on the ledger until a cancel |
+| `/create-dao-proposal`          | setup   | A plain-text DAO proposal, title 1 to 100 and body 1 to 5,000 characters: reads every account's DAO stake from a validator, stores the posting snapshot, counts the proposer's own weight as the first support; `503 validators unreachable` when no validator answers |
+| `/support-dao-proposal`         | setup   | Supports a pending proposal with the caller's weight in the posting snapshot, once, no undo; the support that reaches `needed` opens the vote on a fresh snapshot |
+| `/vote-dao-proposal`            | setup   | Votes for or against an open proposal with the caller's weight in the fresh snapshot, once, no undo |
+| `/list-dao-proposals`           | setup   | The pending, open or decided proposals, newest first, paged, a date range on each, with the live sums, the caller's own part and the dials (`settings`); expired ones are never listed |
+| `/get-dao-proposal`             | setup   | One proposal with its body, in the list's form; an expired one too, so an old link resolves |
+| `/list-dao-votes`               | setup   | The supports or the votes of a proposal, newest first, paged: each voter's pod, username, vote, weight and time; every vote is public |
 
 The objects each route takes and answers are in `docs/schemas.md` section 5;
 the notification kinds in section 6; what the phone computes (PRF-derived
@@ -188,17 +208,28 @@ blob, the anos key blob) in section 7. The wallet's spec,
 changes (identity blob, key ids on the buckets, the status counts, anos
 accounts) come from. Recovery is section 12: the fourteen routes above,
 built in three builds on 2026-10-26 (the case and the recovery pod, the
-moderation, the delivery and the finish). A moderator is a pod named
-`moderator...` that a super seed vouched for (12.2); the moderators' app
-is the wallet's moderator edition; the keyholders post the bankers'
-shares to `/receive-recovery-share/:caseId`, and the person's wallet
-combines them and finishes. Attestation is section 13: the eighteen routes
-above, built 2026-10-26 (attestor build 2, after the validators' two
+moderation, the delivery and the finish). A moderator is a pod the
+operator appointed as one (`npm run appoint`, 12.2 and section 16; until
+2026-11-08 a pod named `moderator...` that a super seed vouched for); the
+moderators' app is the wallet's moderator edition; the keyholders post the
+bankers' shares to `/receive-recovery-share/:caseId`, and the person's
+wallet combines them and finishes. Attestation is section 13: the eighteen
+routes above, built 2026-10-26 (attestor build 2, after the validators' two
 attestor reads and the keyholders' stake rule of build 1). An attestor is a
-pod named `attestor...` that a super seed vouched for (13.2); the
-attestors' app is the wallet's attestor edition (build 3); a sign-off is
-the validators' own follow-up object, verified here against the account's
-stored creation and posted to a validator by the deciding attestor's app.
+pod the operator appointed as one (13.2 and section 16; until 2026-11-08 a
+pod named `attestor...` that a super seed vouched for); the attestors' app
+is the wallet's attestor edition (build 3); a sign-off is the validators'
+own follow-up object, verified here against the account's stored creation
+and posted to a validator by the deciding attestor's app.
+Break-glass moves are section 14: the nine routes above, built 2026-11-08
+(step 3 of `~/Desktop/Z-TestNet/forclaude/break-glass-plan-1.md`). When a
+passkey is lost the keys of the pod's anos accounts die with it; the finish
+of the recovery makes a new account of the same type for each old account
+that holds anos, posts a `breakGlassTransfer` for each, signed by the
+account's break-glass pair, and files the moves here; two attestors check
+the person against the recovery case's two moderator approvals and sign
+every move of the case in one pass, and the deciding attestor's app posts
+the attestations to a validator.
 
 
 ## Database tables
@@ -216,6 +247,7 @@ keep the references straight. Every table and column has a `COMMENT ON`
 | `vouch_requests`          | Open vouch requests                                                    |
 | `vouches`                 | Approved vouches, never changed                                        |
 | `seeds`, `super_seeds`    | The pods that may vouch                                                |
+| `appointments`            | The pods that are moderators or attestors: one row per appointment, revoked rows kept |
 | `notifications`           | What the phone polls; read, never deleted                              |
 | `security_images`         | Encrypted images of both buckets, each with the id of its bucket key; append-only |
 | `security_info`           | Encrypted texts of bucket two, each with the id of its bucket key; append-only |
@@ -238,7 +270,12 @@ keep the references straight. Every table and column has a `COMMENT ON`
 | `escrow_disputes`         | One case per disputed escrow: the escrow, both parties' accounts and pods, who disputed, the opening attestor, the case key's public halves, the status; one open case per escrow |
 | `escrow_dispute_keys`     | A dispute case's private key wrapped to each attestor pod's chat key, as `chat_hpke`; deleted when the case ends |
 | `escrow_dispute_evidence` | One row per evidence file: ciphertext, the content key under the uploader's encryption key (stays) and encrypted to the case key (nulled when the case ends) |
-| `attestor_events`         | Everything that happened to a trade or dispute case, the signed sign-offs included, append-only |
+| `attestor_events`         | Everything that happened to a trade, dispute or break-glass case, the signed sign-offs included, append-only |
+| `break_glass_cases`       | One row per recovery case whose finish filed break-glass moves: the recovery case as the attestors see it, keyed by its id; the recovered pod, the status |
+| `break_glass_moves`       | One row per break-glass move: the `breakGlassTransfer`'s id, the old account, the new account of the same type, the type; append-only |
+| `dao_proposals`           | One row per DAO proposal: the text, the proposer, the status, the current snapshot's total, the support needed, the stage times, the result; never deleted |
+| `dao_votes`               | One row per pod per stage of a proposal: a support while pending, a vote for or against while open, each with the pod's weight at the time; append-only, public |
+| `dao_snapshot_weights`    | A proposal's current snapshot, one row per pod with DAO votes; replaced when the proposal goes open, deleted when it finishes |
 
 ## Configuration
 
@@ -262,6 +299,12 @@ at boot. Everything after `PGPASSWORD` has a default.
 | `TIMESTAMP_WINDOW_SECONDS` | `120`                   | Allowed clock difference on a signed request, each way           |
 | `MAX_IMAGE_BYTES`          | `10485760`              | Largest image, decoded                                           |
 | `MAX_IMAGES_PER_REQUEST`   | `5`                     | Images per bucket request                                        |
+| `VALIDATOR_URLS`           | `http://localhost:3001` to `3005` | The validators asked for the DAO stake list, comma-separated, tried in order; on the servers the doormen's URLs (the wallet's list) |
+| `DAO_PROPOSE_MIN_VOTES`    | `1`                     | The least DAO votes (whole staked anos) a pod needs in the snapshot to post a proposal |
+| `DAO_PROPOSAL_PERCENT`     | `15`                    | The percent of all DAO votes a pending proposal needs in support to go to a vote; at most 100 |
+| `DAO_PASS_PERCENT`         | `50`                    | For must be more than this percent of the votes cast; at most 99, so a tie fails |
+| `DAO_PENDING_MINUTES`      | `10080`                 | How long a proposal may collect support (a week)                 |
+| `DAO_VOTE_MINUTES`         | `20160`                 | How long an open proposal takes votes (two weeks)                |
 
 The JSON body limit is computed from the last two:
 `MAX_IMAGES_PER_REQUEST * MAX_IMAGE_BYTES * 1.4 + 1 MB`.
@@ -280,6 +323,19 @@ sets `vouched = true` and inserts the `super_seeds` row with `vouched_by =
 super seed vouches for is vouched at once and becomes a seed; a pod two
 seeds vouch for is vouched but not a seed.
 
+Moderators and attestors are appointed the same way (`docs/schemas.md`
+section 16): create the pod through the web app, then
+
+```bash
+npm run appoint -- <anopod id, hex> <moderator|attestor>
+npm run revoke -- <anopod id, hex>
+```
+
+inserts the `appointments` row with `appointed_by = 'operator'`, or ends
+the pod's live appointment. A pod holds one role at a time: revoke, then
+appoint again for the other. Running `appoint` again for the same role
+changes nothing and says so. There is no route for either.
+
 ## Layout
 
 ```
@@ -294,6 +350,7 @@ src/
   auth/              /challenge; requireSession, requireVouched, requireSetup, requireModerator, requireAttestor, requireRecoverySession; challenges, nonces, the signed envelope, WebAuthn
   anopods/           /create-anopod, /unlock, /check-username, /check-anopod-status, /get-anopod-profile, /complete-setup
   vouching/          /search-usernames, /send-vouch-request, /list-vouch-requests, /approve-vouch-request, /decline-vouch-request
+  appointments/      the appointments table's queries (section 16): who holds a live appointment as a moderator or an attestor; written only by scripts/appoint.js and scripts/revoke.js
   notifications/     /list-notifications, /mark-notifications-read; notify() for every feature
   security/          the three bucket routes
   chat/              the thirteen chat routes
@@ -302,6 +359,8 @@ src/
   wallet-memory/     the six wallet memory routes, /add-noted-transaction to /set-wallet-settings; the two tables' queries
   recovery/          /open-recovery-case, /unlock-recovery-pod, /get-recovery-pod, the six moderator routes, /receive-recovery-share/:caseId, /recover-with-backup-code, /complete-recovery-case, /rotate-backup-code, /store-break-glass-blob; the four recovery tables' queries
   attesting/         the fourteen attestor routes, /list-attestors to /dismiss-attestor-case, and the person's /list-my-cases, /get-my-case, /share-lookup-id, /add-dispute-evidence; the five attestation tables' queries; account-signatures.js, the validators' any-two-pairs rule
+  break-glass/       the nine break-glass routes, the person's /file-break-glass-moves and /list-my-break-glass-moves and the attestors' /list-break-glass-cases to /dismiss-break-glass-case; the two break-glass tables' queries
+  dao/               the six DAO voting routes, /create-dao-proposal to /list-dao-votes; the three DAO tables' queries; validators.client.js, the one outbound call (the DAO stake read); snapshot.js, one weight per pod; dao-clock.js, the expiry, the flip and the close every minute
 
   health/            GET /health: status, uptime, database round trip
   middleware/        404 and the central error handler
@@ -312,6 +371,8 @@ scripts/
   reset-db.sh        drop and set up again
   find-psql.sh       finds Homebrew's keg-only psql
   make-super-seed.js genesis
+  appoint.js         appoint a pod as a moderator or an attestor (section 16)
+  revoke.js          end a pod's appointment
 docs/
   schemas.md         the specification: tables, routes, objects, client crypto, variables
   build-plan.md      how it was built
@@ -328,14 +389,19 @@ returning `ok(status, body)` or `refuse(status, reason)`) and its queries
 
 - Inside recovery (`docs/schemas.md` section 12.9): one approval and one
   rejection on a case; revoking a moderator; the meeting link by email;
-  limits on opening cases; moving anos with the recovered break-glass
-  seeds; notifications for case events.
+  limits on opening cases; notifications for case events (moving anos
+  with the recovered break-glass seeds was built 2026-11-08, section 14).
 - Inside attestation (section 13.9): revoking an attestor, an attestor's
   history of cases; a party deleting or replacing their evidence, other
   content types or larger files; a time limit on open cases, a case on a
   trade whose accounts the masterpod does not know; the meeting link by
   email; notifications for bucket views and key shares; paging on the
   lists. The attestors' app is the wallet's attestor edition (build 3).
+- Inside break-glass moves (section 14.9): notifications to the attestors
+  and to the person; a move filed after a cancel on the ledger; a
+  dismissal with an effect on the ledger; the owner's dispute path,
+  forwarding and a repeat sweep for money that lands in an old account
+  after the move.
 
 - Several passkeys or several live sessions per pod.
 - Purging pods that never got vouched, and their usernames.

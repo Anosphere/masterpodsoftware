@@ -10,7 +10,7 @@ import { query } from '../db/pool.js';
 /**
  * Issues a challenge for `purpose` (create, unlock, openCase, unlockCase or
  * recover), bound to `anopodId`: the id minted for a sign-up, the pod the
- * username named for openCase, or null for the others. One round trip: the
+ * keyholders named for openCase, or null for the others. One round trip: the
  * sweep of expired challenges, then the insert. Returns { challenge,
  * expiresAt } with the challenge as a 32-byte Buffer.
  */
