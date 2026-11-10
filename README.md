@@ -45,7 +45,7 @@ Then open <http://localhost:3100>. The web app that drives it is
 | `npm run db:setup`        | Create the role, the database and its schema (idempotent). Pass an env file to use another one. Adds new tables to a live database without a reset. |
 | `npm run db:reset`        | Drop the database and run setup again. Local data is lost; use after a change to an existing table. |
 | `npm run make-super-seed -- <id>` | Genesis: make the pod with this hex id a super seed (see below).    |
-| `npm run appoint -- <id> <role>` | Appoint the pod with this hex id as a `moderator` or an `attestor` (`docs/schemas.md` section 16). |
+| `npm run appoint -- <id> <role>` | Appoint the pod with this hex id for a role: `moderator`, `attestor`, `validator` or `masterPod` (`docs/schemas.md` section 16; the last two only let the pod stake for that purpose, 16.7). |
 | `npm run revoke -- <id>` | End the pod's appointment; the row stays on record.                   |
 
 ## Who may call what
@@ -141,7 +141,7 @@ are base64 / base64url as the browser produces them.
 | `/close-listing`                | setup   | Closes the owner's listing; an old listing's room stays, new join requests and new rooms about it are refused |
 | `/list-listings`                | setup   | Listings filtered by side, currency, country and status (`any` allowed), the caller's own with `mine`, sorted and paged |
 | `/get-listing`                  | setup   | One listing by id, open or closed, in the list's form                                    |
-| `/create-anos-account`          | setup   | Records an anos account the pod made: type, the private halves under the pod's encryption key, the signed creation; `409` on a repeat |
+| `/create-anos-account`          | setup   | Records an anos account the pod made: type, the private halves under the pod's encryption key, the signed creation; `409` on a repeat, `403` at the limit of 20 new accounts in 30 days |
 | `/mark-anos-account-submitted`  | setup   | Records that a validator answered the account's creation; the caller's accounts only     |
 | `/list-anos-accounts`           | setup   | The caller's anos accounts, oldest first, with the blob, the creation, `submittedAt` and `breakGlassBlob` (null until a recovery stored it) |
 | `/add-noted-transaction`        | setup   | Records a note on a ledger transaction of the caller's, for their tax records: the ledger's facts in the clear, the private part as a blob under the pod's encryption key; one note per transaction, `409` on a second |
@@ -247,7 +247,7 @@ keep the references straight. Every table and column has a `COMMENT ON`
 | `vouch_requests`          | Open vouch requests                                                    |
 | `vouches`                 | Approved vouches, never changed                                        |
 | `seeds`, `super_seeds`    | The pods that may vouch                                                |
-| `appointments`            | The pods that are moderators or attestors: one row per appointment, revoked rows kept |
+| `appointments`            | The pods that are moderators or attestors, and the pods that may stake for validator or masterPod: one row per appointment, revoked rows kept |
 | `notifications`           | What the phone polls; read, never deleted                              |
 | `security_images`         | Encrypted images of both buckets, each with the id of its bucket key; append-only |
 | `security_info`           | Encrypted texts of bucket two, each with the id of its bucket key; append-only |
@@ -327,14 +327,16 @@ Moderators and attestors are appointed the same way (`docs/schemas.md`
 section 16): create the pod through the web app, then
 
 ```bash
-npm run appoint -- <anopod id, hex> <moderator|attestor>
+npm run appoint -- <anopod id, hex> <moderator|attestor|validator|masterPod>
 npm run revoke -- <anopod id, hex>
 ```
 
 inserts the `appointments` row with `appointed_by = 'operator'`, or ends
-the pod's live appointment. A pod holds one role at a time: revoke, then
-appoint again for the other. Running `appoint` again for the same role
-changes nothing and says so. There is no route for either.
+the pod's live appointment. `validator` and `masterPod` (2026-11-10,
+section 16.7) open no route: they only let the pod stake for that purpose
+at the validators. A pod holds one role at a time: revoke, then appoint
+again for another. Running `appoint` again for the same role changes
+nothing and says so. There is no route for either.
 
 ## Layout
 
@@ -350,7 +352,7 @@ src/
   auth/              /challenge; requireSession, requireVouched, requireSetup, requireModerator, requireAttestor, requireRecoverySession; challenges, nonces, the signed envelope, WebAuthn
   anopods/           /create-anopod, /unlock, /check-username, /check-anopod-status, /get-anopod-profile, /complete-setup
   vouching/          /search-usernames, /send-vouch-request, /list-vouch-requests, /approve-vouch-request, /decline-vouch-request
-  appointments/      the appointments table's queries (section 16): who holds a live appointment as a moderator or an attestor; written only by scripts/appoint.js and scripts/revoke.js
+  appointments/      the appointments table's queries (section 16): who holds a live appointment as a moderator or an attestor, or as a pod that may stake for validator or masterPod; written only by scripts/appoint.js and scripts/revoke.js
   notifications/     /list-notifications, /mark-notifications-read; notify() for every feature
   security/          the three bucket routes
   chat/              the thirteen chat routes
@@ -371,7 +373,7 @@ scripts/
   reset-db.sh        drop and set up again
   find-psql.sh       finds Homebrew's keg-only psql
   make-super-seed.js genesis
-  appoint.js         appoint a pod as a moderator or an attestor (section 16)
+  appoint.js         appoint a pod as a moderator or an attestor, or to stake for validator or masterPod (section 16)
   revoke.js          end a pod's appointment
 docs/
   schemas.md         the specification: tables, routes, objects, client crypto, variables

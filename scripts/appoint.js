@@ -3,26 +3,29 @@ import { closePool, pool } from '../src/db/pool.js';
 import { decodeId, toHex } from '../src/util/ids.js';
 
 /**
- * Appoints a pod as a moderator or an attestor (spec section 16). The pod
- * is created through the web app like any other, then
+ * Appoints a pod for one of four roles (spec section 16). moderator and
+ * attestor open the moderator and the attestor routes. validator and
+ * masterPod (2026-11-10, spec 16.7) open nothing on this server: they only
+ * let the pod stake for that purpose at the validators. The pod is created
+ * through the web app like any other, then
  *
- *   npm run appoint -- <anopod id, 64 hex characters> <moderator|attestor>
+ *   npm run appoint -- <anopod id, 64 hex characters> <moderator|attestor|validator|masterPod>
  *
  * inserts the appointments row with appointed_by 'operator', in one
  * transaction. The pod must exist and nothing else: not vouched, not set
  * up; the operator appoints whom they choose, and the stake the pod will
  * hold needs a vouched pod anyway. A pod already appointed for the role is
- * left alone and said so (exit 0); a pod holding the other role is refused
+ * left alone and said so (exit 0); a pod holding another role is refused
  * (exit 1): revoke first, then appoint. Exits 1 on an unknown id, 2 on a
  * malformed id or role. There is no route for this.
  */
 
-const ROLES = ['moderator', 'attestor'];
+const ROLES = ['moderator', 'attestor', 'validator', 'masterPod'];
 
 const anopodId = decodeId(process.argv[2]);
 const role = process.argv[3];
 if (anopodId === null || !ROLES.includes(role)) {
-  console.error('usage: npm run appoint -- <anopod id, 64 hex characters> <moderator|attestor>');
+  console.error('usage: npm run appoint -- <anopod id, 64 hex characters> <moderator|attestor|validator|masterPod>');
   process.exit(2);
 }
 const hex = toHex(anopodId);

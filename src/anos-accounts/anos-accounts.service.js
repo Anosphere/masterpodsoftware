@@ -1,10 +1,18 @@
 import { findLiveRole } from '../appointments/appointments.queries.js';
 import { decodeBytes } from '../crypto/bytes.js';
-import { isUniqueViolation } from '../db/transaction.js';
+import { isUniqueViolation, withTransaction } from '../db/transaction.js';
 import { decodeId, toHex } from '../util/ids.js';
 import { isObject } from '../util/is-object.js';
 import { ok, refuse } from '../util/result.js';
-import { findAccount, findAccountOf, insertAccount, listAccountsOf, markSubmitted } from './anos-accounts.queries.js';
+import {
+  countAccountsSince,
+  findAccount,
+  findAccountOf,
+  insertAccount,
+  listAccountsOf,
+  lockPod,
+  markSubmitted,
+} from './anos-accounts.queries.js';
 
 /**
  * The anos accounts feature (wallet spec 4.4): one row per anos account a
@@ -34,6 +42,14 @@ const ACCOUNT_CREATION = 'accountCreation';
 /** keyBlob is 1 to 1024 bytes (156 in practice). */
 const keyBlobLength = (n) => n >= 1 && n <= 1024;
 
+/**
+ * The account limit (spec section 17): a pod may make at most ACCOUNT_LIMIT
+ * new anos accounts in the last ACCOUNT_LIMIT_DAYS days, counted back from
+ * the moment of the request.
+ */
+const ACCOUNT_LIMIT = 20;
+const ACCOUNT_LIMIT_DAYS = 30;
+
 /** A row in wire form, as /list-anos-accounts answers it; breakGlassBlob is hex, or null until a recovery's finish stored it (spec 12.4.5). */
 function accountOf(row) {
   return {
@@ -53,7 +69,11 @@ function accountOf(row) {
  * creation: { payload, signatures } }. The checks, in order: the shape;
  * accountId 32 bytes; accountType one of the four; keyBlob 1 to 1024 bytes;
  * the creation names the same account, type and transactionType and
- * carries the eight signature strings; no row with this accountId.
+ * carries the eight signature strings; no row with this accountId; last,
+ * the account limit (spec section 17): in one transaction, with the pod's
+ * row locked, the pod's rows of the last ACCOUNT_LIMIT_DAYS days are
+ * counted, and at ACCOUNT_LIMIT or more nothing is inserted and the answer
+ * is 403 account limit reached. The insert runs in that transaction.
  */
 export async function createAnosAccount(anopod, body) {
   if (!isObject(body) || typeof body.accountId !== 'string' || typeof body.accountType !== 'string'
@@ -78,7 +98,13 @@ export async function createAnosAccount(anopod, body) {
 
   if ((await findAccount(accountId)) !== null) return refuse(409, 'account already registered');
   try {
-    await insertAccount({ accountId, anopodId: anopod.anopodId, accountType: body.accountType, keyBlob, creation: body.creation });
+    const written = await withTransaction(async (client) => {
+      await lockPod(client, anopod.anopodId);
+      if ((await countAccountsSince(client, anopod.anopodId, ACCOUNT_LIMIT_DAYS)) >= ACCOUNT_LIMIT) return false;
+      await insertAccount({ accountId, anopodId: anopod.anopodId, accountType: body.accountType, keyBlob, creation: body.creation }, client);
+      return true;
+    });
+    if (!written) return refuse(403, 'account limit reached');
   } catch (err) {
     if (isUniqueViolation(err)) return refuse(409, 'account already registered');
     throw err;
@@ -110,10 +136,11 @@ export async function listAnosAccounts(anopod) {
 /**
  * POST /get-anos-account (none). Body { accountId }. For the validators'
  * binding check at create-account and their appointment check at a
- * moderator or attestor stake (spec section 16): the pod that made the
- * account, whether it is vouched, read from the pod's row, and its live
- * role, "moderator", "attestor" or null, read from appointments. Unsigned,
- * like /get-anopod-session-keys.
+ * moderator, attestor, validator or masterPod stake (spec section 16, the
+ * last two since 2026-11-10, 16.7): the pod that made the account, whether
+ * it is vouched, read from the pod's row, and its live role, "moderator",
+ * "attestor", "validator", "masterPod" or null, read from appointments.
+ * Unsigned, like /get-anopod-session-keys.
  */
 export async function getAnosAccount(body) {
   if (!isObject(body) || typeof body.accountId !== 'string') return refuse(400, BAD_SHAPE);

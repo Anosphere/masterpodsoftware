@@ -261,8 +261,8 @@ export async function checkUsername(body) {
  * POST /check-anopod-status. Read only; the caller is req.anopod. The three
  * counts (wallet spec 4.3) are the caller's rows in each bucket; the
  * wallet's next-step rule reads them. role (spec section 16) is the pod's
- * live appointment, "moderator", "attestor" or null; the wallet's Stake
- * for list reads it.
+ * live appointment, "moderator", "attestor", "validator", "masterPod" or
+ * null; the wallet's Stake for list reads it.
  */
 export async function status(anopod) {
   const [vouchCount, seeds, buckets, role] = await Promise.all([

@@ -48,12 +48,36 @@ export async function findAccountOf(accountId, db = pool) {
 }
 
 /**
+ * Locks this pod's row in anopods for the rest of the transaction on
+ * `client` (SELECT ... FOR UPDATE). /create-anos-account locks it before it
+ * counts, so two creations of one pod sent at the same moment wait for each
+ * other and cannot both pass on the same count (spec section 17).
+ */
+export async function lockPod(client, anopodId) {
+  await client.query('SELECT 1 FROM anopods WHERE anopod_id = $1 FOR UPDATE', [anopodId]);
+}
+
+/**
+ * How many anos_accounts rows this pod made in the last `days` days, counted
+ * back from now(), on `client`: the number the account limit reads (spec
+ * section 17). Every row of the pod's counts, also one whose creation never
+ * reached a validator.
+ */
+export async function countAccountsSince(client, anopodId, days) {
+  const { rows } = await client.query(
+    'SELECT count(*)::int AS count FROM anos_accounts WHERE anopod_id = $1 AND created_at > now() - make_interval(days => $2)',
+    [anopodId, days],
+  );
+  return rows[0].count;
+}
+
+/**
  * Inserts one account: { accountId, anopodId, accountType, keyBlob,
  * creation }, submitted_at null. A duplicate account id throws a unique
  * violation (db/transaction.js isUniqueViolation).
  */
-export async function insertAccount({ accountId, anopodId, accountType, keyBlob, creation }) {
-  await query(
+export async function insertAccount({ accountId, anopodId, accountType, keyBlob, creation }, db = pool) {
+  await db.query(
     `INSERT INTO anos_accounts (account_id, anopod_id, account_type, key_blob, creation)
      VALUES ($1, $2, $3, $4, $5::jsonb)`,
     [accountId, anopodId, accountType, keyBlob, JSON.stringify(creation)],
