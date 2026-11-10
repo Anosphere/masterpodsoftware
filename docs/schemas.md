@@ -305,7 +305,7 @@ seed's hex id. Super seeds are made only by the genesis script (section 9),
 ```sql
 CREATE TABLE IF NOT EXISTS appointments (
   anopod_id    BYTEA       NOT NULL CHECK (octet_length(anopod_id) = 32),
-  role         TEXT        NOT NULL CHECK (role IN ('moderator', 'attestor')),
+  role         TEXT        NOT NULL CHECK (role IN ('moderator', 'attestor', 'validator', 'masterPod')),
   appointed_by TEXT        NOT NULL CHECK (appointed_by = 'operator' OR appointed_by ~ '^[0-9a-f]{64}$'),
   appointed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   revoked_at   TIMESTAMPTZ,
@@ -318,13 +318,16 @@ CREATE UNIQUE INDEX IF NOT EXISTS appointments_one_live_per_pod
   ON appointments (anopod_id) WHERE revoked_at IS NULL;
 ```
 
-The pods that are moderators or attestors (section 16, 2026-11-08). A pod
+The pods that are moderators or attestors (section 16, 2026-11-08) and,
+since 2026-11-10 (16.7), the pods that may stake for validator or
+masterPod: four roles, of which the last two open no route here. A pod
 holds the role while its row has no `revoked_at`, at most one such row per
 pod (the partial unique index); appointing a pod again after a revocation
 adds a row, and the old one stays. `appointed_by` is `operator` for the
 scripts, otherwise the hex id of the pod that appointed. Written only by
 `scripts/appoint.js` and `scripts/revoke.js` (section 9); no route writes
-it.
+it. On a database that already has the table, `db/schema.sql` widens the
+role check by a drop-and-add of `appointments_role_check` (16.7).
 
 ### notifications
 
@@ -761,7 +764,8 @@ counts (added 2026-10-25) are the caller's rows in `security_images` with
 `type = 1`, in `security_images` with `type = 2` and in `security_info`
 with `type = 2`. The wallet's next-step rule reads them. `role` (added
 2026-11-08, section 16) is the caller's live appointment, `"moderator"`,
-`"attestor"` or `null`; the wallet's Stake for list reads it.
+`"attestor"`, `"validator"`, `"masterPod"` or `null` (the last two names
+since 2026-11-10, 16.7); the wallet's Stake for list reads it.
 
 ### POST /list-notifications (session)
 
@@ -1191,7 +1195,8 @@ unknown account`).
 
 Answer: `200 { accountId, anopodId, vouched, role }`, `vouched` read from
 the pod's row; `role` (added 2026-11-08, section 16) the pod's live
-appointment, `"moderator"`, `"attestor"` or `null`.
+appointment, `"moderator"`, `"attestor"`, `"validator"`, `"masterPod"` or
+`null` (the last two names since 2026-11-10, 16.7).
 
 ### POST /add-noted-transaction (setup)
 
@@ -1381,7 +1386,7 @@ Moderators and attestors are appointed the same way (section 16,
 2026-11-08): the pod is created through the web app, then
 
 ```bash
-npm run appoint -- <anopod id, hex> <moderator|attestor>
+npm run appoint -- <anopod id, hex> <moderator|attestor|validator|masterPod>
 npm run revoke -- <anopod id, hex>
 ```
 
@@ -4253,7 +4258,7 @@ above this section changes except the items in 16.5.
 ```sql
 CREATE TABLE IF NOT EXISTS appointments (
   anopod_id    BYTEA       NOT NULL CHECK (octet_length(anopod_id) = 32),
-  role         TEXT        NOT NULL CHECK (role IN ('moderator', 'attestor')),
+  role         TEXT        NOT NULL CHECK (role IN ('moderator', 'attestor', 'validator', 'masterPod')),
   appointed_by TEXT        NOT NULL CHECK (appointed_by = 'operator' OR appointed_by ~ '^[0-9a-f]{64}$'),
   appointed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   revoked_at   TIMESTAMPTZ,
@@ -4265,6 +4270,10 @@ CREATE TABLE IF NOT EXISTS appointments (
 CREATE UNIQUE INDEX IF NOT EXISTS appointments_one_live_per_pod
   ON appointments (anopod_id) WHERE revoked_at IS NULL;
 ```
+
+(2026-11-10: the role check gained `'validator'` and `'masterPod'`, 16.7;
+until then it read `role IN ('moderator', 'attestor')`. The paragraph
+below is as written on 2026-11-08, for the two roles of that day.)
 
 One row per appointment of a pod as a moderator or an attestor. A pod
 holds the role while its row has no `revoked_at`; the partial unique index
@@ -4318,9 +4327,12 @@ No route writes the table. On a prod box, as the masterpod user in the
 checkout, after the pod is made at the wallet like any other:
 
 ```bash
-npm run appoint -- <anopod id, 64 hex> <moderator|attestor>
+npm run appoint -- <anopod id, 64 hex> <moderator|attestor|validator|masterPod>
 npm run revoke -- <anopod id, 64 hex>
 ```
+
+(2026-11-10: `appoint` takes `validator` and `masterPod` as well, 16.7;
+until then the usage line ended `<moderator|attestor>`.)
 
 `scripts/appoint.js`, the shape of `scripts/make-super-seed.js`: the id
 and the role parsed (exit 2 with the usage line on a malformed one); one
@@ -4437,6 +4449,217 @@ plan left open and how it was decided:
   described the username rule after the build (the paragraph after the
   routes table, the Genesis section, the folder lists); the user asked
   for them to be brought in line, and they were, before the commit.
+
+### 16.7 Validator and masterPod (2026-11-10)
+
+Design settled 2026-11-10 in a planning chat of one round (the plan is
+`~/Desktop/Z-TestNet/forclaude/validator-masterpod-stake-plan-1.md`,
+FINAL). It grows the plan of this section, which made the list for
+moderator and attestor. Why: the wallet's Stake for list offered validator
+and masterPod to everyone. The user, 2026-11-10: "Send stake should only
+be to dao vote or guardian. Right now it also include validator and
+masterpod. We'll actually need to build a list for those, like we did with
+moderator and attestor. Unless the user is on that list, then those option
+should not show." The list is the `appointments` table: `validator` and
+`masterPod` are two more roles on it. Three repos in order: this server
+(this subsection, step 1 of the plan: the role check widened, the script's
+role list, comments), the validator (anossoftware and its spec, step 2:
+the receiving validator refuses a validator or masterPod stake from an
+account whose pod is not appointed for it, the check of 2026-11-08 with
+two more names) and the wallet (its spec, 4.3, 8.2 and 11, step 3: the
+Stake for list offers daoVote and guardian to everyone and each other
+purpose only to the pod appointed for it), then the two record folders.
+This server's step goes out first (the plan's section 5): a validator on
+step 2 that asks a masterpod from before this step never hears one of the
+two new roles and refuses every validator and masterPod stake. No new
+table, no env variable, no npm package, no new route; no gate, no route
+and no answer shape changes. The keyholders, the doormen and the signing
+server are not touched. Nothing above this subsection changes except the
+items under Files.
+
+#### The two roles
+
+The role check allows four names:
+
+```sql
+CHECK (role IN ('moderator', 'attestor', 'validator', 'masterPod'))
+```
+
+- `validator`: the pod may stake for the purpose validator.
+- `masterPod`: the pod may stake for the purpose masterPod.
+
+The two names are spelled exactly as the validators spell the two stake
+purposes, so a validator goes on comparing a pod's role with the purpose
+of a stake by `===` (the plan's decision 5). A stake for validator or
+masterPod is recorded only: nothing on the validators, on this server or
+on the keyholders reads it. What the list decides is who may make one.
+From step 2 the receiving validator asks `/get-anos-account` for the
+sending account's pod and refuses the stake unless the pod's role is the
+purpose, as it does for moderator and attestor since 2026-11-08; without
+that check the list would only hide two options in the wallet, and a
+stake posted by hand would still pass (decision 4). From step 3 the wallet
+reads `role` from `/check-anopod-status` and offers validator or masterPod
+only to the pod appointed for it. The two answers keep their shape:
+`role` is one of the four names or `null`.
+
+`db/schema.sql` carries the check twice. The `CREATE TABLE` has it for a
+database built from nothing. For a database that already has the table,
+right after the block's `COMMENT ON` lines, stands the drop-and-add the
+file already uses for `challenges_purpose_check` (12.3):
+
+```sql
+ALTER TABLE appointments DROP CONSTRAINT IF EXISTS appointments_role_check;
+ALTER TABLE appointments ADD CONSTRAINT appointments_role_check
+  CHECK (role IN ('moderator', 'attestor', 'validator', 'masterPod'));
+```
+
+`appointments_role_check` is the name PostgreSQL gave the column's check
+when the table was made. Both lines are idempotent, so the whole file
+applies to a live database. The rows already there stay as they are: the
+check only got wider, and nothing changes for the moderators and attestors
+already appointed.
+
+Appointing is the operator's script, as for a moderator (16.3, decision
+10):
+
+```bash
+npm run appoint -- <anopod id, 64 hex> validator
+npm run appoint -- <anopod id, 64 hex> masterPod
+```
+
+The messages take the role's name: `<username> (<id>): appointed as
+validator`, `<username> (<id>): is a validator; revoke first`. `npm run
+revoke` ends an appointment whatever its role. A database that is dropped
+loses its appointments, and they are made again by script.
+
+#### One role per pod
+
+One live role per pod stays (decision 3). The partial unique index
+`appointments_one_live_per_pod` is as it was, so a pod holds one of the
+four roles or none. A moderator or an attestor works from a pod made for
+that work, apart from the personal one. A banker stakes for validator from
+the personal pod. The masterPod stake comes from one pod made for it. The
+user, 2026-11-10: "So we still only need 1 role per anopod." `appoint`
+refuses a pod that holds another role: revoke first, then appoint.
+
+#### The appointment opens nothing
+
+An appointment as `validator` or `masterPod` opens no route on this server
+(decision 6). It only lets the pod stake for that purpose. The gates ask
+for their own role by name: `mustBeModerator` is `isAppointed(anopodId,
+'moderator')` and `mustBeAttestor` is `isAppointed(anopodId, 'attestor')`
+(16.2), so both stay shut to a pod that holds one of the two new roles.
+`isAttestorPod` and `listAttestorPods` ask for `'attestor'` the same way,
+so `/list-attestors` does not list such a pod and no case key is wrapped
+to it. `src/auth/require-moderator.js` and `src/auth/require-attestor.js`
+did not change.
+
+#### Files
+
+- `db/schema.sql`: in the `appointments` block, the role check of the
+  `CREATE TABLE`, the drop-and-add after the `COMMENT ON` lines, the
+  block's header comment and the comments of the table and of `role`; the
+  file's opening comment names the block among the idempotent ALTERs.
+- `scripts/appoint.js`: `ROLES`, the usage line, the header comment.
+  `scripts/revoke.js`: the header comment.
+- Comments only, no line of code:
+  `src/appointments/appointments.queries.js` (the file comment,
+  `findLiveRole`, `isAppointed`),
+  `src/anos-accounts/anos-accounts.service.js` (`getAnosAccount`) and
+  `src/anopods/anopods.service.js` (`status`).
+- Here: section 4 (`### appointments`, the SQL and its sentence), section
+  5 (the two answers), section 9 (the usage line), 16.1 (the SQL) and 16.3
+  (the usage line), each of these two with a dated pointer, and this
+  subsection. `README.md`: the scripts table, the tables list, the usage
+  line of the Genesis section and the paragraph under it, the two folder
+  list lines.
+
+Nothing else in existing code changes. No table, no env variable, no npm
+package, no new route.
+
+#### Notes from the build (2026-11-10)
+
+Built from
+`~/Desktop/Z-TestNet/forclaude/validator-masterpod-stake-plan-1.md`
+section 1, on main at 9310f46 (the account limit). No new npm package, no
+test script and no rig (none was asked for). The schema was not applied to
+any database for keeps: the user applies it, by psql as the superuser with
+`SET ROLE masterpodsoftware`. Until then a database keeps its check of two
+roles, and `npm run appoint -- <id> validator` is refused there by that
+check. What the plan left open and how it was decided:
+
+- The check's name was read with `\d appointments` on the local database
+  before the two lines were written: `appointments_role_check`.
+- The drop-and-add got a comment of four lines above it, as the two other
+  ALTER pairs of the file have one; the plan gives the two lines only.
+  The comment says that the pair is for a database that already has the
+  table, and that it is idempotent.
+- The file's opening comment now reads "the idempotent ALTERs of the
+  appointments block and of the recovery, attestation and marketplace
+  blocks at the end". The appointments block is not at the end of the
+  file, so "at the end" stays with the three old blocks.
+- The comment of `role` names the four and says what the last two do. The
+  comment of the table names the three kinds of pod in the plan's words.
+- In the header comment of `scripts/appoint.js`, "a pod holding the other
+  role" became "another role". The one-line comment of `withArticle`
+  still gives its two old examples ("a moderator" or "an attestor"); the
+  plan does not name it, so it was left. For the new roles the function
+  answers "a validator" and "a masterPod".
+- The header comment of `scripts/revoke.js` now says what a revocation
+  does for each kind of role: this server refuses a revoked moderator or
+  attestor, and the two answers say `null` for the pod's role, whichever
+  of the four it was.
+- The comment of `getAnosAccount` names the four stakes the validators'
+  appointment check is for, not only the four names of `role`: from step
+  2 the validators ask at a validator or masterPod stake too.
+- The two dated pointers, in 16.1 and 16.3, are a sentence in brackets
+  right after the code block. The prose of 16.1 to 16.4 is as written on
+  2026-11-08, for the two roles of that day.
+- In section 4 the sentence also names the drop-and-add. In section 5
+  only the two "Answer" paragraphs changed, and in section 9 only the
+  usage line.
+- In the README the paragraph under the usage line gained one sentence on
+  the two new roles, and "appoint again for the other" became "for
+  another".
+- Places the plan does not name that still say two roles, left as they
+  are and put to the user: in the README the rows of `/check-anopod-status`
+  and `/get-anos-account` in the routes table and the sentence above the
+  usage line of the Genesis section ("Moderators and attestors are
+  appointed the same way"); here the same sentence in section 9, the
+  first paragraph of `/get-anos-account` in section 5 ("before accepting
+  a stake for moderator or attestor"), and 16.2 and 16.4.
+- Checks (1.5): `node --check` on the five changed source files (the two
+  scripts, `appointments.queries.js`, the two services), clean. The SQL
+  by psql against the local `masterpod` database as the superuser `codex`
+  with `SET LOCAL ROLE masterpodsoftware`, one transaction, rolled back.
+  Before the two ALTER lines an insert with the role `validator` was
+  refused by `appointments_role_check`, the check of two roles. Then the
+  whole `appointments` block ran as the file has it (the table and the
+  index skipped with their notices, the trigger and the eight comments
+  overwritten, the two ALTER lines last), and the check read the four
+  roles. An insert with the role `validator` for a throwaway pod id
+  passed; a role of `guardian` was refused by `appointments_role_check`;
+  a second live row for the first pod id, as `masterPod` with a later
+  `appointed_at` (inside one transaction `now()` is one value, so a
+  second insert at the default would hit the primary key first), was
+  refused by `appointments_one_live_per_pod`. More than the plan asked,
+  in the same transaction: `masterPod` passed for a second throwaway pod
+  id, and `masterpod` in lower case was refused by the check; for the
+  throwaway validator pod the query of `findLiveRole` answered
+  `validator`, and the query of `isAppointed` answered false for
+  `moderator` and for `attestor`, as the two gates ask it; and the block
+  ran twice in a scratch schema, on a table built from nothing, which
+  left one role check under the one name, with the four roles. After the
+  rollback the table had its four rows (two moderators, two attestors),
+  its check of two roles and its old comments as before, and the scratch
+  schema was gone. The whole of `db/schema.sql` also ran once in a
+  transaction of its own, rolled back, with no error, the way the user
+  applies it. No server was booted and neither script was run, so
+  `npm run appoint` with one of the new roles and the two routes'
+  answers are the user's to see, after the schema is applied.
+- Not touched: `src/auth/require-moderator.js`,
+  `src/auth/require-attestor.js`, every router, handler and service line
+  of code, `package.json`, the three shell scripts.
 
 ## 17. The account limit (2026-11-10)
 

@@ -3,16 +3,19 @@ import { closePool, pool } from '../src/db/pool.js';
 import { decodeId, toHex } from '../src/util/ids.js';
 
 /**
- * Ends a pod's appointment as a moderator or an attestor (spec section 16):
+ * Ends a pod's appointment, whichever of the four roles it holds (spec
+ * section 16; validator and masterPod since 2026-11-10, 16.7):
  *
  *   npm run revoke -- <anopod id, 64 hex characters>
  *
  * sets revoked_at on the pod's live appointments row, in one transaction.
- * The row stays, so who held what when is on record; the masterpod refuses
- * the pod at once, and the stake it holds at the validators comes back
- * through the guardians' fund proposal payout. A pod with no live
- * appointment is said so (exit 0). Exits 1 on an unknown id, 2 on a
- * malformed one. There is no route for this.
+ * The row stays, so who held what when is on record. The role is gone at
+ * once: the masterpod refuses a revoked moderator or attestor, and
+ * /get-anos-account and /check-anopod-status answer null for the pod's
+ * role, whichever of the four it was. The stake the pod holds at the
+ * validators comes back through the guardians' fund proposal payout. A pod
+ * with no live appointment is said so (exit 0). Exits 1 on an unknown id,
+ * 2 on a malformed one. There is no route for this.
  */
 
 const anopodId = decodeId(process.argv[2]);

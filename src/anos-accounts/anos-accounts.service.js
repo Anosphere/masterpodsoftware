@@ -136,10 +136,11 @@ export async function listAnosAccounts(anopod) {
 /**
  * POST /get-anos-account (none). Body { accountId }. For the validators'
  * binding check at create-account and their appointment check at a
- * moderator or attestor stake (spec section 16): the pod that made the
- * account, whether it is vouched, read from the pod's row, and its live
- * role, "moderator", "attestor" or null, read from appointments. Unsigned,
- * like /get-anopod-session-keys.
+ * moderator, attestor, validator or masterPod stake (spec section 16, the
+ * last two since 2026-11-10, 16.7): the pod that made the account, whether
+ * it is vouched, read from the pod's row, and its live role, "moderator",
+ * "attestor", "validator", "masterPod" or null, read from appointments.
+ * Unsigned, like /get-anopod-session-keys.
  */
 export async function getAnosAccount(body) {
   if (!isObject(body) || typeof body.accountId !== 'string') return refuse(400, BAD_SHAPE);

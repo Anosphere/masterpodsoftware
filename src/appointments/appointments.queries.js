@@ -2,16 +2,19 @@ import { pool } from '../db/pool.js';
 
 /**
  * SQL for the appointments table (spec section 16): the pods that are
- * moderators or attestors. A pod holds a role while it has a row with no
- * revoked_at, at most one such row per pod (the partial unique index
- * appointments_one_live_per_pod). Only scripts/appoint.js and
- * scripts/revoke.js write the table; no route does. The gates in
- * src/auth/require-moderator.js and require-attestor.js read it, and so do
- * the two answers that carry a pod's role (/get-anos-account,
- * /check-anopod-status).
+ * moderators or attestors and, since 2026-11-10 (spec 16.7), the pods that
+ * may stake for validator or masterPod. A role is one of four names:
+ * 'moderator', 'attestor', 'validator' or 'masterPod'. A pod holds a role
+ * while it has a row with no revoked_at, at most one such row per pod (the
+ * partial unique index appointments_one_live_per_pod). Only
+ * scripts/appoint.js and scripts/revoke.js write the table; no route does.
+ * The gates in src/auth/require-moderator.js and require-attestor.js read
+ * it, and so do the two answers that carry a pod's role (/get-anos-account,
+ * /check-anopod-status). Each gate asks for its own role by name, so
+ * 'validator' and 'masterPod' open no route.
  */
 
-/** The pod's live role: 'moderator', 'attestor' or null. */
+/** The pod's live role: 'moderator', 'attestor', 'validator', 'masterPod' or null. */
 export async function findLiveRole(anopodId, db = pool) {
   const { rows } = await db.query('SELECT role FROM appointments WHERE anopod_id = $1 AND revoked_at IS NULL', [
     anopodId,
@@ -19,7 +22,7 @@ export async function findLiveRole(anopodId, db = pool) {
   return rows.length === 0 ? null : rows[0].role;
 }
 
-/** True when the pod holds a live appointment for this role ('moderator' or 'attestor'). */
+/** True when the pod holds a live appointment for this role, one of the four names; the two gates ask for 'moderator' and 'attestor'. */
 export async function isAppointed(anopodId, role, db = pool) {
   const { rows } = await db.query(
     'SELECT EXISTS (SELECT 1 FROM appointments WHERE anopod_id = $1 AND role = $2 AND revoked_at IS NULL) AS found',
