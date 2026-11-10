@@ -411,7 +411,9 @@ CREATE INDEX IF NOT EXISTS anos_accounts_anopod_id_idx ON anos_accounts (anopod_
 
 `account_id` is the SHA-256 of key1 + postQuantumKey1, as the validators
 compute it. `key_blob` is 156 bytes in practice (section 7). `submitted_at`
-is null until `/mark-anos-account-submitted`.
+is null until `/mark-anos-account-submitted`. Since 2026-11-10 the account
+limit counts a pod's rows by `created_at`: at most 20 in the last 30 days
+(section 17).
 
 ### noted_transactions
 
@@ -1146,7 +1148,12 @@ accountType`); `keyBlob` 1 to 1024 bytes (`400 invalid keyBlob`);
 `creation.signatures` has the eight string fields `key1`, `postQuantumKey1`,
 `key2`, `postQuantumKey2`, `breakGlassKey`, `breakGlassPostQuantumKey`,
 `walletKey`, `walletPostQuantumKey` (`400 invalid creation`); no row with
-this `accountId` (`409 account already registered`).
+this `accountId` (`409 account already registered`); last, the account
+limit: the pod has fewer than 20 rows in `anos_accounts` with a
+`created_at` in the last 30 days (`403 account limit reached`). The limit
+was added 2026-11-10 (section 17): the count and the insert are one
+transaction with the pod's row in `anopods` locked, so requests sent at
+the same moment cannot all pass on the same count.
 
 Writes: `INSERT anos_accounts`, `submitted_at` null.
 
@@ -4430,3 +4437,168 @@ plan left open and how it was decided:
   described the username rule after the build (the paragraph after the
   routes table, the Genesis section, the folder lists); the user asked
   for them to be brought in line, and they were, before the commit.
+
+## 17. The account limit (2026-11-10)
+
+Design settled 2026-11-10 in a planning chat of one round (the plan is
+`~/Desktop/Z-TestNet/forclaude/account-limit-plan-1.md`, FINAL). Why:
+nothing limited how many anos accounts one pod makes. Every account is a
+row on this server and, once a validator accepts it, an account on every
+validator's ledger for good. The user, 2026-11-10: "we should limit people
+to 20 new accounts per month. A cap like that should not stop legitimate
+use, but should stop spammers." A validator accepts a creation only when
+this server answers, on `/get-anos-account`, that a vouched pod made the
+account, and an account with no row here is dropped. So
+`/create-anos-account` is the one gate, and a limit on it cannot be walked
+around by posting to a validator: the limit sits on this route and nowhere
+else. Two repos in order: this server (this section, step 1 of the plan:
+one check in one route) and the wallet (its spec, 4.4 and 8.2, step 2: the
+refusal said in one sentence), then the record folder
+(`masterpod_software_architecture`, step 3). There is no schema step, no
+env variable, no npm package and no new route. The validators, the
+doormen, the keyholders and the signing server are not touched. Nothing
+above this section changes except the items in 17.4.
+
+### 17.1 The rule
+
+- A pod may make at most 20 new anos accounts in a month.
+- A month is the last 30 days, counted back from the moment of the
+  request. Not a calendar month: that would allow 20 on the 31st and 20
+  more on the 1st, and it needs a time zone.
+- The accounts that a recovery opens count like any other. Its "Move your
+  money" opens one new account for every old account that holds anos,
+  through this same route.
+- Every row of the pod's counts, also an account whose creation never
+  reached a validator (`submitted_at` null). A row is a row, so unfinished
+  creations cannot be used to fill the table.
+
+### 17.2 The check
+
+`createAnosAccount` (`src/anos-accounts/anos-accounts.service.js`) runs it
+last. Every check up to and including the `409 account already registered`
+for a known account id stays in front of it, so a repeated call for the
+same account is still told that it exists. The two numbers are two
+constants at the top of the file, `ACCOUNT_LIMIT = 20` and
+`ACCOUNT_LIMIT_DAYS = 30`. They are not env variables: the user owns
+`.env`, and a change of the number is one line and a restart either way.
+
+The insert runs inside `withTransaction` (`src/db/transaction.js`), on the
+one client. First `lockPod(client, anopodId)` holds the pod's own row for
+the rest of the transaction:
+
+```sql
+SELECT 1 FROM anopods WHERE anopod_id = $1 FOR UPDATE
+```
+
+Then `countAccountsSince(client, anopodId, ACCOUNT_LIMIT_DAYS)` answers
+the number of the pod's rows of the last 30 days:
+
+```sql
+SELECT count(*)::int AS count FROM anos_accounts
+WHERE anopod_id = $1 AND created_at > now() - make_interval(days => $2)
+```
+
+When the count is `ACCOUNT_LIMIT` or more, the transaction ends with no
+insert and the answer is `403 account limit reached`. Otherwise
+`insertAccount(fields, client)` writes the row on the same client and the
+answer is `201 { accountId }`, as before. A unique violation still answers
+`409 account already registered`. The three queries are in
+`src/anos-accounts/anos-accounts.queries.js`.
+
+Why the lock: without it, requests of one pod sent at the same moment
+would each count the same rows and all pass. With the pod's row locked
+they wait for each other: the second counts only after the first has
+ended, and its count sees the first one's row. The lock is on the pod's
+own row in `anopods`, the way the case tables lock their row first with
+`SELECT ... FOR UPDATE`. The refusal is a `403`: this server refuses with
+400, 401, 403, 404 and 409, and its HAProxy edge answers 429 for its own
+request rate, so 429 is left to the edge.
+
+### 17.3 What is left as it is
+
+- The wallet shows no counter and no "3 of 20". A person only hears of the
+  limit when it refuses them, in one sentence: "This anoPod has reached
+  the limit for new anos accounts. Try again later." It names no number,
+  so it stays true when the constants change.
+- Two leftovers are accepted, because no real person reaches the limit:
+  - The wallet learns of the limit at the fourth of its six steps
+    (`/create-anos-account`), after the break-glass seed went to the
+    keyholders at the second. That seed stays with the keyholders,
+    unused.
+  - A recovery that needs more new accounts than the limit leaves stops
+    at the limit with the same sentence. Retry works once the 30 days
+    free up.
+
+### 17.4 Files
+
+- `src/anos-accounts/anos-accounts.queries.js`: `lockPod` and
+  `countAccountsSince`, new; `insertAccount(fields, db = pool)` takes the
+  client as a second argument and runs on it, the way `findAccount` takes
+  `db`. `createAnosAccount` is its only caller.
+- `src/anos-accounts/anos-accounts.service.js`: the two constants, and in
+  `createAnosAccount` the transaction with the lock, the count and the
+  insert; the function's comment gains the limit as the last check.
+- Here: section 4 (`### anos_accounts`, one sentence), section 5 (`###
+  POST /create-anos-account (setup)`, the last check and its refusal) and
+  this section. `README.md`: the route row of `/create-anos-account`.
+
+Nothing else in existing code changes: `/list-anos-accounts`,
+`/mark-anos-account-submitted`, `/get-anos-account`, the router and the
+schema are as they were. No env variable, no npm package, no new route.
+
+### 17.5 Notes from the build
+
+#### Build 1, the masterpod (2026-11-10)
+
+Built from `~/Desktop/Z-TestNet/forclaude/account-limit-plan-1.md` section
+1, on main at 0038d5f (the merge of testnet2prep). No new npm package, no
+test script and no rig (none was asked for). Nothing was applied to any
+database: there is no schema step. What the plan left open and how it was
+decided:
+
+- `lockPod` answers nothing, and `createAnosAccount` does not ask whether
+  a row was locked: the route's level (`requireSetup`) read the pod's row
+  a moment before, and the plan names no refusal for a row that is gone.
+- The transaction answers `true` when the row went in and `false` at the
+  limit, and the `403` is made right after it, the way `createAnopod`
+  (`src/anopods/anopods.service.js`) answers its taken challenge. At the
+  limit the transaction ends by `COMMIT` with nothing written
+  (`withTransaction` rolls back only on a throw), which frees the lock
+  just the same. A unique violation rolls the transaction back and is
+  caught outside it, as before.
+- The two constants sit after `keyBlobLength`, the last of the constants
+  at the top, under one comment, and are not exported: nothing else reads
+  them.
+- `lockPod` and `countAccountsSince` sit in front of `insertAccount` in
+  the queries file, in the plan's order. The service's import of the
+  queries became a list over several lines, as `dao.service.js` writes
+  its own: seven names on one line would be longer than any import line
+  in `src`.
+- `countAccountsSince` passes `days` as a plain number, and PostgreSQL
+  reads the parameter as the integer that `make_interval(days => ...)`
+  takes.
+- In section 4 the sentence went on the paragraph under the SQL block,
+  the one about the columns. In section 5 the check went on the end of
+  the "Checks, in order" paragraph, with its dated sentence after it. The
+  README row now ends "`409` on a repeat, `403` at the limit of 20 new
+  accounts in 30 days".
+- Checks (1.4): `node --check` on the two changed source files
+  (`anos-accounts.queries.js`, `anos-accounts.service.js`), clean; every
+  name the service imports from the queries file is exported there. The
+  SQL by psql against the local `masterpod` database as the superuser
+  `codex` with `SET LOCAL ROLE masterpodsoftware`, one transaction,
+  rolled back: 20 rows inserted into `anos_accounts` for a throwaway pod
+  id (one with no row in `anopods`) and one more row for it with
+  `created_at` 31 days back, 21 rows in all; the query of
+  `countAccountsSince` read 20 with 30 days, and 21 with 32 days, so it
+  is the 30 days that leave the old row out. The query of `lockPod` ran
+  for the throwaway id (no row) and for one real local pod (one row,
+  held until the rollback). The parameters went untyped (`\bind`), as
+  `pg` sends them. After the rollback the throwaway rows were gone and
+  the table had its 10 rows as before. No server was booted, so the
+  route itself was not called: the `403` over HTTP takes 21 accounts
+  from one pod to see, and that run-through is the user's (the plan's
+  section 4).
+- Not touched: `anos-accounts.router.js`, `anos-accounts.handlers.js`,
+  `db/schema.sql`, `package.json`, `.example.env`, every other feature
+  folder; in the README everything but the one route row.
