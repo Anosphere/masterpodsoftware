@@ -1651,9 +1651,12 @@ draft's flows 4.6 and 4.7 are superseded by 12.4.5 and 12.4.7.
 5. The person comes back, unlocks the recovery pod with the passkey, combines
    the shares on the device, proves the backup code to the masterpod, which
    makes the recovery passkey the pod's passkey (12.4.5); unlocks the pod as
-   usual; stores each break-glass seed on its account row; deposits a new
-   backup code with the keyholders and then rotates the backup code on the
-   masterpod (12.4.5; the deposit first since 2026-11-10,
+   usual; posts a break-glass move out of each old account that holds
+   anos, signed with its recovered break-glass seed, and files it here for
+   two attestors to sign (section 14, since 2026-11-08; until then it
+   stored each seed on its account row); deposits a new backup code with
+   the keyholders and then rotates the backup code on the masterpod
+   (12.4.5; the deposit first since 2026-11-10,
    `~/Desktop/Z-TestNet/forclaude/recovery-finish-order-plan-1.md`);
    completes the case.
 
