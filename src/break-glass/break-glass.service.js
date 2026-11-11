@@ -198,7 +198,9 @@ function personEvents(events) {
  * type, and no move with its transaction id is filed yet. Then one
  * transaction with the case row locked: the case row when there is none
  * (status open), the moves with the shared type, the opened event with the
- * count. A second call for the same case adds moves (Retry).
+ * count. A second call for the same case adds moves: the wallet calls once
+ * per move, as soon as that move is on the validators (since 2026-11-10,
+ * spec 14.4.1; until then once per finish, and again on Retry).
  */
 export async function fileBreakGlassMoves(anopod, body) {
   // 1. Shape, then the ids.

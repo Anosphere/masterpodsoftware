@@ -1651,9 +1651,11 @@ draft's flows 4.6 and 4.7 are superseded by 12.4.5 and 12.4.7.
 5. The person comes back, unlocks the recovery pod with the passkey, combines
    the shares on the device, proves the backup code to the masterpod, which
    makes the recovery passkey the pod's passkey (12.4.5); unlocks the pod as
-   usual; stores each break-glass seed on its account row; rotates the
-   backup code and deposits the new one with the keyholders; completes the
-   case.
+   usual; stores each break-glass seed on its account row; deposits a new
+   backup code with the keyholders and then rotates the backup code on the
+   masterpod (12.4.5; the deposit first since 2026-11-10,
+   `~/Desktop/Z-TestNet/forclaude/recovery-finish-order-plan-1.md`);
+   completes the case.
 
 ### 12.2 Who is a moderator, and two new levels
 
@@ -2068,9 +2070,15 @@ the caller shows it holds the code it is replacing, a session alone is not
 enough. Checks: shape and lengths (`400`); the proof verifies against the
 row's `backup_code_public_key` and `_pq` (`401 bad signature`). Writes the
 three columns. A unique violation is `409 key already registered`. Answer:
-`200 { anopodId, rotated: true }`. The phone then deposits the new code's
-shares with the keyholders as `backupcode` under a new `keyId`; the old
-code's shares stay there and open nothing.
+`200 { anopodId, rotated: true }`. The phone has deposited the new code's
+shares with the keyholders as `backupcode` under a new `keyId` before it
+calls this route; the old code's shares stay there and open nothing. That
+order is the wallet's since 2026-11-10
+(`~/Desktop/Z-TestNet/forclaude/recovery-finish-order-plan-1.md`; wallet
+spec 12.3): until then the phone called this route first and deposited
+after the answer, and a tab closed between the two, or an answer that got
+lost, left a pod whose shares rebuild a code this server no longer holds.
+This server's behaviour did not change.
 
 **POST /store-break-glass-blob**. Body `{ accountId, breakGlassBlob }`,
 the blob 1 to 1024 bytes (60 in practice, 12.6). The row exists and is the
@@ -2125,7 +2133,7 @@ with the info strings named). New:
 | the backup code proof | the `/recover-with-backup-code` payload signed by the backup code P-256 and ML-DSA-87 keys of section 7, derived from the combined code |
 | the new `blob1` | the encryption key (from `blob2` under `KEK_backup`) under the recovery passkey's `KEK_prf`: 60 bytes |
 | `breakGlassBlob` | a 32-byte break-glass seed under the encryption key: 60 bytes. A seed is matched to its account by deriving `breakGlassKey` and `breakGlassPostQuantumKey` (wallet spec 7) and comparing with `creation.payload.publicKeys` |
-| the rotation | a new backup code, new `KEK_backup`, new `blob2` and new backup code keys by section 7's rules; the proof by the old keys; the new code split and deposited as `backupcode` under a new `keyId` |
+| the rotation | a new backup code, new `KEK_backup`, new `blob2` and new backup code keys by section 7's rules; first the new code split and deposited as `backupcode` under a new `keyId`, then the proof by the old keys (the deposit first since 2026-11-10, 12.4.5) |
 
 On an authenticator that still holds the pod's passkey, registering the
 recovery passkey under the same user handle replaces it (that is how
@@ -3260,16 +3268,26 @@ section changes except the items in 14.8.
 ### 14.1 The flow
 
 1. The finish of a recovery (12.4.2 and 12.4.5: after
-   `/recover-with-backup-code` and the rotation, before the completion)
-   reads each old account's balance from a validator with the recovered
-   break-glass pair, makes a new account of the same type for each old
-   account that holds anos (12.4.5's `/store-break-glass-blob` is not called
-   any more), posts a `breakGlassTransfer` per account to a validator, signed
-   by the break-glass pair alone, and files the moves here (14.4.1,
-   `/file-break-glass-moves`): the recovery case's id and, per move, the old
-   account, the new one and the transaction id. The break-glass case is the
-   recovery case seen by the attestors; a second call (Retry) adds moves.
-   The seed is wiped; nothing of it is stored here.
+   `/recover-with-backup-code`, before the rotation and the completion)
+   reads each old account from a validator with the recovered break-glass
+   pair: a move already held for it, and its balance. It makes a new
+   account of the same type for each old account that holds anos (12.4.5's
+   `/store-break-glass-blob` is not called any more), posts a
+   `breakGlassTransfer` per account to a validator, signed by the
+   break-glass pair alone, and files each move here with a call of its own
+   as soon as the move is on the validators (14.4.1,
+   `/file-break-glass-moves`): the recovery case's id and the move's old
+   account, new account and transaction id. A move the finish finds
+   already held on a validator (an earlier run posted it and its filing
+   never arrived here) is filed as it stands there, and no new account is
+   made for it. The break-glass case is the recovery case seen by the
+   attestors; every call adds its move to it. The seed is wiped; nothing
+   of it is stored here. The order and the filing are the wallet's since
+   2026-11-10
+   (`~/Desktop/Z-TestNet/forclaude/recovery-finish-order-plan-1.md`;
+   wallet spec 12.3): until then the moves were made after the rotation
+   and filed in one call at the end of a run, so a run that stopped half
+   way left moves on the validators that no attestor was shown.
 2. The attestor edition lists the break-glass cases beside the trades
    (14.4.2, `/list-break-glass-cases`) and opens one
    (`/get-break-glass-case`): the person's profile with the selfie, the
@@ -3413,9 +3431,14 @@ caller as `anopod_id`.
 
 Answer: `201 { caseId, status, moves }`, `status` the case's and `moves`
 the count now on the case. A second call for the same case adds moves: the
-wallet calls it once per finish and again on Retry for the moves that
-failed. The break-glass case's own status is not checked: a later filing
-adds to a case under review as to a fresh one.
+wallet calls it once per move, as soon as that move is on the validators,
+so each call carries one move and writes one `opened` event. That is the
+wallet's since 2026-11-10
+(`~/Desktop/Z-TestNet/forclaude/recovery-finish-order-plan-1.md`): until
+then it called once per finish with the moves of the run, and again on
+Retry for the moves that failed. The route takes 1 to 20 moves as before.
+The break-glass case's own status is not checked: a later filing adds to
+a case under review as to a fresh one.
 
 **POST /list-my-break-glass-moves**. Body `{}`. The caller's break-glass
 cases, newest first, each with its moves and the person's subset of the
