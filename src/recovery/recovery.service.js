@@ -739,7 +739,9 @@ export async function completeRecoveryCase(recoveryCase) {
  * newBackupCodePublicKey, newBackupCodePublicKeyPq, newBlob2 } by the
  * CURRENT backup code keys: the caller shows it holds the code it is
  * replacing. The shape and lengths, the proof, then the three columns
- * replaced. The phone then deposits the new code with the keyholders.
+ * replaced. The phone has deposited the new code's shares with the
+ * keyholders before it calls this route (since 2026-11-10, spec 12.4.5;
+ * until then it deposited them after the answer).
  */
 export async function rotateBackupCode(anopod, body) {
   // 1. Shape and lengths.
