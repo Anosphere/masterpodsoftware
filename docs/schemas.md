@@ -38,7 +38,10 @@ backup code, backup code rotation, several passkeys, several sessions).
   stored. At most `MAX_IMAGE_BYTES` (10 MB) decoded per image and
   `MAX_IMAGES_PER_REQUEST` (5) images per request. Public selfies are
   plaintext; security images are ciphertext whose content type describes the
-  plaintext.
+  plaintext. Since 2026-11-12 a selfie is looked into (section 11, the
+  pictures note): its bytes must begin as a picture of its content type
+  does, and the width and the height its own header names must each be at
+  most 4096 pixels. A security image cannot be looked into.
 - Every table has `created_at`, and `updated_at` with the `set_updated_at`
   trigger unless the rows never change (then `created_at` only). Every table
   and column gets a `COMMENT ON`. No foreign keys, as in anossoftware; the
@@ -690,8 +693,9 @@ Checks:
    COSE public key.
 6. `username` matches `^[a-z0-9_]{3,32}$` (the phone lowercases before
    signing) and is free; `firstName`, `lastName` 1 to 100 characters;
-   `selfie` decodes within the image rules. `409 username taken`, else
-   `400` with the field.
+   `selfie` decodes within the image rules and, since 2026-11-12, is a
+   picture of its content type, at most 4096 pixels wide and high.
+   `409 username taken`, else `400` with the field.
 
 Writes: `INSERT INTO anopods` (profile, credential id, COSE key, ephemeral
 keys, `ephemeral_expires_at = now() + EPHEMERAL_KEY_HOURS`, `vouched =
@@ -1672,6 +1676,77 @@ plan says; what it settled:
   another pod), the settings upsert twice and its find; then the DDL a
   second time, which changed nothing. No server, no browser.
 
+### Pictures: no PDFs as evidence, and the selfie check (2026-11-12)
+
+No plan file: asked for and decided in chat on 2026-11-12, after a look at
+how a file that only pretends to be a picture could reach a server or a
+phone. Two changes here; the wallet's three of the same day are in the
+wallet spec, section 11.
+
+- Evidence is pictures only. `EVIDENCE_CONTENT_TYPES` in
+  `src/attesting/attesting.service.js` and the check on
+  `escrow_dispute_evidence.content_type` in `db/schema.sql` name
+  `image/jpeg`, `image/png` and `image/webp`; `application/pdf` left both,
+  and a PDF is `400 invalid contentType`. Why: a PDF is not a picture, the
+  server cannot look into it (it is ciphertext), and the one who opens it
+  is an attestor. The column's `COMMENT ON` line names the three.
+- The check is changed inline in the `CREATE TABLE` only, with no
+  drop-and-add at the end of the file: narrowing a check fails on a
+  database that still holds a PDF row. A database built fresh, as a launch
+  builds it, has the three. A database kept from before keeps its check of
+  four, and the server refuses a PDF there all the same. Rows of before
+  stay as they are; the wallet shows no file whose type is not one of its
+  own three. The file's header comment is unchanged, since nothing that
+  exists is altered.
+- A selfie is looked into. `pictureProblem({ contentType, bytes }, maxSide)`
+  in `src/util/images.js` takes what `decodeImage` returns and answers a
+  reason or null; `createAnopod` calls it right after `decodeImage`, with
+  `SELFIE_MAX_SIDE`, 4096. Two new reasons under `400 invalid selfie:`:
+  `image must be a picture of its contentType` (the bytes do not begin as
+  a picture of the named type does, the header ends early, or it names a
+  width or a height of 0) and
+  `image must be at most 4096 pixels wide and high`. Why: the selfie is
+  the one picture stored in the clear and shown to everyone, and a small
+  file can name a huge picture that every phone then has to unpack.
+- `imageSize(contentType, bytes)` reads the header only: nothing is
+  decoded, no package is added, and no read goes past the end of the
+  bytes. JPEG: `FF D8`, then the segments up to the first frame header
+  (the markers `C0` to `CF` without `C4`, `C8` and `CC`), which carries
+  the height and the width; fill bytes and the markers that stand alone
+  are stepped over; a scan or the end before a frame header is not a
+  picture. PNG: the eight signature bytes, then the `IHDR` chunk first.
+  WebP: `RIFF`, `WEBP`, then a `VP8 ` chunk (a key frame with its start
+  code), a `VP8L` chunk or a `VP8X` chunk, each with the size in its own
+  place.
+- The label has to be the true one: a PNG sent as `image/jpeg` is refused.
+  The wallet sends a JPEG it has drawn itself, named `image/jpeg`, about
+  1280 pixels on its longer side.
+- Security images are not looked into: they are ciphertext. The 4096 is a
+  constant, not a setting.
+- Not stopped by this: a true picture built to break the program that
+  shows it, and many pictures at the limit on one page. Redrawing every
+  selfie on the server is on the list for after production.
+- No schema change for the selfie check, no new setting, no package.
+- Comments brought in line on the user's word ("Yes, update them"): the
+  comment of `EVIDENCE_CONTENT_TYPES`, and the `COMMENT ON` line of
+  `escrow_dispute_evidence.content_type` in `db/schema.sql`, which changed
+  the file's sha256 a second time. With both lines the file has 1332
+  lines, as before; its sha256 is in the deploy notes, section 11.
+- Checked: `node --check` on the changed files, and the service module
+  loaded. The schema file built from nothing into a scratch schema inside
+  one rolled-back transaction on the local `masterpod` database: a PDF row
+  was refused, a row of each of the three types went in, and a second run
+  of the file changed nothing. In a second scratch schema the file of
+  before was built, a PDF row put in, and the new file run on top: no
+  error, the check of four still there, the comment the new one, the row
+  kept. `imageSize` against 20 pictures made by
+  macOS (`sips`) and by a browser, JPEG, PNG and WebP in its three forms,
+  each size compared with the one `sips` reads; 4096 let in, 4097 refused;
+  wrong and cut files refused; about 530,000 damaged files, none of which
+  made the check throw. The script was a throwaway outside the repo.
+  `/create-anopod` itself was not called, since it needs a passkey: the
+  user's run-through.
+
 
 ## 12. Recovery and moderation
 
@@ -2642,7 +2717,8 @@ flow:
    parties get a `disputeCaseOpened` notification: the request for
    evidence.
 3. Each party uploads evidence from their wallet (13.4.5,
-   `/add-dispute-evidence`): screenshots, photos of receipts, PDFs. Each
+   `/add-dispute-evidence`): screenshots and photos of receipts, pictures
+   only (no PDFs since 2026-11-12; section 11, the pictures note). Each
    file is encrypted once under a fresh content key; the row carries the
    key twice, under the uploader's pod encryption key (their own copy,
    which stays) and encrypted to the case key (the attestors' copy). A
@@ -2746,7 +2822,7 @@ CREATE TABLE IF NOT EXISTS escrow_dispute_evidence (
   evidence_id  BYTEA       PRIMARY KEY CHECK (octet_length(evidence_id) = 32),
   case_id      BYTEA       NOT NULL CHECK (octet_length(case_id) = 32),
   anopod_id    BYTEA       NOT NULL CHECK (octet_length(anopod_id) = 32),
-  content_type TEXT        NOT NULL CHECK (content_type IN ('image/jpeg', 'image/png', 'image/webp', 'application/pdf')),
+  content_type TEXT        NOT NULL CHECK (content_type IN ('image/jpeg', 'image/png', 'image/webp')),
   file         BYTEA       NOT NULL,
   key_for_me   BYTEA       NOT NULL CHECK (octet_length(key_for_me) = 60),
   key_for_case BYTEA       CHECK (octet_length(key_for_case) = 1660),
@@ -3116,7 +3192,9 @@ dispute case of the caller's pod:
 Checks: status `open` or `inReview` (`409 case closed`: once decided the
 case key is gone); at least one entry over both lists, `files` up to
 `MAX_IMAGES_PER_REQUEST`, `existing` up to 20 (`400 bad request shape`);
-each `contentType` one of the four, each `file` base64 of at most
+each `contentType` one of the three picture types (`image/jpeg`,
+`image/png`, `image/webp`; no PDF since 2026-11-12), each `file` base64 of
+at most
 `MAX_IMAGE_BYTES` decoded, `keyForMe` 60 bytes, `keyForCase` 1660 bytes
 (`400 invalid <field>`); each `evidenceId` in `existing` names a row whose
 `anopod_id` is the caller's, from any case (`404 unknown evidence`).
@@ -3222,7 +3300,7 @@ profiles from `anopods.service.js` `profileWithSelfie`, the chat keys from
   stake the pod holds at the validators comes back through the guardians'
   payout); an attestor's history of cases.
 - A party deleting or replacing their own evidence; evidence other than
-  the four content types or larger than `MAX_IMAGE_BYTES`.
+  the three content types or larger than `MAX_IMAGE_BYTES`.
 - A time limit on open cases; a case on a trade whose accounts the
   masterpod does not know.
 - Sending the meeting link by email; the attestor writes by hand.

@@ -13,7 +13,7 @@ import { decodeBytes } from '../crypto/bytes.js';
 import { ECDSA_P256, ML_DSA_87, decodePublicKey } from '../crypto/signatures.js';
 import { isUniqueViolation, withTransaction } from '../db/transaction.js';
 import { decodeId, toHex } from '../util/ids.js';
-import { decodeImage } from '../util/images.js';
+import { decodeImage, pictureProblem } from '../util/images.js';
 import { isObject } from '../util/is-object.js';
 import { ok, refuse } from '../util/result.js';
 import {
@@ -45,6 +45,9 @@ const BAD_SHAPE = 'bad request shape';
 
 /** First and last names are 1 to 100 characters. */
 const NAME_MAX_CHARS = 100;
+
+/** A selfie's width and its height are each at most this many pixels (2026-11-12). The wallet sends one of about 1280. */
+const SELFIE_MAX_SIDE = 4096;
 
 /** The credential id column takes 16 to 1023 bytes. */
 const credentialIdLength = (n) => n >= 16 && n <= 1023;
@@ -141,6 +144,8 @@ export async function createAnopod(body) {
   if (!isName(lastName)) return refuse(400, 'invalid lastName');
   const selfie = decodeImage(payload.selfie);
   if (selfie.reason) return refuse(400, `invalid selfie: ${selfie.reason}`);
+  const selfieProblem = pictureProblem(selfie, SELFIE_MAX_SIDE);
+  if (selfieProblem) return refuse(400, `invalid selfie: ${selfieProblem}`);
   if (await usernameTaken(username)) return refuse(409, 'username taken');
 
   // The writes. The challenge is taken first; if another write got it

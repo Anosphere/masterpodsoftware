@@ -106,8 +106,8 @@ const CASE_KEY_MLKEM_BYTES = 1568;
 /** A wrapped case key is 1 to 4096 bytes (the column), 1725 in practice (13.6). */
 const wrappedKeyLength = (n) => n >= 1 && n <= 4096;
 
-/** The four content types evidence may have (13.3). */
-const EVIDENCE_CONTENT_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
+/** The three content types evidence may have (13.3): pictures only, no PDF since 2026-11-12. */
+const EVIDENCE_CONTENT_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
 
 /** keyForMe is the content key under the pod encryption key, 60 bytes; keyForCase the content key encrypted to the case key, 1660 (13.6). */
 const KEY_FOR_ME_BYTES = 60;
