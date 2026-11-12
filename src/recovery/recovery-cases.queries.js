@@ -50,9 +50,10 @@ export async function openCaseExists(lookupId, db = pool) {
 
 /**
  * Inserts a case on `client` with status open. `row` is { caseId, lookupId,
- * anopodId, contactEmail, contactPhone }, the last two each a string or
- * null, null for the one the person did not give. A second open case for
- * the lookup id throws a unique violation on
+ * anopodId, contactEmail, contactPhone }, the last two both strings since
+ * 2026-11-12, when /open-recovery-case began to want both (the columns
+ * still take a null: a case of before may hold one contact). A second open
+ * case for the lookup id throws a unique violation on
  * recovery_cases_one_open_per_lookup_id.
  */
 export async function insertCase(client, row) {

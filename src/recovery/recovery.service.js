@@ -122,8 +122,10 @@ function isContactPhone(value) {
 /**
  * POST /open-recovery-case. The seven checks of spec 12.4.2, then one
  * transaction: the challenge consumed, the case, its recovery pod and the
- * opened event. The person gives a contact email, a contact phone or both
- * (2026-11-11): at least one of the two.
+ * opened event. The person gives a contact email and a contact phone, both
+ * (2026-11-12; from 2026-11-11 until then at least one of the two was
+ * enough): a moderator texts first, and the email is there when a text is
+ * not possible.
  */
 export async function openRecoveryCase(body) {
   // 1. Shape. The two contacts are each absent, null or a string.
@@ -165,12 +167,12 @@ export async function openRecoveryCase(body) {
     return refuse(401, 'passkey verification failed');
   }
 
-  // 6. The fields. Of the two contacts at least one is given, and each one given is valid.
+  // 6. The fields. Both contacts are given (2026-11-12), and each is valid.
   const lookupId = decodeId(payload.lookupId);
   if (lookupId === null) return refuse(400, 'invalid lookupId');
   const contactEmail = payload.contactEmail ?? null;
   const contactPhone = payload.contactPhone ?? null;
-  if (contactEmail === null && contactPhone === null) return refuse(400, 'contactEmail or contactPhone required');
+  if (contactEmail === null || contactPhone === null) return refuse(400, 'contactEmail and contactPhone required');
   if (contactEmail !== null && !isContactEmail(contactEmail)) return refuse(400, 'invalid contactEmail');
   if (contactPhone !== null && !isContactPhone(contactPhone)) return refuse(400, 'invalid contactPhone');
   const hybridKeyX25519 = decodeBytes(payload.hybridKey.x25519, [32]);
@@ -289,15 +291,18 @@ export async function unlockRecoveryPod(body) {
  * (spec 12.4.3): the case, the pod's hybrid key and blob, blob2 once the
  * status is approved or delivering, the person's subset of the events, and
  * the shares the keyholders posted, oldest first. `anosAccounts`
- * (2026-11-11) is how many anos accounts the recovered pod has, in every
- * status: how many account keys the wait page waits for.
+ * (2026-11-11) is how many anos accounts the recovered pod made up to the
+ * opening of this case, in every status: how many account keys the wait
+ * page waits for. The accounts the finish makes are newer than the case
+ * and do not count (2026-11-12; until then every account of the pod's
+ * counted).
  */
 export async function getRecoveryPod(recoveryPod, recoveryCase) {
   const [anopod, events, shares, anosAccounts] = await Promise.all([
     findAnopod(recoveryCase.anopodId),
     listEvents(recoveryCase.caseId),
     listShares(recoveryCase.caseId),
-    countAccountsOf(recoveryCase.anopodId),
+    countAccountsOf(recoveryCase.anopodId, recoveryCase.caseId),
   ]);
   return ok(200, {
     caseId: toHex(recoveryCase.caseId),

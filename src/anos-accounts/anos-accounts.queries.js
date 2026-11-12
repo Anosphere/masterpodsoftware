@@ -109,12 +109,24 @@ export async function listAccountsOf(anopodId) {
 }
 
 /**
- * How many anos_accounts rows this pod has, every one of them, as a number:
- * what /get-recovery-pod answers as `anosAccounts`, so the recovery wait
- * page knows how many account keys to wait for.
+ * How many anos_accounts rows this pod made up to the opening of the
+ * recovery case `caseId`, as a number: a row counts when its created_at is
+ * not after the created_at of the case's recovery_cases row. It is what
+ * /get-recovery-pod answers as `anosAccounts`, so the recovery wait page
+ * knows how many account keys to wait for. The accounts that the finish's
+ * Move your money makes are newer than the case and do not count
+ * (2026-11-12; until then every row of the pod's counted, so the number
+ * went up in the middle of the finish). The two times are compared here,
+ * in the SQL: read into JavaScript they would be Dates, which drop the
+ * microseconds. A case id with no row counts 0.
  */
-export async function countAccountsOf(anopodId) {
-  const { rows } = await query('SELECT count(*)::int AS count FROM anos_accounts WHERE anopod_id = $1', [anopodId]);
+export async function countAccountsOf(anopodId, caseId) {
+  const { rows } = await query(
+    `SELECT count(*)::int AS count FROM anos_accounts
+     WHERE anopod_id = $1
+       AND created_at <= (SELECT created_at FROM recovery_cases WHERE case_id = $2)`,
+    [anopodId, caseId],
+  );
   return rows[0].count;
 }
 

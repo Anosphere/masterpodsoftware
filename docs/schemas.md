@@ -1693,15 +1693,17 @@ draft's flows 4.6 and 4.7 are superseded by 12.4.5 and 12.4.7.
    lookup id (keyholder spec section 15, `/get-owner`) and the masterpod
    names the account (`/challenge` openCase, 12.4.2), so the person reads
    the username of the pod found and types none (since 2026-11-08; before
-   that they typed it). Then a contact email or a contact phone, at least
-   one of the two (the phone since 2026-11-11, section 18; until then the
-   email alone), and they register a passkey. The masterpod opens a
+   that they typed it). Then a contact email and a contact phone, both
+   (both required since 2026-11-12, 18.4; the phone came on 2026-11-11,
+   section 18, and one of the two was enough then; before that the email
+   alone), and they register a passkey. The masterpod opens a
    recovery case and a recovery pod for it (12.4.2). Of the birth record
    only the lookup id reaches the server; the contact email and phone are
    the plaintext facts about the person the masterpod keeps.
 2. A moderator (12.2) sees the case, schedules a video call (the meeting
-   link shows to the person in the app; the email and the phone are for
-   the moderator to write or call by hand, nothing is sent), pulls the
+   link shows to the person in the app; the phone is for the moderator to
+   text or call first, and the email is there when a text is not
+   possible, both by hand, nothing is sent), pulls the
    bucket one key from three keyholders (their moderator routes answer
    synchronously; nothing changes there), reads the case pod's bucket one
    rows (12.4.4) and compares the selfie with the person on the call. A
@@ -1838,11 +1840,15 @@ typed username named). `status` moves as 12.5 says; the partial unique index
 is the one-open-case-per-lookup-id rule. Nothing else about a case is a
 column: everything that happens is a `recovery_events` row.
 `contact_email` and `contact_phone` are where a moderator can reach the
-person, the contact email or phone: an email of 3 to 254 characters with an
-`@` that is not first, a phone of 6 to 32 characters, each a digit, a
-space, `+`, `-` or a round bracket, with at least 6 digits, kept as typed.
-A case has at least one of the two (`recovery_cases_contact_check`); both
-are plain text. The phone came on 2026-11-11 (section 18); until then
+person, the contact email and the contact phone: an email of 3 to 254
+characters with an `@` that is not first, a phone of 6 to 32 characters,
+each a digit, a space, `+`, `-` or a round bracket, with at least 6
+digits, kept as typed. Both are plain text. Since 2026-11-12 a case is
+opened only with both (`/open-recovery-case`, 12.4.2; 18.4). The table
+did not change for that: each column still takes a null, and its check is
+still at least one of the two (`recovery_cases_contact_check`), because a
+database may hold cases of before with one contact. The phone came on
+2026-11-11 (section 18); until then
 `contact_email` was `NOT NULL` and the only contact. For a live database
 the case chat block at the end of `db/schema.sql` adds `contact_phone`,
 drops the `NOT NULL` of `contact_email` and drops and adds the check, all
@@ -1932,9 +1938,10 @@ existing purposes are untouched.
 }
 ```
 
-`contactEmail` and `contactPhone` are each optional, and at least one of
-the two is given (2026-11-11, section 18; until then `contactEmail` was
-required and there was no `contactPhone`).
+`contactEmail` and `contactPhone` are both required (2026-11-12, 18.4).
+From 2026-11-11 (section 18) until then each was optional and at least
+one of the two was given; before that `contactEmail` was required and
+there was no `contactPhone`.
 
 Checks:
 
@@ -1950,18 +1957,20 @@ Checks:
    `400 passkey without prf`.
 5. The registration verifies with the challenge, `RP_ID`, the origins and
    user verification; `401 passkey verification failed`.
-6. `lookupId` 32 bytes; then the contact: both `contactEmail` and
-   `contactPhone` absent or null is `400 contactEmail or contactPhone
-   required`; `contactEmail`, when given, 3 to 254 characters with an `@`
-   not first; `contactPhone`, when given, 6 to 32 characters, each a digit,
-   a space, `+`, `-` or a round bracket, with at least 6 digits; then
-   `hybridKey` 32 and 1568 bytes, `hybridKeyBlob` 1 to 1024 bytes; `400
-   invalid <field>`.
+6. `lookupId` 32 bytes; then the contact: `contactEmail` or
+   `contactPhone` absent or null is
+   `400 contactEmail and contactPhone required` (2026-11-12, 18.4; until
+   then only both absent or null was refused, with
+   `400 contactEmail or contactPhone required`); `contactEmail` 3 to 254
+   characters with an `@` not first; `contactPhone` 6 to 32 characters,
+   each a digit, a space, `+`, `-` or a round bracket, with at least 6
+   digits; then `hybridKey` 32 and 1568 bytes, `hybridKeyBlob` 1 to 1024
+   bytes; `400 invalid <field>`.
 7. No case for this lookup id is open (status not completed or dismissed);
    `409 case already open`.
 
 Writes: `INSERT INTO recovery_cases` (status `open`; the contact email and
-the contact phone, null for the one not given), `INSERT INTO
+the contact phone, both of them), `INSERT INTO
 recovery_pods` (credential id, COSE key, ephemeral keys with
 `ephemeral_expires_at = now() + EPHEMERAL_KEY_HOURS`, the hybrid key, the
 blob), the `opened` event, the challenge consumed. A unique violation on
@@ -2055,8 +2064,13 @@ details, createdAt } ], shares: [ { shareId, keyholderId, shareType, keyId,
 share, receivedAt } ] }`. `contactEmail` and `contactPhone` are each a
 string or null (the phone since 2026-11-11, section 18). `anosAccounts`
 (2026-11-11, section 18) is a number: how many `anos_accounts` rows the
-case's pod has, every one of them, sent in every status, so the wallet's
-wait page knows how many account keys to wait for. `blob2` is
+case's pod made up to the opening of the case. A row counts when its
+`created_at` is not after the `created_at` of the case's `recovery_cases`
+row (2026-11-12, 18.4; until then every row of the pod's counted). It is
+sent in every status, so the wallet's wait page knows how many account
+keys to wait for. The accounts that the finish's Move your money makes
+are newer than the case and do not count: the bankers' shares in the
+case are for the old accounts only. `blob2` is
 the case's pod's `anopod_encryption_key_blob_2` (hex) once the status is
 `approved` or `delivering`, null before: ciphertext under `KEK_backup`,
 worth nothing without the code the bankers are sending here, and what the
@@ -5036,14 +5050,21 @@ this section changes except the items in 18.3.
 - The person is told when a recovery case gets its video call: one
   notification, of a kind of its own. A decision and a dismissal show on
   the case page and send nothing.
-- A recovery case takes a contact email or a contact phone, at least one
-  of the two, and the moderators see both. A phone is 6 to 32 characters:
-  digits, spaces, `+`, `-` and round brackets, with at least 6 digits. It
-  is kept as typed, in plain text like the email. The moderator's part of
-  a recovery gets no chat: the person has no anoPod to chat from then.
-- The recovery pod's answer says how many anos accounts the pod has: every
-  `anos_accounts` row of it, in every status of the case. The wallet's
-  wait page uses it to know how many account keys to wait for.
+- A recovery case takes a contact email and a contact phone, and the
+  moderators see both. Both are required since 2026-11-12 (18.4): a
+  moderator texts first, and the email is there when a text is not
+  possible. As the plan had it and as build 1 built it, one of the two
+  was enough. A phone is 6 to 32 characters: digits, spaces, `+`, `-` and
+  round brackets, with at least 6 digits. It is kept as typed, in plain
+  text like the email. The moderator's part of a recovery gets no chat:
+  the person has no anoPod to chat from then.
+- The recovery pod's answer says how many anos accounts the pod had when
+  the case was opened: every `anos_accounts` row of it that is not newer
+  than the case, in every status of the case. The wallet's wait page uses
+  it to know how many account keys to wait for. That is the count since
+  2026-11-12 (18.4). As the plan had it and as build 1 built it, every
+  row of the pod's counted, also the new accounts that the finish of the
+  recovery makes.
 
 ### 18.2 The changes by route
 
@@ -5066,14 +5087,19 @@ The objects and the checks in full are in the sections named here.
 - `/schedule-break-glass-case` (attestor; 14.4.2 and 14.7): one
   notification to the recovered pod, kind `recoveryCaseScheduled`,
   reference the case id, under the case lock, after the `scheduled` event.
-- `/open-recovery-case` (none; 12.4.2): `contactEmail` is optional and a
-  `contactPhone` is taken beside it. Check 1 takes each of the two absent,
-  null or a string. Check 6 answers `400 contactEmail or contactPhone
-  required` when both are absent or null, and `400 invalid contactEmail`
-  or `400 invalid contactPhone` for one that is given and not valid. The
-  case row is written with both, null for the one not given.
+- `/open-recovery-case` (none; 12.4.2): a `contactPhone` is taken beside
+  `contactEmail`, and both are required (2026-11-12, 18.4). Check 1 takes
+  each of the two absent, null or a string. Check 6 answers
+  `400 contactEmail and contactPhone required` when one of the two is
+  absent or null, then `400 invalid contactEmail` or
+  `400 invalid contactPhone` for one that is not valid. The case row is
+  written with both. As build 1 built it, `contactEmail` was optional,
+  check 6 answered `400 contactEmail or contactPhone required` only when
+  both were absent or null, and the row took null for the one not given.
 - `/get-recovery-pod` (recovery; 12.4.3): `contactPhone` beside
-  `contactEmail`, each a string or null; and `anosAccounts`, a number.
+  `contactEmail`, each a string or null; and `anosAccounts`, a number:
+  the pod's anos accounts made up to the opening of the case (2026-11-12,
+  18.4; as build 1 built it, every anos account of the pod's).
 - `/list-recovery-cases` and `/get-recovery-case` (moderator; 12.4.4):
   `contactPhone` beside `contactEmail`, on each case of the list and on
   `case`.
@@ -5286,3 +5312,136 @@ case. What the plan left open and how it was decided:
   `src/appointments/`, `package.json`, `.example.env`, the scripts. In
   `src/auth/` and `src/notifications/` one comment each changed and no
   line of code.
+
+#### The account count and both contacts (2026-11-12)
+
+Two changes the user decided on 2026-11-12, after the plan was final and
+its seven steps were committed (this server's step as 68c35da). Built the
+same day in one chat from that chat's brief, on main at 68c35da, the
+working tree clean: one commit here and one in the wallet (its spec, 12.3
+and section 11). No schema step, no new route, no env variable and no npm
+package. The validators, the doormen, the keyholders, the signing server
+and the wallet's proxy are not touched.
+
+The account count. The plan's 1.7 and its decision 21 had `anosAccounts`
+count every `anos_accounts` row of the recovered pod, and build 1 built
+that. It was a mistake in the plan, not in the build. The finish's step
+Move your money makes a new account for each old account that holds anos
+(`/create-anos-account`), so the number went up in the middle of the
+finish, while the bankers' shares in the case are for the old accounts
+only. The wallet's wait page takes the number as the account keys to wait
+for: its line turned to, for instance, "2 of 4 account keys are
+complete", and after a reload the finish did not come back. The user,
+2026-11-12: "I feel like fix 1 is safe to do, we don't need to worry
+about side effects because it's just changing a read." Fix 1 is the name
+the planning chat gave this change.
+
+- `countAccountsOf(anopodId, caseId)`
+  (`src/anos-accounts/anos-accounts.queries.js`) takes the case's id as a
+  second argument. A row counts when its `created_at` is not after the
+  `created_at` of the case's `recovery_cases` row:
+
+  ```sql
+  SELECT count(*)::int AS count FROM anos_accounts
+  WHERE anopod_id = $1
+    AND created_at <= (SELECT created_at FROM recovery_cases WHERE case_id = $2)
+  ```
+
+  The two times are compared in the SQL. Read into JavaScript each would
+  be a `Date`, which keeps the milliseconds and drops the microseconds.
+- `getRecoveryPod` (`src/recovery/recovery.service.js`) passes
+  `recoveryCase.caseId` as that argument. The answer still carries
+  `anosAccounts`, a number, in every status, in its place after
+  `lookupId`. Nothing else on the wire changed. The wallet's code did not
+  change; the sentences there that said what the number is did.
+- Where the brief was silent. The function keeps its name and its first
+  argument, and still runs on the pool's `query`, in the service's
+  `Promise.all`. The case's time is read by a subquery on the case's
+  primary key, inside the one statement. "Not after" is `<=`, so an
+  account made at the very time of the case counts. A case id with no
+  row makes the comparison null and the count 0 (never, here: the
+  route's level has just read the case). An account whose creation never
+  reached a validator still counts when it is not newer than the case,
+  as in build 1. No index was added: the rows are found by `anopod_id`,
+  which has one.
+
+Both contacts. The plan's decision 8 let a person give an email or a
+phone, at least one of the two, and build 1 built that. The user,
+2026-11-12: "And a phone and not just an email would be great. Thai
+people, for example, would great prefer text. However, both should be
+required, in case text isn't available." So a recovery case is opened
+with a contact email and a contact phone, both: a moderator texts first,
+and the email is there when a text is not possible. This takes the place
+of decision 8.
+
+- `openRecoveryCase` (`src/recovery/recovery.service.js`), check 6: a
+  payload without a `contactEmail` or without a `contactPhone`, absent or
+  null, is refused with `400 contactEmail and contactPhone required`. It
+  takes the place of `400 contactEmail or contactPhone required`, which
+  no code answers any more. Then each one is checked as before:
+  `400 invalid contactEmail`, `400 invalid contactPhone`. The order in
+  check 6 is as it was: the lookup id, the refusal for a missing
+  contact, the email, the phone, the hybrid key and its blob.
+- The reason's words are this build's pick. The brief asked for one
+  reason that says both are required and left the words open: they are
+  the old reason with "and" for "or".
+- Check 1 did not change: each of the two is absent, null or a string,
+  else `400 bad request shape`. So a missing contact gets the new
+  reason, not the shape's. An empty string is still a string: it passes
+  check 1 and the new refusal, and is `400 invalid contactEmail` or
+  `400 invalid contactPhone`.
+- The two lines after the new refusal still begin with `contactEmail !==
+  null &&` and `contactPhone !== null &&`. That half is always true now.
+  The lines were left as they are: the brief has each contact "checked
+  as today".
+- `db/schema.sql` was not touched, by the brief: not a column, not a
+  check, not a comment. A database may hold cases of before with one
+  contact, so each column still takes a null and
+  `recovery_cases_contact_check` is still at least one of the two. The
+  rule lives in this route and in the wallet's form. The file has the
+  1332 lines and the sha256 it had after build 1 (it begins efbf9f8d),
+  so the numbers in the deploy notes stand.
+- The three reads did not change: `/get-recovery-pod`,
+  `/list-recovery-cases` and `/get-recovery-case` answer each contact as
+  a string or null.
+- Comments: that of `openRecoveryCase` and of its check 6, and that of
+  `insertCase` (`src/recovery/recovery-cases.queries.js`), which said
+  "null for the one the person did not give". The comment of `caseRow`
+  in that file stays: a row's two contacts are each a string or null, at
+  least one of them a string, and that is what the table holds.
+- The order of a deploy. A wallet that sends both contacts works against
+  a masterpod of before build 1: that one keeps the email and drops the
+  phone without a word. The other way round does not work any more. A
+  wallet of before the plan's step 4 sends the email alone, and this
+  server refuses it with the new reason, so between this server's deploy
+  and the wallet's nobody opens a recovery case. The plan's section 8
+  said that a wallet of before breaks nothing against the new masterpod;
+  for `/open-recovery-case` that no longer holds.
+
+Here: 12.1 (steps 1 and 2), 12.3 (the paragraph of `recovery_cases`),
+12.4.2 (`/open-recovery-case`: the sentence under the body, check 6, the
+writes), 12.4.3 (`/get-recovery-pod`), 18.1 (its last two points), 18.2
+(the lines of the two routes) and this note. `README.md`: the rows of
+`/open-recovery-case` and `/get-recovery-pod`, and the line of
+`recovery_cases` in the tables table. Everything else in section 18 is
+as build 1 left it, its notes above included: they say what was built
+then.
+
+Checks: `node --check` on the three changed source files
+(`anos-accounts.queries.js`, `recovery.service.js`,
+`recovery-cases.queries.js`), clean. The count's statement by psql
+against the local PostgreSQL as the superuser `codex` with `SET LOCAL
+ROLE masterpodsoftware`, in one transaction that was rolled back: the
+whole `db/schema.sql` built from nothing into a scratch schema (`SET
+LOCAL search_path`), 36 tables; one case opened at 12:00:00.123456 for a
+pod with five accounts, made a day before, 56 microseconds before, at the
+very time of the case, one microsecond after and an hour after, and one
+account of another pod; the statement, its two parameters untyped
+(`\bind`) as `pg` sends them, answered 3. It answered 0 for a case id
+with no row and 0 for a pod with no account. With the case's time cut to
+the millisecond, as a `Date` would hold it, the same comparison answered
+1. After the rollback there was no scratch schema and the local database
+had its 36 tables. A first try of that run stopped on a quoting mistake
+in the check's own file, before the statement ran, and kept nothing
+either. No server was booted and no route was called: the run-through is
+the user's, with the wallet.

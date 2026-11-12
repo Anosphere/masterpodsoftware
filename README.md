@@ -152,9 +152,9 @@ are base64 / base64url as the browser produces them.
 | `/set-wallet-settings`          | setup   | Stores the caller's wallet settings blob whole: one row per pod, replaced in place        |
 
 | `/get-anos-account`             | none    | For the validators' binding check and their appointment check: the pod that made an account, whether it is vouched, and its role (`moderator`, `attestor` or null) |
-| `/open-recovery-case`           | none    | A locked-out person's recovery case and its recovery pod: the lookup id, a contact email or a contact phone (at least one of the two, 2026-11-11), a new passkey (PRF required) registered under the pod's id (the one the keyholders named, from `/challenge` openCase), the hybrid key the bankers encrypt shares to; `409` while a case for the lookup id is open |
+| `/open-recovery-case`           | none    | A locked-out person's recovery case and its recovery pod: the lookup id, a contact email and a contact phone (both required since 2026-11-12; the phone since 2026-11-11), a new passkey (PRF required) registered under the pod's id (the one the keyholders named, from `/challenge` openCase), the hybrid key the bankers encrypt shares to; `409` while a case for the lookup id is open |
 | `/unlock-recovery-pod`          | none    | Opens a recovery session on a return visit: the recovery passkey's assertion, new ephemeral keys; answers the hybrid key blob to open |
-| `/get-recovery-pod`             | recovery | The person's view of their case: status, the contact email and phone, how many anos accounts the pod has (`anosAccounts`, 2026-11-11), the events they may see, the shares the keyholders posted, `blob2` once the case is approved |
+| `/get-recovery-pod`             | recovery | The person's view of their case: status, the contact email and phone, how many anos accounts the pod made up to the opening of the case (`anosAccounts`, 2026-11-11; only those since 2026-11-12), the events they may see, the shares the keyholders posted, `blob2` once the case is approved |
 | `/list-recovery-cases`          | moderator | The cases by status (the four in-progress ones by default), newest first, each with the pod's names, the contact email and phone and the count of approving pods |
 | `/get-recovery-case`            | moderator | One case: the row with the contact email and phone, the pod's profile and selfie, every event with the acting moderator and its details complete, the shares received, the banker packet |
 | `/list-case-security-records`   | moderator | The case's pod's rows of one bucket, ciphertext with their key ids; writes the viewed event |
@@ -261,7 +261,7 @@ keep the references straight. Every table and column has a `COMMENT ON`
 | `anos_accounts`           | One row per anos account a pod made: type, key blob, the signed creation, when it was submitted, the break-glass blob after a recovery; never deleted |
 | `noted_transactions`      | One row per ledger transaction a pod noted for its tax records: the ledger's facts in the clear, the private part as a blob under the pod's encryption key; one per pod and transaction; deleted when the person removes it |
 | `wallet_settings`         | One row per pod: the small things its wallet remembers as one encrypted blob (the Protect your passkey answer first); replaced in place |
-| `recovery_cases`          | One row per recovery case: lookup id, the pod being recovered, contact email or phone (at least one of the two), status; one open case per lookup id |
+| `recovery_cases`          | One row per recovery case: lookup id, the pod being recovered, contact email and phone (both on a case opened since 2026-11-12; the table's check is still at least one of the two, for a case of before), status; one open case per lookup id |
 | `recovery_pods`           | One per case: the recovery passkey, the recovery session, the hybrid key and its wrapped private halves |
 | `recovery_shares`         | What the keyholders posted to a case, as posted; append-only           |
 
