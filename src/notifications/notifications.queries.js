@@ -8,8 +8,8 @@ import { randomId, toHex } from '../util/ids.js';
 
 /**
  * Writes one notification for `anopodId` on `client`, inside the
- * transaction of the event it reports: `kind` is one of the ten kinds of
- * spec section 6, `referenceId` the thing it is about.
+ * transaction of the event it reports: `kind` is one of the sixteen kinds
+ * of spec section 6, `referenceId` the thing it is about.
  */
 export async function notify(client, anopodId, kind, referenceId) {
   await client.query(

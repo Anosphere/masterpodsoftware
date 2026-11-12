@@ -109,6 +109,16 @@ export async function listAccountsOf(anopodId) {
 }
 
 /**
+ * How many anos_accounts rows this pod has, every one of them, as a number:
+ * what /get-recovery-pod answers as `anosAccounts`, so the recovery wait
+ * page knows how many account keys to wait for.
+ */
+export async function countAccountsOf(anopodId) {
+  const { rows } = await query('SELECT count(*)::int AS count FROM anos_accounts WHERE anopod_id = $1', [anopodId]);
+  return rows[0].count;
+}
+
+/**
  * Stores the break-glass blob on this pod's account (spec 12.4.5,
  * /store-break-glass-blob): the account's break-glass seed under the pod's
  * encryption key, written at the finish of a recovery; a second call

@@ -17,19 +17,26 @@ import { toHex } from '../util/ids.js';
 
 /**
  * Writes a room on `client`: `name` is null unless `type` is 'public';
- * `listingId` is the listing a private room is about, null when absent.
+ * `listingId` is the listing a private room is about, null when absent;
+ * `caseId` and `caseKind` are the attestor case a private room is about
+ * and its kind ('trade', 'dispute' or 'recovery'), both null when absent.
  */
-export async function insertRoom(client, { chatRoomId, creatorAnopodId, type, name, listingId = null }) {
+export async function insertRoom(
+  client,
+  { chatRoomId, creatorAnopodId, type, name, listingId = null, caseId = null, caseKind = null },
+) {
   await client.query(
-    `INSERT INTO chat_rooms (chat_room_id, creator_anopod_id, type, name, listing_id) VALUES ($1, $2, $3, $4, $5)`,
-    [chatRoomId, creatorAnopodId, type, name, listingId],
+    `INSERT INTO chat_rooms (chat_room_id, creator_anopod_id, type, name, listing_id, case_id, case_kind)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    [chatRoomId, creatorAnopodId, type, name, listingId, caseId, caseKind],
   );
 }
 
-/** The room with this id, as { chatRoomId, creatorAnopodId, type, name, listingId, createdAt }, or null. */
+/** The room with this id, as { chatRoomId, creatorAnopodId, type, name, listingId, caseId, caseKind, createdAt }, or null. */
 export async function findRoom(chatRoomId, db = pool) {
   const { rows } = await db.query(
-    `SELECT chat_room_id, creator_anopod_id, type, name, listing_id, created_at FROM chat_rooms WHERE chat_room_id = $1`,
+    `SELECT chat_room_id, creator_anopod_id, type, name, listing_id, case_id, case_kind, created_at
+     FROM chat_rooms WHERE chat_room_id = $1`,
     [chatRoomId],
   );
   if (rows.length === 0) return null;
@@ -40,6 +47,8 @@ export async function findRoom(chatRoomId, db = pool) {
     type: row.type,
     name: row.name,
     listingId: row.listing_id,
+    caseId: row.case_id,
+    caseKind: row.case_kind,
     createdAt: row.created_at,
   };
 }
@@ -302,13 +311,16 @@ function listingFromRow(row) {
  * lastPosition (0 when none) and, for a room about a listing
  * (chat_rooms.listing_id: a private room made with a listingId, or an old
  * marketplace room), its listing id and the listing as listingFromRow
- * gives it: { chatRoomId, type, name, listingId, listing, creatorAnopodId,
+ * gives it, and, for a room about an attestor case (chat_rooms.case_id: a
+ * private room made with a caseId), the case's id and its kind ('trade',
+ * 'dispute' or 'recovery'), both null on any other room: { chatRoomId,
+ * type, name, listingId, listing, caseId, caseKind, creatorAnopodId,
  * hpkeKey, members, invited, lastMessage, lastPosition, createdAt }.
  */
 export async function listRoomsFor(anopodId) {
   const { rows } = await pool.query(
     `SELECT r.chat_room_id, r.type, r.name, r.creator_anopod_id, r.created_at, h.hpke_key,
-            r.listing_id, ${ROOM_LISTING_COLUMNS},
+            r.listing_id, ${ROOM_LISTING_COLUMNS}, r.case_id, r.case_kind,
             lm.message_id AS last_message_id, lm.position AS last_position,
             lm.sender_anopod_id AS last_sender_anopod_id, lm.message AS last_message,
             lm.created_at AS last_created_at,
@@ -344,6 +356,8 @@ export async function listRoomsFor(anopodId) {
     name: row.name,
     listingId: toHex(row.listing_id),
     listing: listingFromRow(row),
+    caseId: toHex(row.case_id),
+    caseKind: row.case_kind,
     creatorAnopodId: toHex(row.creator_anopod_id),
     hpkeKey: toHex(row.hpke_key),
     members: row.members,
@@ -365,12 +379,15 @@ export async function listRoomsFor(anopodId) {
 
 /**
  * The open invites to `anopodId`, oldest first, each with the listing its
- * room is about (listingFromRow; null without one): { inviteId, chatRoomId,
- * type, name, listingId, listing, from: profile, createdAt }.
+ * room is about (listingFromRow; null without one) and the attestor case
+ * its room is about (the case's id and kind; both null without one):
+ * { inviteId, chatRoomId, type, name, listingId, listing, caseId, caseKind,
+ * from: profile, createdAt }.
  */
 export async function listInvitesFor(anopodId) {
   const { rows } = await pool.query(
     `SELECT i.invite_id, i.chat_room_id, i.created_at, r.type, r.name, r.listing_id, ${ROOM_LISTING_COLUMNS},
+            r.case_id, r.case_kind,
             ${PROFILE_COLUMNS}
      FROM chat_room_invites i
      JOIN chat_rooms r ON r.chat_room_id = i.chat_room_id
@@ -388,6 +405,8 @@ export async function listInvitesFor(anopodId) {
     name: row.name,
     listingId: toHex(row.listing_id),
     listing: listingFromRow(row),
+    caseId: toHex(row.case_id),
+    caseKind: row.case_kind,
     from: profileFromRow(row),
     createdAt: row.created_at.toISOString(),
   }));

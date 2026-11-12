@@ -338,7 +338,9 @@ CREATE TABLE IF NOT EXISTS notifications (
   kind                TEXT        NOT NULL CHECK (kind IN (
                         'vouchRequest', 'vouchApproved', 'vouchDeclined', 'vouched',
                         'chatInvite', 'inviteAccepted', 'inviteDeclined',
-                        'joinRequest', 'joinApproved', 'joinDeclined')),
+                        'joinRequest', 'joinApproved', 'joinDeclined',
+                        'tradeCaseOpened', 'disputeCaseOpened', 'caseScheduled',
+                        'caseDecided', 'caseDismissed', 'recoveryCaseScheduled')),
   reference_id        BYTEA       NOT NULL CHECK (octet_length(reference_id) = 32),
   read_at             TIMESTAMPTZ,
   created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -348,7 +350,12 @@ CREATE INDEX IF NOT EXISTS notifications_anopod_id_created_at_idx ON notificatio
 ```
 
 `notification_number` is the row's random id. `reference_id` says which
-thing (section 6). Read, never deleted.
+thing (section 6). Read, never deleted. The first ten kinds are of
+2026-10-24. The five kinds of an attestor case came on 2026-10-26 (13.3
+and 13.7), and `recoveryCaseScheduled` on 2026-11-11 (14.7 and section
+18). For a live database the ALTER pair after the attestation block of
+`db/schema.sql` drops and adds `notifications_kind_check` with the same
+sixteen kinds.
 
 ### security_images and security_info
 
@@ -485,9 +492,13 @@ CREATE TABLE IF NOT EXISTS chat_rooms (
   type              TEXT        NOT NULL CHECK (type IN ('private', 'public', 'marketplace')),
   name              TEXT        CHECK (char_length(name) BETWEEN 1 AND 100),
   listing_id        BYTEA       CHECK (octet_length(listing_id) = 32),
+  case_id           BYTEA       CHECK (octet_length(case_id) = 32),
+  case_kind         TEXT        CHECK (case_kind IN ('trade', 'dispute', 'recovery')),
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-  CHECK ((type = 'public') = (name IS NOT NULL))
+  CHECK ((type = 'public') = (name IS NOT NULL)),
+  CONSTRAINT chat_rooms_case_check CHECK ((case_id IS NULL) = (case_kind IS NULL)
+    AND (case_id IS NULL OR (type = 'private' AND listing_id IS NULL)))
 );
 CREATE INDEX IF NOT EXISTS chat_rooms_type_created_at_idx ON chat_rooms (type, created_at DESC);
 CREATE INDEX IF NOT EXISTS chat_rooms_listing_id_idx ON chat_rooms (listing_id) WHERE listing_id IS NOT NULL;
@@ -501,6 +512,19 @@ with the owner, and set on every old marketplace room by the backfill of the
 marketplace block at the end of `db/schema.sql` (the column, its index, the
 backfill and the `listings.chat_room_id` change below, all idempotent, after
 the attestation block). No marketplace room is made since that date.
+
+`case_id` and `case_kind` (added 2026-11-11, section 18) are the attestor
+case a room is about: the case id of an `assisted_trades`, an
+`escrow_disputes` or a `break_glass_cases` row, and `trade`, `dispute` or
+`recovery` for the table the row is in. Both are set on a private room made
+by /create-chat-room with a `caseId`, a case chat between an attestor and a
+person on the case; both are null on every other room.
+`chat_rooms_case_check` keeps the two together and allows them only on a
+private room without a `listing_id`: a room is about a listing or about a
+case, never both. For a live database the case chat block at the end of
+`db/schema.sql` adds the two columns and drops and adds the check, all
+idempotent; the comments of the two columns are in that block only. There
+is no index on `case_id`: nothing reads a room by its case.
 
 ### chat_room_members, chat_hpke
 
@@ -552,7 +576,9 @@ CREATE TABLE IF NOT EXISTS chat_room_join_requests (
 
 An invite carries the wrapped room key until it is answered; accept moves
 it into `chat_hpke`, decline drops it. A join request carries nothing; the
-creator's approval brings the wrapped key.
+creator's approval brings the wrapped key. `anopod_id_from` is the inviter:
+the room's creator, or, since 2026-11-11, a member of a listing chat
+bringing an attestor in (/invite-to-chat-room in section 5; section 18).
 
 ### chat_room_messages
 
@@ -895,13 +921,16 @@ shares of key `keyId` knows which rows it opens.
 
 ### POST /create-chat-room (setup)
 
-Body: `{ type, name, hpkeKey, listingId }`: `type` is `private` or `public`;
-`name` required for `public`, absent for `private`; `hpkeKey` is the
-creator's own wrapped copy of the new room key (section 7); `listingId`
+Body: `{ type, name, hpkeKey, listingId, caseId }`: `type` is `private` or
+`public`; `name` required for `public`, absent for `private`; `hpkeKey` is
+the creator's own wrapped copy of the new room key (section 7); `listingId`
 (optional, 2026-11-06) is the listing a `private` room is about: how a
 person connects with a listing's owner. The room is made, then the owner is
 invited with /invite-to-chat-room as for any private room, and accepts or
-declines the invite.
+declines the invite. `caseId` (optional, hex of 32 bytes, 2026-11-11,
+section 18) is the attestor case a `private` room is about: how an attestor
+starts a chat with a person on a case. The room is made, then the person is
+invited the same way.
 
 Checks for `listingId`, after the existing ones: `type` is `private` (`400
 public rooms have no listing`); the listing exists (`404 listing not
@@ -909,7 +938,17 @@ found`) and is open (`409 listing closed`); the caller is not its owner
 (`400 your own listing`); the caller has no room about it yet, a room it
 created with this `listing_id` (`409 room already open`).
 
-Writes: `chat_rooms` (with `listing_id` when given), `chat_room_members`
+Checks for `caseId`, after those of `listingId`: it is a string (`400 bad
+request shape`); `type` is `private` (`400 public rooms have no case`); the
+body has no `listingId` (`400 a room is about a listing or a case`); the
+caller holds a live appointment as attestor (`403 not an attestor`); the id
+decodes and names a row in `assisted_trades`, `escrow_disputes` or
+`break_glass_cases`, tried in that order (`404 unknown case`); the case's
+status is `open` or `inReview` (`409 case closed`).
+
+Writes: `chat_rooms` (with `listing_id` when given; with `case_id` and
+`case_kind` when a `caseId` is given, the kind `trade`, `dispute` or
+`recovery` by the table the id was found in), `chat_room_members`
 (creator), `chat_hpke` (creator).
 
 Answer: `201 { chatRoomId }`.
@@ -918,12 +957,27 @@ Answer: `201 { chatRoomId }`.
 
 Body: `{ chatRoomId, anopodIdTo, hpkeKey }`.
 
-Checks: the room exists and the caller is its creator (`403 only the
-creator invites`); the room is `private` or `public` (`400 marketplace
-rooms take join requests`); the target exists and has completed setup
-(`409 invitee has no chat key`); the target is not a member (`409 already a
-member`); no open invite to the target for this room (`409 invite already
-open`).
+Checks: the room exists and the caller may invite (`403 only the creator
+invites`); the room is `private` or `public` (`400 marketplace rooms take
+join requests`); `anopodIdTo` decodes (`400 invalid anopodIdTo`); on a room
+with a `case_id`, the target is a party to the room's case or holds a live
+appointment as attestor (`403 not a party to the case`); the target exists
+and has completed setup (`409 invitee has no chat key`); the target is not
+a member (`409 already a member`); no open invite to the target for this
+room (`409 invite already open`).
+
+Who may invite (2026-11-11, section 18; until then the creator alone). The
+room's creator, as before. And a member who is not the creator, when the
+room is `private`, is about a listing (`listing_id` set) and the target
+holds a live appointment as attestor: either trader of a marketplace chat
+may bring an attestor in, and nobody else. Everyone else still gets `403
+only the creator invites`: a room that does not exist, a caller who is no
+member, a target id that does not decode, a target who is no attestor.
+
+A case chat (2026-11-11): a room with a `case_id` takes only a person on
+its case or an appointed attestor. The parties are the sender's pod of a
+trade case, the seller's and the buyer's pods of a dispute case, and the
+recovered pod of a break-glass case. A closed case does not stop an invite.
 
 Writes: `chat_room_invites` with the wrapped key; notification to the
 target, kind `chatInvite`, reference the `invite_id`.
@@ -1008,10 +1062,10 @@ Answer:
 
 ```json
 {
-  "rooms": [ { "chatRoomId", "type", "name", "listingId", "listing", "creatorAnopodId", "hpkeKey",
+  "rooms": [ { "chatRoomId", "type", "name", "listingId", "listing", "caseId", "caseKind", "creatorAnopodId", "hpkeKey",
                "members": [ { "anopodId", "username" } ], "invited": [ { "anopodId", "username" } ],
                "lastMessage", "lastPosition", "createdAt" } ],
-  "invites": [ { "inviteId", "chatRoomId", "type", "name", "listingId", "listing", "from": profile, "createdAt" } ],
+  "invites": [ { "inviteId", "chatRoomId", "type", "name", "listingId", "listing", "caseId", "caseKind", "from": profile, "createdAt" } ],
   "joinRequests": [ { "joinRequestId", "chatRoomId", "from": profile, "createdAt" } ]
 }
 ```
@@ -1033,6 +1087,11 @@ room without a listing, so the owner's request can say which listing it is
 about. `invited`, `lastMessage` and `listing` were added for the wallet's
 chat screens (2026-11-05); `listing` grew to this form and reached the
 invites for the marketplace rework (2026-11-06).
+A room about an attestor case (`chat_rooms.case_id`, 2026-11-11, section
+18) appears with its `caseId` (hex) and its `caseKind` (`trade`, `dispute`
+or `recovery`), straight from the room's two columns; for other rooms both
+are null. Each invite carries the same two, so the person's request can say
+which kind of case it is about.
 
 ### POST /list-public-chat-rooms (setup)
 
@@ -1307,6 +1366,12 @@ Answer: `200 { updatedAt }`, ISO 8601.
 | `joinRequest` | the room's creator | `join_request_id` |
 | `joinApproved` | the requester | `chat_room_id` |
 | `joinDeclined` | the requester | `chat_room_id` |
+| `tradeCaseOpened` | the sender's pod of a trade case | the case id (13.7, 2026-10-26) |
+| `disputeCaseOpened` | the seller's and the buyer's pods of a dispute case | the case id (13.7) |
+| `caseScheduled` | the parties of a trade or dispute case | the case id (13.7) |
+| `caseDecided` | the parties of a trade or dispute case | the case id (13.7) |
+| `caseDismissed` | the parties of a trade or dispute case | the case id (13.7) |
+| `recoveryCaseScheduled` | the recovered pod of a break-glass case | the case id (14.7, 2026-11-11) |
 
 Every notification is written inside the transaction of the event it
 reports. The phone polls `/list-notifications` and marks what it has shown.
@@ -1628,17 +1693,20 @@ draft's flows 4.6 and 4.7 are superseded by 12.4.5 and 12.4.7.
    lookup id (keyholder spec section 15, `/get-owner`) and the masterpod
    names the account (`/challenge` openCase, 12.4.2), so the person reads
    the username of the pod found and types none (since 2026-11-08; before
-   that they typed it). Then a contact email, and they register a passkey.
-   The masterpod opens a recovery case and a recovery pod for it (12.4.2).
-   Of the birth record only the lookup id reaches the server; the email is
-   the one plaintext fact about the person the masterpod keeps.
+   that they typed it). Then a contact email or a contact phone, at least
+   one of the two (the phone since 2026-11-11, section 18; until then the
+   email alone), and they register a passkey. The masterpod opens a
+   recovery case and a recovery pod for it (12.4.2). Of the birth record
+   only the lookup id reaches the server; the contact email and phone are
+   the plaintext facts about the person the masterpod keeps.
 2. A moderator (12.2) sees the case, schedules a video call (the meeting
-   link shows to the person in the app; the email is for the moderator to
-   write by hand, nothing is sent), pulls the bucket one key from three
-   keyholders (their moderator routes answer synchronously; nothing changes
-   there), reads the case pod's bucket one rows (12.4.4) and compares the
-   selfie with the person on the call. A mismatch is a dismissal with a
-   preset reason. Then bucket two the same way.
+   link shows to the person in the app; the email and the phone are for
+   the moderator to write or call by hand, nothing is sent), pulls the
+   bucket one key from three keyholders (their moderator routes answer
+   synchronously; nothing changes there), reads the case pod's bucket one
+   rows (12.4.4) and compares the selfie with the person on the call. A
+   mismatch is a dismissal with a preset reason. Then bucket two the same
+   way.
 3. Two moderators sign off (12.4.4): a verdict signed by pair one of an anos
    account living in the moderator's pod, verified against the account's
    stored creation. Two approvals from two different pods approve the case,
@@ -1694,10 +1762,14 @@ CREATE TABLE IF NOT EXISTS recovery_cases (
   case_id       BYTEA       PRIMARY KEY CHECK (octet_length(case_id) = 32),
   lookup_id     BYTEA       NOT NULL CHECK (octet_length(lookup_id) = 32),
   anopod_id     BYTEA       NOT NULL CHECK (octet_length(anopod_id) = 32),
-  contact_email TEXT        NOT NULL CHECK (char_length(contact_email) BETWEEN 3 AND 254 AND position('@' IN contact_email) > 1),
+  contact_email TEXT        CHECK (char_length(contact_email) BETWEEN 3 AND 254 AND position('@' IN contact_email) > 1),
+  contact_phone TEXT        CHECK (char_length(contact_phone) BETWEEN 6 AND 32
+                              AND contact_phone ~ '^[0-9 +()-]+$'
+                              AND char_length(regexp_replace(contact_phone, '[^0-9]', '', 'g')) >= 6),
   status        TEXT        NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'inReview', 'approved', 'delivering', 'completed', 'dismissed')),
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT recovery_cases_contact_check CHECK (contact_email IS NOT NULL OR contact_phone IS NOT NULL)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS recovery_cases_one_open_per_lookup_id ON recovery_cases (lookup_id) WHERE status NOT IN ('completed', 'dismissed');
 CREATE INDEX IF NOT EXISTS recovery_cases_anopod_id_idx ON recovery_cases (anopod_id);
@@ -1765,6 +1837,16 @@ keyholders named for the lookup id (since 2026-11-08; before, the pod the
 typed username named). `status` moves as 12.5 says; the partial unique index
 is the one-open-case-per-lookup-id rule. Nothing else about a case is a
 column: everything that happens is a `recovery_events` row.
+`contact_email` and `contact_phone` are where a moderator can reach the
+person, the contact email or phone: an email of 3 to 254 characters with an
+`@` that is not first, a phone of 6 to 32 characters, each a digit, a
+space, `+`, `-` or a round bracket, with at least 6 digits, kept as typed.
+A case has at least one of the two (`recovery_cases_contact_check`); both
+are plain text. The phone came on 2026-11-11 (section 18); until then
+`contact_email` was `NOT NULL` and the only contact. For a live database
+the case chat block at the end of `db/schema.sql` adds `contact_phone`,
+drops the `NOT NULL` of `contact_email` and drops and adds the check, all
+idempotent.
 
 `recovery_pods`: one per case, same key as the case. The recovery passkey
 (registered with user handle = `anopod_id`, so it can become the pod's
@@ -1839,6 +1921,7 @@ existing purposes are untouched.
     "challenge":          "<hex, from /challenge openCase>",
     "lookupId":           "<hex 32>",
     "contactEmail":       "alice@example.com",
+    "contactPhone":       "+66 81 234 5678",
     "passkey":            { "...": "the registration PublicKeyCredential.toJSON(), prf.results removed" },
     "hybridKey":          { "x25519": "<hex 32>", "mlkem": "<hex 1568>" },
     "hybridKeyBlob":      "<hex, 124 bytes>",
@@ -1849,9 +1932,14 @@ existing purposes are untouched.
 }
 ```
 
+`contactEmail` and `contactPhone` are each optional, and at least one of
+the two is given (2026-11-11, section 18; until then `contactEmail` was
+required and there was no `contactPhone`).
+
 Checks:
 
-1. Shape; `400 bad request shape`.
+1. Shape; `400 bad request shape`. `contactEmail` and `contactPhone` are
+   each absent, null or a string.
 2. The challenge row exists with purpose `openCase`, unexpired, its
    `anopod_id` equals `payload.anopodId`, and a pod with that id exists:
    the pod the keyholders named for the lookup id; else `401 unknown or
@@ -1862,13 +1950,18 @@ Checks:
    `400 passkey without prf`.
 5. The registration verifies with the challenge, `RP_ID`, the origins and
    user verification; `401 passkey verification failed`.
-6. `lookupId` 32 bytes, `contactEmail` 3 to 254 characters with an `@` not
-   first, `hybridKey` 32 and 1568 bytes, `hybridKeyBlob` 1 to 1024 bytes;
-   `400 invalid <field>`.
+6. `lookupId` 32 bytes; then the contact: both `contactEmail` and
+   `contactPhone` absent or null is `400 contactEmail or contactPhone
+   required`; `contactEmail`, when given, 3 to 254 characters with an `@`
+   not first; `contactPhone`, when given, 6 to 32 characters, each a digit,
+   a space, `+`, `-` or a round bracket, with at least 6 digits; then
+   `hybridKey` 32 and 1568 bytes, `hybridKeyBlob` 1 to 1024 bytes; `400
+   invalid <field>`.
 7. No case for this lookup id is open (status not completed or dismissed);
    `409 case already open`.
 
-Writes: `INSERT INTO recovery_cases` (status `open`), `INSERT INTO
+Writes: `INSERT INTO recovery_cases` (status `open`; the contact email and
+the contact phone, null for the one not given), `INSERT INTO
 recovery_pods` (credential id, COSE key, ephemeral keys with
 `ephemeral_expires_at = now() + EPHEMERAL_KEY_HOURS`, the hybrid key, the
 blob), the `opened` event, the challenge consumed. A unique violation on
@@ -1956,9 +2049,14 @@ passkey: `blob1` opens under the same `KEK_prf`.
 
 **POST /get-recovery-pod**. Body `{}`. The person's view of their case.
 
-Answer: `200 { caseId, status, username, contactEmail, lookupId, hybridKey,
-hybridKeyBlob, blob2, events: [ { kind, details, createdAt } ], shares: [ {
-shareId, keyholderId, shareType, keyId, share, receivedAt } ] }`. `blob2` is
+Answer: `200 { caseId, status, username, contactEmail, contactPhone,
+lookupId, anosAccounts, hybridKey, hybridKeyBlob, blob2, events: [ { kind,
+details, createdAt } ], shares: [ { shareId, keyholderId, shareType, keyId,
+share, receivedAt } ] }`. `contactEmail` and `contactPhone` are each a
+string or null (the phone since 2026-11-11, section 18). `anosAccounts`
+(2026-11-11, section 18) is a number: how many `anos_accounts` rows the
+case's pod has, every one of them, sent in every status, so the wallet's
+wait page knows how many account keys to wait for. `blob2` is
 the case's pod's `anopod_encryption_key_blob_2` (hex) once the status is
 `approved` or `delivering`, null before: ciphertext under `KEK_backup`,
 worth nothing without the code the bankers are sending here, and what the
@@ -1978,15 +2076,19 @@ the `completed` event. Answer: `200 { caseId, status: "completed" }`.
 default `open`, `inReview`, `approved`, `delivering`. Newest first.
 
 Answer: `200 { cases: [ { caseId, status, lookupId, username, firstName,
-lastName, contactEmail, approvals, createdAt, updatedAt } ] }`,
-`approvals` the count of distinct pods with an `approvalSigned` event.
+lastName, contactEmail, contactPhone, approvals, createdAt, updatedAt } ]
+}`, `approvals` the count of distinct pods with an `approvalSigned` event;
+`contactEmail` and `contactPhone` each a string or null (the phone since
+2026-11-11, section 18).
 
 **POST /get-recovery-case**. Body `{ caseId }`; `404 unknown case`.
 
-Answer: `200 { case: { caseId, status, lookupId, contactEmail, createdAt,
-updatedAt }, profile, events: [ { eventId, kind, anopodId, username,
-details, createdAt } ], shares: [ { keyholderId, shareType, keyId,
-receivedAt } ], bankerPacket: { lookupId, url, hybridKey } }`. `profile` is
+Answer: `200 { case: { caseId, status, lookupId, contactEmail,
+contactPhone, createdAt, updatedAt }, profile, events: [ { eventId, kind,
+anopodId, username, details, createdAt } ], shares: [ { keyholderId,
+shareType, keyId, receivedAt } ], bankerPacket: { lookupId, url, hybridKey
+} }`. `contactEmail` and `contactPhone` are each a string or null, as in
+the list. `profile` is
 the case's pod's profile with the public selfie (as `/get-anopod-profile`);
 `username` on an event is the acting moderator's, null when `anopodId` is
 null; `details` complete (notes and signatures included; moderators see
@@ -2952,8 +3054,15 @@ party, newest first.
 
 Answer: `200 { trades: [ { caseId, transactionId, accountId, status,
 lookupIdShared, createdAt, updatedAt } ], disputes: [ { caseId,
-transactionId, accountId, accountIdTo, side, status, createdAt, updatedAt }
-] }`, `side` `seller` or `buyer`.
+transactionId, accountId, accountIdTo, side, attestors, status, createdAt,
+updatedAt } ] }`, `side` `seller` or `buyer`. `attestors` (2026-11-11,
+section 18) is a list of `{ anopodId, username }`, the attestors on the
+case: the acting pods of the case's `attestor_events` rows, each once, in
+the order they first acted, so the attestor who opened the case comes
+first. A pod that is a party to the case is left out, and so is a pod that
+holds no live appointment as attestor any more. Every dispute carries it;
+a trade case has no such list. It is what the wallet lists under "Invite
+an attestor" in the marketplace chat of the trade.
 
 **POST /get-my-case**. Body `{ caseId }`; `404 unknown case`, also when
 the caller's pod is not a party.
@@ -2961,9 +3070,11 @@ the caller's pod is not a party.
 Answer for a trade: `200 { kind: "trade", case: { caseId, transactionId,
 accountId, status, lookupIdShared, createdAt, updatedAt }, events }`. For
 a dispute: `200 { kind: "dispute", case: { caseId, transactionId,
-accountId, accountIdTo, side, caseKey, status, createdAt, updatedAt },
-events, evidence: [ { evidenceId, contentType, file, keyForMe, createdAt }
-] }`, the caller's own rows only. `events` is the person's subset of 13.5:
+accountId, accountIdTo, side, attestors, caseKey, status, createdAt,
+updatedAt }, events, evidence: [ { evidenceId, contentType, file, keyForMe,
+createdAt } ] }`, the caller's own rows only; `attestors` as in
+`/list-my-cases` (2026-11-11). The events still name no attestor; the
+case's `attestors` does. `events` is the person's subset of 13.5:
 `opened`, `lookupIdShared`, `evidenceAdded` (the caller's own), `scheduled`
 (`at`, `meetLink`), `decided` (`{}` for a trade, `{ verdict }` for a
 dispute), `lookupIdCleared`, `evidenceDeleted`, `sent` (`{}`), `dismissed`
@@ -3316,8 +3427,9 @@ section changes except the items in 14.8.
    unlock moment has passed; the sender's stakes row moves with the money
    (anossoftware 4.5).
 6. The person's wallet reads the case's progress from
-   `/list-my-break-glass-moves`: the lost account's card shows it. No
-   notification is sent (14.7).
+   `/list-my-break-glass-moves`: the lost account's card shows it. One
+   notification is sent, when an attestor sets up the video call (14.7,
+   since 2026-11-11; until then none).
 
 ### 14.2 Who
 
@@ -3495,10 +3607,12 @@ masterpod cannot open the rows.
 **POST /schedule-break-glass-case**. Body `{ caseId, at, meetLink }` as
 `/schedule-attestor-case`: `at` an ISO 8601 time, `meetLink` an `https` URL
 of at most 500 characters. Status `open` or `inReview` (`409 case closed`).
-Writes the `scheduled` event with `{ at, meetLink }` and `status =
-'inReview'` when it was `open`. Answer: `200 { caseId, status }`. No
-notification: the person's wallet reads the event from
-`/list-my-break-glass-moves`.
+Writes, under the case lock: the `scheduled` event with `{ at, meetLink }`,
+then one notification to the case's pod, the recovered pod, kind
+`recoveryCaseScheduled`, reference the case id (2026-11-11, 14.7 and
+section 18; until then no notification), and `status = 'inReview'` when it
+was `open`. Answer: `200 { caseId, status }`. The person's wallet reads
+the event itself from `/list-my-break-glass-moves`.
 
 **POST /sign-off-break-glass-case**. Body:
 
@@ -3600,9 +3714,19 @@ signed with it, is the wallet's spec, section 7 (2026-11-08).
 
 ### 14.7 Notifications
 
-None. The person's wallet reads the case's progress from
-`/list-my-break-glass-moves`, and the attestors list the cases; no
-notification kind is added (the plan's decision 14).
+One kind, since 2026-11-11 (section 18):
+
+| kind | to | reference_id |
+| ---- | -- | ------------ |
+| `recoveryCaseScheduled` | the case's pod, the recovered pod | the case id |
+
+Written by `/schedule-break-glass-case` inside the event's transaction, as
+section 6's are. It is a kind of its own, not `caseScheduled`, so the
+wallet's notifications page opens the recovery case page. Only the video
+call notifies: a decision and a dismissal show on the person's case page,
+which the wallet reads from `/list-my-break-glass-moves`, and the attestors
+list the cases. Until 2026-11-11 this section read "None": the break-glass
+plan's decision 14 added no notification kind.
 
 ### 14.8 Changes to what exists (all additive)
 
@@ -3634,8 +3758,9 @@ the bucket rows from `security.queries.js` `listFor`; the profile from
 ### 14.9 Deferred, by decision
 
 - Notifications to the attestors when moves are filed and to the person
-  when the case moves; the attestor edition and the person's wallet read
-  the case.
+  when the case is decided or dismissed; the attestor edition and the
+  person's wallet read the case. (The person's notification when the
+  video call is set up was built 2026-11-11, 14.7 and section 18.)
 - A move filed after a cancel on the ledger (a `breakGlassCancel` or the
   owner's `assistedTransferCancel`): the masterpod does not read the
   ledger; the case stays as filed, and the attestor edition shows the move
@@ -4851,3 +4976,313 @@ decided:
 - Not touched: `anos-accounts.router.js`, `anos-accounts.handlers.js`,
   `db/schema.sql`, `package.json`, `.example.env`, every other feature
   folder; in the README everything but the one route row.
+
+## 18. Case chats, the contact phone and the account count (2026-11-11)
+
+Design settled 2026-11-11 and 2026-11-12 in a planning chat (the plan is
+`~/Desktop/Z-TestNet/forclaude/wallet-case-chats-plan-1.md`, FINAL,
+2026-11-12). It began with the user's list of changes found while testing.
+Why the chat. The user, 2026-11-11: "All of the cases that attestors do
+need to have a 'start chat button'. This is because at the very least, the
+attestor needs to be able to talk to the user about when to schedule the
+meeting." Why the recovery case: "Right now, when the attetestor opens a
+recovery case, a case doesn't show up for the user in the cases section.
+So there's no way for the user to even go to the meeting that the attestor
+scheduled." Why the phone number: "The user should however be able to give
+a phone number as well as the email. Probably an either / or. And the
+moderator should be able to see both the email and phone number provided.
+This is because people in thailand don't use email too much." Two repos in
+order: this server (this section, step 1 of the plan: six small changes)
+and the wallet (its spec, steps 2 to 6: Start chat on the three attestor
+case pages, the recovery case on the person's Cases page, the phone box,
+the recovery wait page, Invite an attestor in a marketplace chat), then
+the record folder (`masterpod_software_architecture`) and the deploy notes
+(step 7). This server's step goes out first (the plan's section 8).
+Against a masterpod of before, the new wallet's Start chat makes a plain
+private chat with no case on it, and a recovery opened with a phone number
+alone is refused. The other way round nothing breaks: a wallet of before
+leaves the new fields alone. No new route, no env variable and no npm
+package. The validators, the doormen, the keyholders, the keyholder GUI,
+the signing server and the wallet's proxy are not touched. Nothing above
+this section changes except the items in 18.3.
+
+### 18.1 The rule
+
+- A room can be about a case. An appointed attestor starts a private chat
+  with a person on an attestor case: an assisted trade case, an escrow
+  dispute case, or a break-glass case, which is the recovery case as the
+  attestors see it. The room is marked with its case (`chat_rooms.case_id`
+  and `case_kind`), as a listing chat is marked with its listing, so the
+  wallet can give the chat a title that says what it is for.
+- Only an appointed attestor makes such a room, and only while the case is
+  open or in review. The room takes only a person on that case or an
+  appointed attestor, so the attestor who made it can bring a second
+  attestor in.
+- A case chat is a chat like any other once it is made. It stays when the
+  case closes, and a closed case does not stop an invite.
+- This server does not count the chats of a case. If an attestor makes two
+  chats with one person on one case, both stand; the wallet looks for the
+  chat it has.
+- Either trader may bring an attestor into the marketplace chat of a
+  trade. Until now only a room's creator invited, and in a listing chat
+  the creator is the person who pressed Connect, not the listing's owner.
+  Now a member of a listing chat who did not start it may invite too: an
+  appointed attestor and nobody else. The other trader does not have to
+  agree. The attestor reads the whole chat: a room has one room key, and
+  `/list-messages` gives a member every message from the first.
+- A dispute case names the attestors on it to its two traders, so the
+  wallet can list whom to invite. The events a person sees still name no
+  attestor.
+- The person is told when a recovery case gets its video call: one
+  notification, of a kind of its own. A decision and a dismissal show on
+  the case page and send nothing.
+- A recovery case takes a contact email or a contact phone, at least one
+  of the two, and the moderators see both. A phone is 6 to 32 characters:
+  digits, spaces, `+`, `-` and round brackets, with at least 6 digits. It
+  is kept as typed, in plain text like the email. The moderator's part of
+  a recovery gets no chat: the person has no anoPod to chat from then.
+- The recovery pod's answer says how many anos accounts the pod has: every
+  `anos_accounts` row of it, in every status of the case. The wallet's
+  wait page uses it to know how many account keys to wait for.
+
+### 18.2 The changes by route
+
+The objects and the checks in full are in the sections named here.
+
+- `/create-chat-room` (setup; section 5): the body takes an optional
+  `caseId`. Its checks run after the existing ones and after those of
+  `listingId`: `400 bad request shape`, `400 public rooms have no case`,
+  `400 a room is about a listing or a case`, `403 not an attestor`, `404
+  unknown case`, `409 case closed`. The room is written with `case_id` and
+  `case_kind`. The answer stays `201 { chatRoomId }`.
+- `/invite-to-chat-room` (setup; section 5): a member of a listing chat
+  who is not its creator may invite an appointed attestor; everyone else
+  who is not the creator still gets `403 only the creator invites`. On a
+  room with a `case_id` the target is a party to the case or an appointed
+  attestor, else `403 not a party to the case`, right after `400 invalid
+  anopodIdTo`. The body and the answer stay.
+- `/list-chat-rooms` (setup; section 5): every room and every invite
+  carries `caseId` and `caseKind`, both null on a room without a case.
+- `/schedule-break-glass-case` (attestor; 14.4.2 and 14.7): one
+  notification to the recovered pod, kind `recoveryCaseScheduled`,
+  reference the case id, under the case lock, after the `scheduled` event.
+- `/open-recovery-case` (none; 12.4.2): `contactEmail` is optional and a
+  `contactPhone` is taken beside it. Check 1 takes each of the two absent,
+  null or a string. Check 6 answers `400 contactEmail or contactPhone
+  required` when both are absent or null, and `400 invalid contactEmail`
+  or `400 invalid contactPhone` for one that is given and not valid. The
+  case row is written with both, null for the one not given.
+- `/get-recovery-pod` (recovery; 12.4.3): `contactPhone` beside
+  `contactEmail`, each a string or null; and `anosAccounts`, a number.
+- `/list-recovery-cases` and `/get-recovery-case` (moderator; 12.4.4):
+  `contactPhone` beside `contactEmail`, on each case of the list and on
+  `case`.
+- `/list-my-cases` and `/get-my-case` (setup; 13.4.5): a dispute case
+  carries `attestors`, a list of `{ anopodId, username }`. A trade case
+  gains nothing.
+
+The schema, `db/schema.sql` (section 4 and 12.3). `chat_rooms` gains
+`case_id`, `case_kind` and the named check `chat_rooms_case_check`.
+`notifications` takes the kind `recoveryCaseScheduled`, in the table and
+in the ALTER pair that drops and adds `notifications_kind_check`.
+`recovery_cases` gains `contact_phone` and the named check
+`recovery_cases_contact_check`, and `contact_email` loses its `NOT NULL`.
+The `CREATE TABLE` texts carry all of it for a database built from
+nothing. For a database that already has the tables, a new block at the
+end of the file, "The case chat block (2026-11-11)", does the same in the
+style of the marketplace block:
+
+```sql
+ALTER TABLE chat_rooms ADD COLUMN IF NOT EXISTS case_id BYTEA CHECK (octet_length(case_id) = 32);
+ALTER TABLE chat_rooms ADD COLUMN IF NOT EXISTS case_kind TEXT CHECK (case_kind IN ('trade', 'dispute', 'recovery'));
+ALTER TABLE chat_rooms DROP CONSTRAINT IF EXISTS chat_rooms_case_check;
+ALTER TABLE chat_rooms ADD CONSTRAINT chat_rooms_case_check
+  CHECK ((case_id IS NULL) = (case_kind IS NULL) AND (case_id IS NULL OR (type = 'private' AND listing_id IS NULL)));
+ALTER TABLE recovery_cases ADD COLUMN IF NOT EXISTS contact_phone TEXT
+  CHECK (char_length(contact_phone) BETWEEN 6 AND 32 AND contact_phone ~ '^[0-9 +()-]+$'
+         AND char_length(regexp_replace(contact_phone, '[^0-9]', '', 'g')) >= 6);
+ALTER TABLE recovery_cases ALTER COLUMN contact_email DROP NOT NULL;
+ALTER TABLE recovery_cases DROP CONSTRAINT IF EXISTS recovery_cases_contact_check;
+ALTER TABLE recovery_cases ADD CONSTRAINT recovery_cases_contact_check
+  CHECK (contact_email IS NOT NULL OR contact_phone IS NOT NULL);
+```
+
+Every line is idempotent, so the whole file applies to a live database and
+a second run changes nothing. The comments of the three new columns are in
+that block only, after the columns exist on a live database. There is no
+index: nothing reads a room by its case.
+
+### 18.3 Files
+
+- `db/schema.sql`: the columns, the checks, the kind and the block, as
+  above; the table comment of `chat_rooms`, the comment of
+  `chat_room_invites.anopod_id_from`, the comment before `recovery_cases`,
+  its table comment and the comment of `contact_email`; the file's opening
+  comment, which names the new block among the idempotent ALTERs; and, on
+  the user's word after the build, the comments of `notifications.kind`
+  and `notifications.reference_id` and the comment above the ALTER pair of
+  `notifications_kind_check`.
+- `src/chat/chat.service.js`: `caseOf`, new; `createRoom`; `invite`.
+- `src/chat/chat.queries.js`: `insertRoom`, `findRoom`, `listRoomsFor`,
+  `listInvitesFor`.
+- `src/break-glass/break-glass.service.js`: `scheduleBreakGlassCase`.
+- `src/recovery/recovery.service.js`: `isContactPhone`, new;
+  `openRecoveryCase`, `getRecoveryPod`, `listRecoveryCases`,
+  `getRecoveryCase`.
+- `src/recovery/recovery-cases.queries.js`: `COLUMNS`, `caseRow`,
+  `insertCase`, the select of `listByStatus`.
+- `src/anos-accounts/anos-accounts.queries.js`: `countAccountsOf`, new.
+- `src/attesting/attesting.service.js`: `disputeAttestors`, new;
+  `personDispute`, `listMyCases`, `getMyCase`; the comment of
+  `PERSON_EVENTS`.
+- A comment each and no line of code, on the user's word after the build:
+  `src/auth/require-attestor.js` (`isAttestorPod`, its new callers) and
+  `src/notifications/notifications.queries.js` (`notify`, sixteen kinds).
+- Here: section 4 (`### chat_rooms`, `### notifications`, `###
+  chat_room_invites, chat_room_join_requests`), section 5 (the three chat
+  routes), section 6 (the new kind), 12.3 and 12.4 (`recovery_cases` and
+  the four recovery routes), 13.4.5 (the person's two routes), 14.4.2 and
+  14.7, and this section; and, on the user's word after the build, 12.1
+  (steps 1 and 2), 14.1 (step 6), 14.9, and the five case kinds in section
+  4's SQL and in section 6's table. `README.md`: the rows of the ten
+  routes, and the lines of `chat_rooms`, `recovery_cases` and
+  `notifications` in the tables table; and, on the user's word, the
+  break-glass line of "Deferred, by decision".
+
+Nothing else in existing code changes. No new route, no env variable, no
+npm package.
+
+### 18.4 Notes from the build
+
+#### Build 1, the masterpod (2026-11-12)
+
+Built from `~/Desktop/Z-TestNet/forclaude/wallet-case-chats-plan-1.md`
+section 1, on main at 2a12e91, the merge of pull request 6. Its files are
+those of 97b94ab, the commit the plan read. No new npm package, no test
+script and no rig (none was asked for). The schema was not applied to any
+database for keeps: the user applies the whole file by psql as the
+superuser with `SET ROLE masterpodsoftware`, as 13.10 records. It goes on
+before this code runs: a masterpod on this code against a database
+without the new columns fails every read of a chat room and of a recovery
+case. What the plan left open and how it was decided:
+
+- The date. The comments and this section carry 2026-11-11, the day of the
+  design, as the block's name does in the plan. The build ran on
+  2026-11-12.
+- `db/schema.sql`. In the `CREATE TABLE` of `chat_rooms` the two columns
+  sit after `listing_id` and the named check after the table's unnamed
+  one. In that of `recovery_cases`, `contact_phone` sits after
+  `contact_email` and the named check after `updated_at`. On a live
+  database `ADD COLUMN` puts a new column last; no code reads a column by
+  its place. The three column checks get the names PostgreSQL gives them,
+  `chat_rooms_case_id_check`, `chat_rooms_case_kind_check` and
+  `recovery_cases_contact_phone_check`, the same on a database built from
+  nothing and on a live one. The opening comment now reads "attestation,
+  marketplace and case chat blocks at the end".
+- `/create-chat-room`. `caseId: null` counts as absent, as `listingId:
+  null` does. "A `listingId` in the same body" is a `listingId` that
+  passed its own checks, since those run first: a body whose `listingId`
+  fails them answers the listing's refusal. `caseOf` asks the three tables
+  one after the other, each through its own feature's read, and stops at
+  the first row. It writes the kind as the plain words `trade`, `dispute`
+  and `recovery`: the attesting service's `TRADE` and `DISPUTE` are
+  private to that file.
+- `/invite-to-chat-room`. The decoding of `anopodIdTo` moved up, in front
+  of the question of who may invite, which needs it now. The creator's
+  refusals keep their order: `400 invalid anopodIdTo` still comes after
+  `400 marketplace rooms take join requests`. For a caller who is not the
+  creator, the membership is asked before the target's appointment. The
+  rule is as the plan words it, so any member who is not the creator may
+  bring an attestor into a listing chat, also an attestor who was brought
+  in earlier. On a case chat whose case row is gone (never, in practice:
+  no case is deleted) nobody is a party, and only an attestor can be
+  invited.
+- `roomAboutListingBy` (`chat.queries.js`) answers a room without the two
+  new fields. The plan does not name it. A room about a listing has no
+  case, by the table's check, and its one caller asks only whether a room
+  came back.
+- `/list-chat-rooms`. `caseId` and `caseKind` follow `listing`, in a room
+  and in an invite.
+- `/schedule-break-glass-case`. The notification is written right after
+  the `scheduled` event and before the status, in the one transaction
+  under the lock. A second schedule on a case in review writes a second
+  event and a second notification, as `/schedule-attestor-case` does with
+  `caseScheduled`.
+- `/open-recovery-case`. An empty string is a string: it passes check 1
+  and is `400 invalid contactEmail` or `400 invalid contactPhone` at check
+  6. In check 6 the order is the lookup id, the refusal for no contact at
+  all, the email, the phone, then the hybrid key and its blob, so the
+  email keeps the place it had. `isContactPhone` is the column's check in
+  JavaScript. It measures `value.length`, which is the count of characters
+  here, because the pattern takes ASCII only. The server stores the phone
+  as sent and does not trim it; the wallet trims.
+- `/get-recovery-pod`. `countAccountsOf(anopodId)` has the plan's
+  signature and runs on the pool's `query`, as `listAccountsOf` beside it
+  does. The service runs it in the same `Promise.all` as its three other
+  reads. It counts every row, also an account whose creation never reached
+  a validator (the plan's decision 21). `anosAccounts` follows `lookupId`
+  in the answer.
+- `/list-my-cases` and `/get-my-case`. `disputeAttestors(dispute)` sits
+  between `personTrade` and `personDispute` and reads the case's events
+  itself. So `/get-my-case` reads them twice: once without usernames for
+  the person's events, as before, and once for the list. A pod is looked
+  at once, at its first event, and `isAttestorPod` is asked once for it.
+  `username` is the event's join on `anopods`, null when the pod's row is
+  gone (never, in practice). `/list-my-cases` builds its disputes one
+  after the other, as `/list-my-break-glass-moves` builds its cases.
+  `attestors` follows `side` in the object.
+- Here. Section 4's SQL of `notifications` had the ten kinds of 2026-10-24
+  and never took the five case kinds, which 13.3 adds by its ALTER, and
+  section 6's table had the same ten. The build put only the new kind
+  into each, as the plan says, and put the gap to the user. On the user's
+  word both now have all sixteen kinds, as the file does; the five are
+  still in 13.3 and 13.7 too. In section 5 the checks of
+  `/invite-to-chat-room` now name `400 invalid anopodIdTo`, which the code
+  always had, because the new check stands right after it.
+- Checks (1.10): `node --check` on the seven changed source files
+  (`chat.service.js`, `chat.queries.js`, `break-glass.service.js`,
+  `recovery.service.js`, `recovery-cases.queries.js`,
+  `anos-accounts.queries.js`, `attesting.service.js`), clean, and at the
+  end on `require-attestor.js` and `notifications.queries.js` too, the
+  two files in which only a comment changed. The schema
+  by psql against the local `masterpod` database as the superuser `codex`
+  with `SET LOCAL ROLE masterpodsoftware`, one transaction, rolled back:
+  the whole file ran twice with no error. That database is of before this
+  step (36 tables, no case columns, `contact_email NOT NULL`), so this is
+  the run a live database gets. After the first run `chat_rooms` had the
+  two columns, their two checks and `chat_rooms_case_check`;
+  `recovery_cases` had `contact_phone` with its check, a nullable
+  `contact_email` and `recovery_cases_contact_check`; and
+  `notifications_kind_check` had sixteen kinds. The second run changed
+  nothing: one fingerprint over every column, check, index, trigger and
+  comment of the schema was the same after both runs, and each named check
+  was there once. On that database every `CREATE TABLE` is skipped, so the
+  texts for a database built from nothing do not run there. For them the
+  file ran twice more inside the same transaction, into an empty scratch
+  schema (`SET LOCAL search_path`): the 36 tables built from nothing came
+  out equal to the live ones after their two runs, with no check, column
+  or comment that differs. After the rollback the database was as before:
+  the fingerprint of before, no scratch schema, no case columns. No row
+  was written, no server was booted and no route was called. The routes
+  are the user's to see, with the wallet's steps 2 to 6.
+- Places the plan does not name that this step left out of date. The
+  build left them as they were, listed them and asked. The user: "Yes,
+  update them". They were brought in line before the commit, each with as
+  little change as it takes. In `db/schema.sql`: the comment of
+  `notifications.kind` names the new kind, the comment of
+  `notifications.reference_id` names a `break_glass_cases` row, and the
+  comment above the ALTER pair names the kind beside the five case kinds.
+  In the code, a comment each: `isAttestorPod`
+  (`src/auth/require-attestor.js`) names its new callers, and `notify`
+  (`src/notifications/notifications.queries.js`) says sixteen kinds where
+  it said ten, which had been out of date since 2026-10-26 (13.10). Here:
+  12.1, steps 1 and 2, speak of the contact email or phone; 14.1, step 6,
+  says that one notification is sent; 14.9 keeps as deferred only what is
+  still not built; and the five case kinds are in section 4's SQL and in
+  section 6's table. In the README: the break-glass line of "Deferred, by
+  decision". After these the checks of 1.10 ran once more, on the files
+  as committed.
+- Not touched: every router and handler, `src/marketplace/`,
+  `src/appointments/`, `package.json`, `.example.env`, the scripts. In
+  `src/auth/` and `src/notifications/` one comment each changed and no
+  line of code.

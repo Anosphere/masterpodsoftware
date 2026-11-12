@@ -124,15 +124,15 @@ are base64 / base64url as the browser produces them.
 | `/add-to-security-bucket-one`   | vouched | Stores encrypted images in bucket one, under the bucket key `keyId` names                |
 | `/add-to-security-bucket-two`   | vouched | Stores encrypted images and texts in bucket two, under the bucket key `keyId` names      |
 | `/list-security-records`        | vouched | Everything in both buckets for the caller, each row with its `keyId`                     |
-| `/create-chat-room`             | setup   | A private or public room with the creator's own wrapped room key; a private room can be about a listing (`listingId`, 2026-11-06) |
-| `/invite-to-chat-room`          | setup   | The creator invites a pod, carrying the room key wrapped to it                           |
+| `/create-chat-room`             | setup   | A private or public room with the creator's own wrapped room key; a private room can be about a listing (`listingId`, 2026-11-06) or, when an attestor makes it, about an attestor case that is open or in review (`caseId`, 2026-11-11) |
+| `/invite-to-chat-room`          | setup   | The creator invites a pod, carrying the room key wrapped to it; since 2026-11-11 a member of a listing chat who did not start it may invite an attestor, and a room about a case takes only a person on that case or an attestor |
 | `/accept-invite`                | setup   | Joins: the wrapped key moves into `chat_hpke`                                            |
 | `/decline-invite`               | setup   | Drops the invite                                                                         |
 | `/request-to-join`              | setup   | Asks to join a public or marketplace room (open listing only)                            |
 | `/approve-join`                 | setup   | The creator lets the requester in with the wrapped key                                   |
 | `/decline-join`                 | setup   | Drops the join request                                                                   |
 | `/leave-chat-room`              | setup   | Leaves a room; the creator cannot                                                        |
-| `/list-chat-rooms`              | setup   | The caller's rooms (members, invited, own wrapped key, newest message, the listing a room is about with its owner), open invites (each with its listing too), join requests on its rooms |
+| `/list-chat-rooms`              | setup   | The caller's rooms (members, invited, own wrapped key, newest message, the listing a room is about with its owner, the case a room is about with its kind), open invites (each with its listing and its case too), join requests on its rooms |
 | `/list-public-chat-rooms`       | setup   | Public rooms by name, newest first, paged                                                |
 | `/list-messages`                | setup   | A room's messages after a position, or the newest ones before a position, members only   |
 | `/send-message`                 | setup   | Stores a ciphertext message, members only                                                |
@@ -152,11 +152,11 @@ are base64 / base64url as the browser produces them.
 | `/set-wallet-settings`          | setup   | Stores the caller's wallet settings blob whole: one row per pod, replaced in place        |
 
 | `/get-anos-account`             | none    | For the validators' binding check and their appointment check: the pod that made an account, whether it is vouched, and its role (`moderator`, `attestor` or null) |
-| `/open-recovery-case`           | none    | A locked-out person's recovery case and its recovery pod: the lookup id, a contact email, a new passkey (PRF required) registered under the pod's id (the one the keyholders named, from `/challenge` openCase), the hybrid key the bankers encrypt shares to; `409` while a case for the lookup id is open |
+| `/open-recovery-case`           | none    | A locked-out person's recovery case and its recovery pod: the lookup id, a contact email or a contact phone (at least one of the two, 2026-11-11), a new passkey (PRF required) registered under the pod's id (the one the keyholders named, from `/challenge` openCase), the hybrid key the bankers encrypt shares to; `409` while a case for the lookup id is open |
 | `/unlock-recovery-pod`          | none    | Opens a recovery session on a return visit: the recovery passkey's assertion, new ephemeral keys; answers the hybrid key blob to open |
-| `/get-recovery-pod`             | recovery | The person's view of their case: status, the events they may see, the shares the keyholders posted, `blob2` once the case is approved |
-| `/list-recovery-cases`          | moderator | The cases by status (the four in-progress ones by default), newest first, each with the pod's names and the count of approving pods |
-| `/get-recovery-case`            | moderator | One case: the row, the pod's profile and selfie, every event with the acting moderator and its details complete, the shares received, the banker packet |
+| `/get-recovery-pod`             | recovery | The person's view of their case: status, the contact email and phone, how many anos accounts the pod has (`anosAccounts`, 2026-11-11), the events they may see, the shares the keyholders posted, `blob2` once the case is approved |
+| `/list-recovery-cases`          | moderator | The cases by status (the four in-progress ones by default), newest first, each with the pod's names, the contact email and phone and the count of approving pods |
+| `/get-recovery-case`            | moderator | One case: the row with the contact email and phone, the pod's profile and selfie, every event with the acting moderator and its details complete, the shares received, the banker packet |
 | `/list-case-security-records`   | moderator | The case's pod's rows of one bucket, ciphertext with their key ids; writes the viewed event |
 | `/schedule-recovery-case`       | moderator | The video call: the `scheduled` event with the time and the https link; status `inReview` |
 | `/sign-off-recovery-case`       | moderator | A verdict signed by pair one of an anos account in the caller's pod, verified against the stored creation; the second distinct approval approves the case |
@@ -180,8 +180,8 @@ are base64 / base64url as the browser produces them.
 | `/sign-off-dispute-case`        | attestor | An escrow verdict, verified the same way; the second distinct pod's of one value decides the case and removes the evidence copies and the key rows |
 | `/mark-attestor-case-sent`      | attestor | Records that the stored sign-offs were posted to a validator, and the answers; a retry writes another event |
 | `/dismiss-attestor-case`        | attestor | Closes either kind with a preset reason and a note, clearing as a decision does; final |
-| `/list-my-cases`                | setup   | The caller's cases as a party: trades and disputes, newest first |
-| `/get-my-case`                  | setup   | The person's view of one case: their subset of the events; for a dispute the case key and their own evidence with `keyForMe` |
+| `/list-my-cases`                | setup   | The caller's cases as a party: trades and disputes, newest first; each dispute with the attestors on it (2026-11-11) |
+| `/get-my-case`                  | setup   | The person's view of one case: their subset of the events; for a dispute the attestors on it, the case key and their own evidence with `keyForMe` |
 | `/share-lookup-id`              | setup   | The person hands the attestor their lookup id on a trade case |
 | `/add-dispute-evidence`         | setup   | A party's evidence files, each ciphertext with its content key wrapped twice, or files of theirs supplied again under `existing` |
 | `/file-break-glass-moves`       | setup   | The finish of a recovery files its break-glass moves: the recovery case's id and, per move, the old account, the new account of the same type and the `breakGlassTransfer`'s id; a second call adds moves |
@@ -189,7 +189,7 @@ are base64 / base64url as the browser produces them.
 | `/list-break-glass-cases`       | attestor | The break-glass cases by status (`open` and `inReview` by default), newest first, with the person's names, the moves and the sign-off counts |
 | `/get-break-glass-case`         | attestor | One case: the recovery case's lookup id, status and two moderator approvals, the person's profile and selfie, the moves, every event with the acting pod and its details complete |
 | `/list-break-glass-case-security-records` | attestor | The person's rows of one bucket, ciphertext with their key ids; writes the viewed event |
-| `/schedule-break-glass-case`    | attestor | The video call: the `scheduled` event, status `inReview`; no notification |
+| `/schedule-break-glass-case`    | attestor | The video call: the `scheduled` event, status `inReview`; the person is notified (`recoveryCaseScheduled`, 2026-11-11) |
 | `/sign-off-break-glass-case`    | attestor | One attestation per move of the case, each the validators' follow-up signed by two pairs of the caller's account and verified against the stored creation, posted together; the second distinct pod's decides the case |
 | `/mark-break-glass-case-sent`   | attestor | Records that the stored attestations, two per move, were posted to a validator, and the answers; a retry writes another event |
 | `/dismiss-break-glass-case`     | attestor | Closes the case with a preset reason and a note; final; the held moves stay on the ledger until a cancel |
@@ -248,10 +248,10 @@ keep the references straight. Every table and column has a `COMMENT ON`
 | `vouches`                 | Approved vouches, never changed                                        |
 | `seeds`, `super_seeds`    | The pods that may vouch                                                |
 | `appointments`            | The pods that are moderators or attestors, and the pods that may stake for validator or masterPod: one row per appointment, revoked rows kept |
-| `notifications`           | What the phone polls; read, never deleted                              |
+| `notifications`           | What the phone polls; read, never deleted; sixteen kinds, the newest `recoveryCaseScheduled` (2026-11-11) |
 | `security_images`         | Encrypted images of both buckets, each with the id of its bucket key; append-only |
 | `security_info`           | Encrypted texts of bucket two, each with the id of its bucket key; append-only |
-| `chat_rooms`              | Private, public and old marketplace rooms; `listing_id` when a room is about a listing |
+| `chat_rooms`              | Private, public and old marketplace rooms; `listing_id` when a room is about a listing, `case_id` and `case_kind` when it is about an attestor case |
 | `chat_room_members`       | Who is in which room                                                   |
 | `chat_hpke`               | Each member's wrapped room key                                         |
 | `chat_room_invites`       | Open invites, carrying the wrapped key                                 |
@@ -261,7 +261,7 @@ keep the references straight. Every table and column has a `COMMENT ON`
 | `anos_accounts`           | One row per anos account a pod made: type, key blob, the signed creation, when it was submitted, the break-glass blob after a recovery; never deleted |
 | `noted_transactions`      | One row per ledger transaction a pod noted for its tax records: the ledger's facts in the clear, the private part as a blob under the pod's encryption key; one per pod and transaction; deleted when the person removes it |
 | `wallet_settings`         | One row per pod: the small things its wallet remembers as one encrypted blob (the Protect your passkey answer first); replaced in place |
-| `recovery_cases`          | One row per recovery case: lookup id, the pod being recovered, contact email, status; one open case per lookup id |
+| `recovery_cases`          | One row per recovery case: lookup id, the pod being recovered, contact email or phone (at least one of the two), status; one open case per lookup id |
 | `recovery_pods`           | One per case: the recovery passkey, the recovery session, the hybrid key and its wrapped private halves |
 | `recovery_shares`         | What the keyholders posted to a case, as posted; append-only           |
 
@@ -400,10 +400,11 @@ returning `ok(status, body)` or `refuse(status, reason)`) and its queries
   email; notifications for bucket views and key shares; paging on the
   lists. The attestors' app is the wallet's attestor edition (build 3).
 - Inside break-glass moves (section 14.9): notifications to the attestors
-  and to the person; a move filed after a cancel on the ledger; a
-  dismissal with an effect on the ledger; the owner's dispute path,
-  forwarding and a repeat sweep for money that lands in an old account
-  after the move.
+  when moves are filed, and to the person when the case is decided or
+  dismissed (the one for the video call was built 2026-11-11, section 18);
+  a move filed after a cancel on the ledger; a dismissal with an effect on
+  the ledger; the owner's dispute path, forwarding and a repeat sweep for
+  money that lands in an old account after the move.
 
 - Several passkeys or several live sessions per pod.
 - Purging pods that never got vouched, and their usernames.

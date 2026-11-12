@@ -7,8 +7,8 @@
 -- EXISTS, functions and triggers use OR REPLACE, comments just overwrite.
 -- It never alters a table that already exists, though, apart from the
 -- idempotent ALTERs of the appointments block and of the recovery,
--- attestation and marketplace blocks at the end. After changing this file,
--- rebuild the local database from scratch with
+-- attestation, marketplace and case chat blocks at the end. After changing
+-- this file, rebuild the local database from scratch with
 --
 --   npm run db:reset
 --
@@ -365,7 +365,7 @@ CREATE TABLE IF NOT EXISTS notifications (
                         'chatInvite', 'inviteAccepted', 'inviteDeclined',
                         'joinRequest', 'joinApproved', 'joinDeclined',
                         'tradeCaseOpened', 'disputeCaseOpened', 'caseScheduled',
-                        'caseDecided', 'caseDismissed')),
+                        'caseDecided', 'caseDismissed', 'recoveryCaseScheduled')),
   reference_id        BYTEA       NOT NULL CHECK (octet_length(reference_id) = 32),
   read_at             TIMESTAMPTZ,
   created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -382,8 +382,8 @@ CREATE OR REPLACE TRIGGER notifications_set_updated_at
 COMMENT ON TABLE  notifications                     IS 'One row per event a pod should hear about, written inside the transaction of the event it reports. Read, never deleted.';
 COMMENT ON COLUMN notifications.notification_number IS 'Random id, 32 raw bytes.';
 COMMENT ON COLUMN notifications.anopod_id           IS 'The pod notified.';
-COMMENT ON COLUMN notifications.kind                IS 'What happened: vouchRequest, vouchApproved, vouchDeclined, vouched, chatInvite, inviteAccepted, inviteDeclined, joinRequest, joinApproved, joinDeclined, or, for an attestor case (spec 13.7), tradeCaseOpened, disputeCaseOpened, caseScheduled, caseDecided or caseDismissed.';
-COMMENT ON COLUMN notifications.reference_id        IS 'The thing the kind is about: a vouch_id_number, the pod''s own anopod_id (vouched), an invite_id, a chat_room_id, a join_request_id, or the case id of an assisted_trades or escrow_disputes row.';
+COMMENT ON COLUMN notifications.kind                IS 'What happened: vouchRequest, vouchApproved, vouchDeclined, vouched, chatInvite, inviteAccepted, inviteDeclined, joinRequest, joinApproved, joinDeclined, or, for an attestor case (spec 13.7), tradeCaseOpened, disputeCaseOpened, caseScheduled, caseDecided or caseDismissed, or, for a break-glass case (spec 14.7), recoveryCaseScheduled.';
+COMMENT ON COLUMN notifications.reference_id        IS 'The thing the kind is about: a vouch_id_number, the pod''s own anopod_id (vouched), an invite_id, a chat_room_id, a join_request_id, or the case id of an assisted_trades, escrow_disputes or break_glass_cases row.';
 COMMENT ON COLUMN notifications.read_at             IS 'When the phone marked it read; null while unread.';
 COMMENT ON COLUMN notifications.created_at          IS 'When the row was inserted. Set by default, never changed.';
 COMMENT ON COLUMN notifications.updated_at          IS 'When the row last changed. Maintained by the notifications_set_updated_at trigger.';
@@ -456,9 +456,13 @@ CREATE TABLE IF NOT EXISTS chat_rooms (
   type              TEXT        NOT NULL CHECK (type IN ('private', 'public', 'marketplace')),
   name              TEXT        CHECK (char_length(name) BETWEEN 1 AND 100),
   listing_id        BYTEA       CHECK (octet_length(listing_id) = 32),
+  case_id           BYTEA       CHECK (octet_length(case_id) = 32),
+  case_kind         TEXT        CHECK (case_kind IN ('trade', 'dispute', 'recovery')),
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-  CHECK ((type = 'public') = (name IS NOT NULL))
+  CHECK ((type = 'public') = (name IS NOT NULL)),
+  CONSTRAINT chat_rooms_case_check CHECK ((case_id IS NULL) = (case_kind IS NULL)
+    AND (case_id IS NULL OR (type = 'private' AND listing_id IS NULL)))
 );
 CREATE INDEX IF NOT EXISTS chat_rooms_type_created_at_idx ON chat_rooms (type, created_at DESC);
 
@@ -468,7 +472,7 @@ CREATE OR REPLACE TRIGGER chat_rooms_set_updated_at
   WHEN (OLD.* IS DISTINCT FROM NEW.*)
   EXECUTE FUNCTION set_updated_at();
 
-COMMENT ON TABLE  chat_rooms                   IS 'One row per chat room: private (invites only; about a listing when listing_id is set, one such room per person who connects, since 2026-11-06), public (browsable by name, join requests) or marketplace (the old one-per-listing rooms, join requests; none made since 2026-11-06, the existing ones stay).';
+COMMENT ON TABLE  chat_rooms                   IS 'One row per chat room: private (invites only; about a listing when listing_id is set, one such room per person who connects, since 2026-11-06; a case chat when case_id is set, between an attestor and a person on that attestor case, since 2026-11-11), public (browsable by name, join requests) or marketplace (the old one-per-listing rooms, join requests; none made since 2026-11-06, the existing ones stay).';
 COMMENT ON COLUMN chat_rooms.chat_room_id      IS 'Random id, 32 raw bytes.';
 COMMENT ON COLUMN chat_rooms.creator_anopod_id IS 'The pod that made the room. It invites, answers join requests and cannot leave.';
 COMMENT ON COLUMN chat_rooms.type              IS 'private, public or marketplace.';
@@ -534,7 +538,7 @@ CREATE INDEX IF NOT EXISTS chat_room_invites_anopod_id_to_idx ON chat_room_invit
 COMMENT ON TABLE  chat_room_invites                IS 'Open invites to private and public rooms, each carrying the wrapped room key until answered. One open invite per room and invitee.';
 COMMENT ON COLUMN chat_room_invites.invite_id      IS 'Random id, 32 raw bytes.';
 COMMENT ON COLUMN chat_room_invites.chat_room_id   IS 'The room.';
-COMMENT ON COLUMN chat_room_invites.anopod_id_from IS 'The inviter: the room''s creator.';
+COMMENT ON COLUMN chat_room_invites.anopod_id_from IS 'The inviter: the room''s creator, or a member of a listing chat bringing an attestor in.';
 COMMENT ON COLUMN chat_room_invites.anopod_id_to   IS 'The invitee.';
 COMMENT ON COLUMN chat_room_invites.hpke_key       IS 'The room key wrapped to the invitee''s chat public key (see chat_hpke.hpke_key).';
 COMMENT ON COLUMN chat_room_invites.created_at     IS 'When the row was inserted. Set by default, never changed.';
@@ -669,19 +673,23 @@ COMMENT ON COLUMN anos_accounts.updated_at   IS 'When the row last changed. Main
 -- ---------------------------------------------------------------------------
 
 -- recovery_cases: one row per case. The lookup id the person recomputed,
--- the pod the keyholders named for it, the contact email (the one plaintext
--- fact about the person this server keeps) and the status. Nothing else
--- about a case is a column: everything that happens is a recovery_events
--- row. The partial unique index is the one-open-case-per-lookup-id rule.
+-- the pod the keyholders named for it, the contact email or phone (one of
+-- the two at least, in plain text) and the status. Nothing else about a
+-- case is a column: everything that happens is a recovery_events row. The
+-- partial unique index is the one-open-case-per-lookup-id rule.
 
 CREATE TABLE IF NOT EXISTS recovery_cases (
   case_id       BYTEA       PRIMARY KEY CHECK (octet_length(case_id) = 32),
   lookup_id     BYTEA       NOT NULL CHECK (octet_length(lookup_id) = 32),
   anopod_id     BYTEA       NOT NULL CHECK (octet_length(anopod_id) = 32),
-  contact_email TEXT        NOT NULL CHECK (char_length(contact_email) BETWEEN 3 AND 254 AND position('@' IN contact_email) > 1),
+  contact_email TEXT        CHECK (char_length(contact_email) BETWEEN 3 AND 254 AND position('@' IN contact_email) > 1),
+  contact_phone TEXT        CHECK (char_length(contact_phone) BETWEEN 6 AND 32
+                              AND contact_phone ~ '^[0-9 +()-]+$'
+                              AND char_length(regexp_replace(contact_phone, '[^0-9]', '', 'g')) >= 6),
   status        TEXT        NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'inReview', 'approved', 'delivering', 'completed', 'dismissed')),
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT recovery_cases_contact_check CHECK (contact_email IS NOT NULL OR contact_phone IS NOT NULL)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS recovery_cases_one_open_per_lookup_id ON recovery_cases (lookup_id) WHERE status NOT IN ('completed', 'dismissed');
 CREATE INDEX IF NOT EXISTS recovery_cases_anopod_id_idx ON recovery_cases (anopod_id);
@@ -693,11 +701,11 @@ CREATE OR REPLACE TRIGGER recovery_cases_set_updated_at
   WHEN (OLD.* IS DISTINCT FROM NEW.*)
   EXECUTE FUNCTION set_updated_at();
 
-COMMENT ON TABLE  recovery_cases               IS 'One row per recovery case: the lookup id the person recomputed, the pod the keyholders named for the lookup id, the contact email and the status. Everything that happens to a case is a recovery_events row. One open case per lookup id (the partial unique index).';
+COMMENT ON TABLE  recovery_cases               IS 'One row per recovery case: the lookup id the person recomputed, the pod the keyholders named for the lookup id, the contact email or phone and the status. Everything that happens to a case is a recovery_events row. One open case per lookup id (the partial unique index).';
 COMMENT ON COLUMN recovery_cases.case_id       IS 'Random id, 32 raw bytes, minted by /open-recovery-case. The recovery pod, the shares and the events hang off it.';
 COMMENT ON COLUMN recovery_cases.lookup_id     IS 'The lookup id (wallet docs/public-ledger-id.md section 6) the person recomputed on their device, 32 raw bytes. The public ledger id is never stored.';
 COMMENT ON COLUMN recovery_cases.anopod_id     IS 'The pod the keyholders named for the lookup id: the one being recovered.';
-COMMENT ON COLUMN recovery_cases.contact_email IS 'Where a moderator can reach the person: 3 to 254 characters with an @ that is not first. The one plaintext fact about the person this server keeps. Nothing is sent; the moderator writes by hand.';
+COMMENT ON COLUMN recovery_cases.contact_email IS 'The email of the contact email or phone, where a moderator can reach the person: 3 to 254 characters with an @ that is not first; null when the person gave a phone number alone. Plain text, like the phone. Nothing is sent; the moderator writes by hand.';
 COMMENT ON COLUMN recovery_cases.status        IS 'open, inReview, approved, delivering, completed or dismissed (spec 12.5). completed and dismissed are final.';
 COMMENT ON COLUMN recovery_cases.created_at    IS 'When the row was inserted. Set by default, never changed.';
 COMMENT ON COLUMN recovery_cases.updated_at    IS 'When the row last changed. Maintained by the recovery_cases_set_updated_at trigger.';
@@ -1027,9 +1035,10 @@ COMMENT ON COLUMN attestor_events.details    IS 'What the kind carries (spec 13.
 COMMENT ON COLUMN attestor_events.created_at IS 'When the row was inserted: the statement''s clock (clock_timestamp()), so events one transaction writes keep their order.';
 
 
--- The notifications check widened to the five case kinds of spec 13.7.
--- Idempotent: a drop-and-add of the check under its one name, as the
--- challenges check above.
+-- The notifications check widened to the five case kinds of spec 13.7
+-- and, on 2026-11-11, to recoveryCaseScheduled (spec 14.7). Idempotent: a
+-- drop-and-add of the check under its one name, as the challenges check
+-- above.
 
 ALTER TABLE notifications DROP CONSTRAINT IF EXISTS notifications_kind_check;
 ALTER TABLE notifications ADD CONSTRAINT notifications_kind_check
@@ -1037,7 +1046,7 @@ ALTER TABLE notifications ADD CONSTRAINT notifications_kind_check
                   'chatInvite', 'inviteAccepted', 'inviteDeclined',
                   'joinRequest', 'joinApproved', 'joinDeclined',
                   'tradeCaseOpened', 'disputeCaseOpened', 'caseScheduled',
-                  'caseDecided', 'caseDismissed'));
+                  'caseDecided', 'caseDismissed', 'recoveryCaseScheduled'));
 
 
 -- The marketplace block (2026-11-06): chat_rooms.listing_id, the listing a
@@ -1291,3 +1300,33 @@ COMMENT ON TABLE  dao_snapshot_weights             IS 'The current snapshot of a
 COMMENT ON COLUMN dao_snapshot_weights.proposal_id IS 'The proposal (a dao_proposals row).';
 COMMENT ON COLUMN dao_snapshot_weights.anopod_id   IS 'A pod with DAO votes in the snapshot. Pods at 0 have no row.';
 COMMENT ON COLUMN dao_snapshot_weights.weight      IS 'The pod''s DAO votes (whole anos): the millionths of dao_vote_stake summed over the pod''s anos accounts, floored.';
+
+
+-- The case chat block (2026-11-11): chat_rooms.case_id and case_kind, the
+-- attestor case a private room is about and which of the three kinds it
+-- is, with the check that keeps the two together and off a room about a
+-- listing; and recovery_cases.contact_phone, with contact_email made
+-- nullable and the check that a case has at least one of the two. The
+-- columns and the two named checks are also inline in the two CREATE
+-- TABLEs above, for a fresh database; the comments of the three new
+-- columns are here only, after the columns exist on a live one. No index:
+-- nothing reads a room by its case. All idempotent: IF NOT EXISTS, a
+-- drop-and-add of each named check under its one name, a DROP NOT NULL
+-- that changes nothing on a nullable column.
+
+ALTER TABLE chat_rooms ADD COLUMN IF NOT EXISTS case_id BYTEA CHECK (octet_length(case_id) = 32);
+ALTER TABLE chat_rooms ADD COLUMN IF NOT EXISTS case_kind TEXT CHECK (case_kind IN ('trade', 'dispute', 'recovery'));
+ALTER TABLE chat_rooms DROP CONSTRAINT IF EXISTS chat_rooms_case_check;
+ALTER TABLE chat_rooms ADD CONSTRAINT chat_rooms_case_check
+  CHECK ((case_id IS NULL) = (case_kind IS NULL) AND (case_id IS NULL OR (type = 'private' AND listing_id IS NULL)));
+ALTER TABLE recovery_cases ADD COLUMN IF NOT EXISTS contact_phone TEXT
+  CHECK (char_length(contact_phone) BETWEEN 6 AND 32 AND contact_phone ~ '^[0-9 +()-]+$'
+         AND char_length(regexp_replace(contact_phone, '[^0-9]', '', 'g')) >= 6);
+ALTER TABLE recovery_cases ALTER COLUMN contact_email DROP NOT NULL;
+ALTER TABLE recovery_cases DROP CONSTRAINT IF EXISTS recovery_cases_contact_check;
+ALTER TABLE recovery_cases ADD CONSTRAINT recovery_cases_contact_check
+  CHECK (contact_email IS NOT NULL OR contact_phone IS NOT NULL);
+
+COMMENT ON COLUMN chat_rooms.case_id           IS 'The attestor case the room is about, 32 raw bytes, or null: the case id of an assisted_trades, an escrow_disputes or a break_glass_cases row. Set on a private room made by /create-chat-room with a caseId (2026-11-11), by an appointed attestor while the case is open or in review: a case chat. Never set on a room about a listing (chat_rooms_case_check).';
+COMMENT ON COLUMN chat_rooms.case_kind         IS 'Which table case_id names: trade (assisted_trades), dispute (escrow_disputes) or recovery (break_glass_cases). Set with case_id and null with it (chat_rooms_case_check).';
+COMMENT ON COLUMN recovery_cases.contact_phone IS 'The phone of the contact email or phone (2026-11-11), where a moderator can reach the person: 6 to 32 characters, digits, spaces, +, - and round brackets, with at least 6 digits, kept as typed; null when the person gave an email alone. Plain text, like the email. A case has at least one of the two (recovery_cases_contact_check).';

@@ -127,7 +127,10 @@ const isValidatorId = (value) => Number.isInteger(value) && value >= 1 && value 
  * appointment, the decision and the end; never an attestor's id, username,
  * note, object or signature, never the other party's uploads. `decided`
  * keeps `verdict` alone, so a trade's decision answers {} and a dispute's
- * { verdict }.
+ * { verdict }. The events still name no attestor; since 2026-11-11 a
+ * dispute case itself names the attestors on it (`attestors`,
+ * disputeAttestors below), for the invite into the marketplace chat
+ * (spec section 18).
  */
 const PERSON_EVENTS = {
   opened: [],
@@ -855,14 +858,42 @@ function personTrade(trade) {
   };
 }
 
-/** A dispute case as a party sees it (13.4.5), with their side. */
-function personDispute(dispute, anopodId) {
+/**
+ * The attestors on a dispute case, as its two traders see them
+ * (2026-11-11): [ { anopodId, username } ], the acting pods of the case's
+ * events, each once, in the order they first acted, so the attestor who
+ * opened the case comes first. A pod that is a party to the case is left
+ * out (a party writes events too: evidenceAdded), and so is a pod that
+ * holds no live appointment as attestor any more.
+ */
+async function disputeAttestors(dispute) {
+  const attestors = [];
+  const seen = new Set();
+  for (const event of await listForCaseWithUsernames(dispute.caseId)) {
+    if (event.anopodId === null) continue;
+    const anopodId = toHex(event.anopodId);
+    if (seen.has(anopodId)) continue;
+    seen.add(anopodId);
+    if (isParty(DISPUTE, dispute, event.anopodId) || !(await isAttestorPod(event.anopodId))) continue;
+    attestors.push({ anopodId, username: event.username });
+  }
+  return attestors;
+}
+
+/**
+ * A dispute case as a party sees it (13.4.5), with their side. Since
+ * 2026-11-11 a dispute names the attestors on it, `attestors`, as
+ * disputeAttestors lists them, for the invite into the marketplace chat of
+ * the trade (spec section 18).
+ */
+function personDispute(dispute, anopodId, attestors) {
   return {
     caseId: toHex(dispute.caseId),
     transactionId: toHex(dispute.transactionId),
     accountId: toHex(dispute.accountId),
     accountIdTo: toHex(dispute.accountIdTo),
     side: sideOf(dispute, anopodId),
+    attestors,
     status: dispute.status,
     createdAt: dispute.createdAt.toISOString(),
     updatedAt: dispute.updatedAt.toISOString(),
@@ -881,21 +912,29 @@ function personEvents(events, anopodId) {
     .map((event) => ({ kind: event.kind, details: pick(event.details, PERSON_EVENTS[event.kind]), createdAt: event.createdAt.toISOString() }));
 }
 
-/** POST /list-my-cases. Body {}. The cases where the caller's pod is a party, newest first, trades and disputes apart. */
+/**
+ * POST /list-my-cases. Body {}. The cases where the caller's pod is a
+ * party, newest first, trades and disputes apart; every dispute with the
+ * attestors on it.
+ */
 export async function listMyCases(anopod) {
   const [trades, disputes] = await Promise.all([listTradesForPod(anopod.anopodId), listDisputesForPod(anopod.anopodId)]);
+  const personDisputes = [];
+  for (const dispute of disputes) {
+    personDisputes.push(personDispute(dispute, anopod.anopodId, await disputeAttestors(dispute)));
+  }
   return ok(200, {
     trades: trades.map(personTrade),
-    disputes: disputes.map((dispute) => personDispute(dispute, anopod.anopodId)),
+    disputes: personDisputes,
   });
 }
 
 /**
  * POST /get-my-case. Body { caseId }. The person's view of one of their
  * cases, either kind: the case, their subset of the events and, for a
- * dispute, the case key and their own evidence rows with keyForMe. A case
- * the caller is no party to is 404 unknown case, like one that does not
- * exist.
+ * dispute, the attestors on it, the case key and their own evidence rows
+ * with keyForMe. A case the caller is no party to is 404 unknown case,
+ * like one that does not exist.
  */
 export async function getMyCase(anopod, body) {
   if (!isObject(body) || typeof body.caseId !== 'string') return refuse(400, BAD_SHAPE);
@@ -906,10 +945,11 @@ export async function getMyCase(anopod, body) {
   if (found.kind === TRADE) return ok(200, { kind: TRADE, case: personTrade(found.row), events });
 
   const evidence = await listEvidenceOfPod(found.row.caseId, anopod.anopodId);
+  const attestors = await disputeAttestors(found.row);
   return ok(200, {
     kind: DISPUTE,
     case: {
-      ...personDispute(found.row, anopod.anopodId),
+      ...personDispute(found.row, anopod.anopodId, attestors),
       caseKey: { x25519: toHex(found.row.caseKeyX25519), mlkem: toHex(found.row.caseKeyMlkem) },
     },
     events,
