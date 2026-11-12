@@ -1,4 +1,8 @@
 import { findById } from '../anopods/anopods.queries.js';
+import { REVIEW_STATUSES, findById as findTrade } from '../attesting/assisted-trades.queries.js';
+import { findById as findDispute } from '../attesting/escrow-disputes.queries.js';
+import { isAttestorPod } from '../auth/require-attestor.js';
+import { findCase as findBreakGlassCase } from '../break-glass/break-glass.queries.js';
 import { decodeBytes } from '../crypto/bytes.js';
 import { isUniqueViolation, withTransaction } from '../db/transaction.js';
 import { findListing, findListingByRoom } from '../marketplace/listings.queries.js';
@@ -72,9 +76,30 @@ function integerOption(value, fallback, min, max) {
 }
 
 /**
- * POST /create-chat-room. Body { type, name, hpkeKey, listingId }, the
- * listingId optional (2026-11-06): the listing a private room is about,
- * checked after everything else.
+ * The attestor case with this id (a 32-byte Buffer), as { kind, status,
+ * parties }, or null: assisted_trades first, then escrow_disputes, then
+ * break_glass_cases (a case id names one row in one table). `kind` is what
+ * chat_rooms.case_kind takes, 'trade', 'dispute' or 'recovery'; `parties`
+ * are the pods the case is about: the sender's pod of a trade, the seller's
+ * and the buyer's of a dispute, the recovered pod of a break-glass case.
+ */
+async function caseOf(caseId) {
+  const trade = await findTrade(caseId);
+  if (trade !== null) return { kind: 'trade', status: trade.status, parties: [trade.anopodId] };
+  const dispute = await findDispute(caseId);
+  if (dispute !== null) return { kind: 'dispute', status: dispute.status, parties: [dispute.anopodId, dispute.anopodIdTo] };
+  const recovery = await findBreakGlassCase(caseId);
+  if (recovery !== null) return { kind: 'recovery', status: recovery.status, parties: [recovery.anopodId] };
+  return null;
+}
+
+/**
+ * POST /create-chat-room. Body { type, name, hpkeKey, listingId, caseId },
+ * the listingId optional (2026-11-06): the listing a private room is about,
+ * checked after everything else; the caseId optional (2026-11-11): the
+ * attestor case a private room is about, a case chat, checked after the
+ * listingId. Only an appointed attestor makes one, while the case is open
+ * or in review.
  */
 export async function createRoom(anopod, body) {
   if (!isObject(body) || typeof body.type !== 'string' || typeof body.hpkeKey !== 'string') {
@@ -101,6 +126,19 @@ export async function createRoom(anopod, body) {
     if (listing.anopodId.equals(anopod.anopodId)) return refuse(400, 'your own listing');
     if ((await roomAboutListingBy(listingId, anopod.anopodId)) !== null) return refuse(409, 'room already open');
   }
+  let caseId = null;
+  let caseKind = null;
+  if (body.caseId !== undefined && body.caseId !== null) {
+    if (typeof body.caseId !== 'string') return refuse(400, BAD_SHAPE);
+    if (type === 'public') return refuse(400, 'public rooms have no case');
+    if (listingId !== null) return refuse(400, 'a room is about a listing or a case');
+    if (!(await isAttestorPod(anopod.anopodId))) return refuse(403, 'not an attestor');
+    caseId = decodeId(body.caseId);
+    const found = caseId === null ? null : await caseOf(caseId);
+    if (found === null) return refuse(404, 'unknown case');
+    if (!REVIEW_STATUSES.includes(found.status)) return refuse(409, 'case closed');
+    caseKind = found.kind;
+  }
 
   const chatRoomId = randomId();
   await withTransaction(async (client) => {
@@ -110,13 +148,21 @@ export async function createRoom(anopod, body) {
       type,
       name: type === 'public' ? name : null,
       listingId,
+      caseId,
+      caseKind,
     });
     await insertMember(client, chatRoomId, anopod.anopodId, hpkeKey);
   });
   return ok(201, { chatRoomId: toHex(chatRoomId) });
 }
 
-/** POST /invite-to-chat-room. Body { chatRoomId, anopodIdTo, hpkeKey }. */
+/**
+ * POST /invite-to-chat-room. Body { chatRoomId, anopodIdTo, hpkeKey }. The
+ * room's creator invites. Since 2026-11-11 a member of a listing chat (a
+ * private room with a listing_id) who did not start it may invite too, an
+ * appointed attestor and nobody else; and a case chat (a room with a
+ * case_id) takes only a person on its case or an appointed attestor.
+ */
 export async function invite(anopod, body) {
   if (
     !isObject(body) ||
@@ -128,12 +174,26 @@ export async function invite(anopod, body) {
   }
   const chatRoomId = decodeId(body.chatRoomId);
   const room = chatRoomId === null ? null : await findRoom(chatRoomId);
-  if (room === null || !room.creatorAnopodId.equals(anopod.anopodId)) {
-    return refuse(403, 'only the creator invites');
+  const anopodIdTo = decodeId(body.anopodIdTo);
+  if (room === null) return refuse(403, 'only the creator invites');
+  if (!room.creatorAnopodId.equals(anopod.anopodId)) {
+    // Not the creator: a member of a listing chat, bringing an attestor in.
+    const bringsAttestor =
+      room.type === 'private' &&
+      room.listingId !== null &&
+      anopodIdTo !== null &&
+      (await isMember(chatRoomId, anopod.anopodId)) &&
+      (await isAttestorPod(anopodIdTo));
+    if (!bringsAttestor) return refuse(403, 'only the creator invites');
   }
   if (room.type === 'marketplace') return refuse(400, 'marketplace rooms take join requests');
-  const anopodIdTo = decodeId(body.anopodIdTo);
   if (anopodIdTo === null) return refuse(400, 'invalid anopodIdTo');
+  if (room.caseId !== null) {
+    // A case chat: a person on the room's case, or an attestor. A closed case does not stop an invite.
+    const roomCase = await caseOf(room.caseId);
+    const party = roomCase !== null && roomCase.parties.some((pod) => pod.equals(anopodIdTo));
+    if (!party && !(await isAttestorPod(anopodIdTo))) return refuse(403, 'not a party to the case');
+  }
   const target = await findById(anopodIdTo);
   if (target === null || !target.setupComplete) return refuse(409, 'invitee has no chat key');
   if (await isMember(chatRoomId, anopodIdTo)) return refuse(409, 'already a member');

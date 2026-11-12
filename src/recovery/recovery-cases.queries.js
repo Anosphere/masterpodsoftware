@@ -13,15 +13,20 @@ export const CASE_STATUSES = ['open', 'inReview', 'approved', 'delivering', 'com
 /** A case in one of these statuses is closed: another case may be opened for its lookup id. */
 export const FINAL_STATUSES = ['completed', 'dismissed'];
 
-const COLUMNS = 'case_id, lookup_id, anopod_id, contact_email, status, created_at, updated_at';
+const COLUMNS = 'case_id, lookup_id, anopod_id, contact_email, contact_phone, status, created_at, updated_at';
 
-/** A recovery_cases row in camelCase, as requireRecoverySession puts it on req.recoveryCase. Byte columns stay Buffers. */
+/**
+ * A recovery_cases row in camelCase, as requireRecoverySession puts it on
+ * req.recoveryCase. Byte columns stay Buffers; contactEmail and
+ * contactPhone are each a string or null, at least one of them a string.
+ */
 export function caseRow(row) {
   return {
     caseId: row.case_id,
     lookupId: row.lookup_id,
     anopodId: row.anopod_id,
     contactEmail: row.contact_email,
+    contactPhone: row.contact_phone,
     status: row.status,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -45,14 +50,17 @@ export async function openCaseExists(lookupId, db = pool) {
 
 /**
  * Inserts a case on `client` with status open. `row` is { caseId, lookupId,
- * anopodId, contactEmail }. A second open case for the lookup id throws a
- * unique violation on recovery_cases_one_open_per_lookup_id.
+ * anopodId, contactEmail, contactPhone }, the last two both strings since
+ * 2026-11-12, when /open-recovery-case began to want both (the columns
+ * still take a null: a case of before may hold one contact). A second open
+ * case for the lookup id throws a unique violation on
+ * recovery_cases_one_open_per_lookup_id.
  */
 export async function insertCase(client, row) {
   await client.query(
-    `INSERT INTO recovery_cases (case_id, lookup_id, anopod_id, contact_email)
-     VALUES ($1, $2, $3, $4)`,
-    [row.caseId, row.lookupId, row.anopodId, row.contactEmail],
+    `INSERT INTO recovery_cases (case_id, lookup_id, anopod_id, contact_email, contact_phone)
+     VALUES ($1, $2, $3, $4, $5)`,
+    [row.caseId, row.lookupId, row.anopodId, row.contactEmail, row.contactPhone],
   );
 }
 
@@ -77,7 +85,7 @@ export async function lockById(client, caseId) {
  */
 export async function listByStatus(statuses, db = pool) {
   const { rows } = await db.query(
-    `SELECT c.case_id, c.lookup_id, c.anopod_id, c.contact_email, c.status, c.created_at, c.updated_at,
+    `SELECT c.case_id, c.lookup_id, c.anopod_id, c.contact_email, c.contact_phone, c.status, c.created_at, c.updated_at,
             a.username, a.first_name, a.last_name,
             (SELECT count(DISTINCT e.anopod_id) FROM recovery_events e
              WHERE e.case_id = c.case_id AND e.kind = 'approvalSigned')::int AS approvals

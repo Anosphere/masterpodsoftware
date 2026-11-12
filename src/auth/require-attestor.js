@@ -30,6 +30,10 @@ export const requireAttestor = [requireSession, mustBeAttestor];
  * True when the pod with this id (a 32-byte Buffer) is an attestor as
  * above: a live appointment for the role (section 16). /open-dispute-case
  * and /share-case-key check the pods a case key is wrapped to with it.
+ * Since 2026-11-11 (section 18) the chat service asks it too, for the
+ * caller of /create-chat-room with a caseId and for the invitee of
+ * /invite-to-chat-room, and the attesting service asks it for the
+ * attestors a dispute case names to its two traders.
  */
 export function isAttestorPod(anopodId, db) {
   return isAppointed(anopodId, 'attestor', db);

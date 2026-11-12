@@ -1,6 +1,6 @@
 import { adoptRecoveryPasskey, findById as findAnopod, replaceBackupCode } from '../anopods/anopods.queries.js';
 import { profileWithSelfie } from '../anopods/anopods.service.js';
-import { findAccount, setBreakGlassBlob } from '../anos-accounts/anos-accounts.queries.js';
+import { countAccountsOf, findAccount, setBreakGlassBlob } from '../anos-accounts/anos-accounts.queries.js';
 
 import { find as findChallenge, take as takeChallenge } from '../auth/challenges.queries.js';
 import { hasSignatureShape, verifySignatures } from '../auth/signed-request.js';
@@ -110,16 +110,32 @@ function isContactEmail(value) {
 }
 
 /**
+ * True for a contact phone: a string of 6 to 32 characters, each a digit, a
+ * space, +, - or a round bracket, with at least 6 digits (the column's
+ * check). It is kept as typed.
+ */
+function isContactPhone(value) {
+  if (typeof value !== 'string') return false;
+  return value.length >= 6 && value.length <= 32 && /^[0-9 +()-]+$/.test(value) && value.replace(/[^0-9]/g, '').length >= 6;
+}
+
+/**
  * POST /open-recovery-case. The seven checks of spec 12.4.2, then one
  * transaction: the challenge consumed, the case, its recovery pod and the
- * opened event.
+ * opened event. The person gives a contact email and a contact phone, both
+ * (2026-11-12; from 2026-11-11 until then at least one of the two was
+ * enough): a moderator texts first, and the email is there when a text is
+ * not possible.
  */
 export async function openRecoveryCase(body) {
-  // 1. Shape.
+  // 1. Shape. The two contacts are each absent, null or a string.
   if (!hasEnvelopeShape(body)) return refuse(400, BAD_SHAPE);
   const { payload, signatures } = body;
-  for (const field of ['anopodId', 'challenge', 'lookupId', 'contactEmail', 'hybridKeyBlob', 'ephemeralAuthKey', 'ephemeralAuthKeyPq']) {
+  for (const field of ['anopodId', 'challenge', 'lookupId', 'hybridKeyBlob', 'ephemeralAuthKey', 'ephemeralAuthKeyPq']) {
     if (typeof payload[field] !== 'string') return refuse(400, BAD_SHAPE);
+  }
+  for (const field of ['contactEmail', 'contactPhone']) {
+    if (payload[field] !== undefined && payload[field] !== null && typeof payload[field] !== 'string') return refuse(400, BAD_SHAPE);
   }
   if (!isObject(payload.passkey) || !isObject(payload.hybridKey)) return refuse(400, BAD_SHAPE);
   if (typeof payload.hybridKey.x25519 !== 'string' || typeof payload.hybridKey.mlkem !== 'string') return refuse(400, BAD_SHAPE);
@@ -151,10 +167,14 @@ export async function openRecoveryCase(body) {
     return refuse(401, 'passkey verification failed');
   }
 
-  // 6. The fields.
+  // 6. The fields. Both contacts are given (2026-11-12), and each is valid.
   const lookupId = decodeId(payload.lookupId);
   if (lookupId === null) return refuse(400, 'invalid lookupId');
-  if (!isContactEmail(payload.contactEmail)) return refuse(400, 'invalid contactEmail');
+  const contactEmail = payload.contactEmail ?? null;
+  const contactPhone = payload.contactPhone ?? null;
+  if (contactEmail === null || contactPhone === null) return refuse(400, 'contactEmail and contactPhone required');
+  if (contactEmail !== null && !isContactEmail(contactEmail)) return refuse(400, 'invalid contactEmail');
+  if (contactPhone !== null && !isContactPhone(contactPhone)) return refuse(400, 'invalid contactPhone');
   const hybridKeyX25519 = decodeBytes(payload.hybridKey.x25519, [32]);
   const hybridKeyMlkem = decodeBytes(payload.hybridKey.mlkem, [1568]);
   if (hybridKeyX25519 === null || hybridKeyMlkem === null) return refuse(400, 'invalid hybridKey');
@@ -171,7 +191,7 @@ export async function openRecoveryCase(body) {
   try {
     const written = await withTransaction(async (client) => {
       if ((await takeChallenge(client, challenge, 'openCase')) === null) return false;
-      await insertCase(client, { caseId, lookupId, anopodId, contactEmail: payload.contactEmail });
+      await insertCase(client, { caseId, lookupId, anopodId, contactEmail, contactPhone });
       await insertPod(client, {
         caseId,
         anopodId,
@@ -270,20 +290,28 @@ export async function unlockRecoveryPod(body) {
  * POST /get-recovery-pod (level recovery). The person's view of their case
  * (spec 12.4.3): the case, the pod's hybrid key and blob, blob2 once the
  * status is approved or delivering, the person's subset of the events, and
- * the shares the keyholders posted, oldest first.
+ * the shares the keyholders posted, oldest first. `anosAccounts`
+ * (2026-11-11) is how many anos accounts the recovered pod made up to the
+ * opening of this case, in every status: how many account keys the wait
+ * page waits for. The accounts the finish makes are newer than the case
+ * and do not count (2026-11-12; until then every account of the pod's
+ * counted).
  */
 export async function getRecoveryPod(recoveryPod, recoveryCase) {
-  const [anopod, events, shares] = await Promise.all([
+  const [anopod, events, shares, anosAccounts] = await Promise.all([
     findAnopod(recoveryCase.anopodId),
     listEvents(recoveryCase.caseId),
     listShares(recoveryCase.caseId),
+    countAccountsOf(recoveryCase.anopodId, recoveryCase.caseId),
   ]);
   return ok(200, {
     caseId: toHex(recoveryCase.caseId),
     status: recoveryCase.status,
     username: anopod?.username ?? null,
     contactEmail: recoveryCase.contactEmail,
+    contactPhone: recoveryCase.contactPhone,
     lookupId: toHex(recoveryCase.lookupId),
+    anosAccounts,
     hybridKey: { x25519: toHex(recoveryPod.hybridKeyX25519), mlkem: toHex(recoveryPod.hybridKeyMlkem) },
     hybridKeyBlob: toHex(recoveryPod.hybridKeyBlob),
     blob2: BLOB2_STATUSES.includes(recoveryCase.status) ? toHex(anopod?.encryptionKeyBlob2) : null,
@@ -402,6 +430,7 @@ export async function listRecoveryCases(body) {
       firstName: item.firstName,
       lastName: item.lastName,
       contactEmail: item.contactEmail,
+      contactPhone: item.contactPhone,
       approvals: item.approvals,
       createdAt: item.createdAt.toISOString(),
       updatedAt: item.updatedAt.toISOString(),
@@ -434,6 +463,7 @@ export async function getRecoveryCase(body) {
       status: recoveryCase.status,
       lookupId,
       contactEmail: recoveryCase.contactEmail,
+      contactPhone: recoveryCase.contactPhone,
       createdAt: recoveryCase.createdAt.toISOString(),
       updatedAt: recoveryCase.updatedAt.toISOString(),
     },

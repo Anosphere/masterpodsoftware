@@ -12,6 +12,7 @@ import {
   signedOffBy,
 } from '../attesting/attestor-events.queries.js';
 import { isUniqueViolation, withTransaction } from '../db/transaction.js';
+import { notify } from '../notifications/notifications.queries.js';
 import { findById as findRecoveryCase } from '../recovery/recovery-cases.queries.js';
 import { listForCaseWithUsernames as listRecoveryEvents } from '../recovery/recovery-events.queries.js';
 import { listFor as listSecurityRecords } from '../security/security.queries.js';
@@ -377,8 +378,9 @@ export async function listBreakGlassCaseSecurityRecords(anopod, body) {
 /**
  * POST /schedule-break-glass-case. Body { caseId, at, meetLink }: the video
  * call. Under the case lock: the scheduled event with { at, meetLink } (at
- * normalised to ISO 8601) and status inReview when the case was open. No
- * notification: the person's wallet reads the event from
+ * normalised to ISO 8601), status inReview when the case was open, and the
+ * recoveryCaseScheduled notification to the recovered pod (2026-11-11).
+ * The person's wallet reads the event itself from
  * /list-my-break-glass-moves.
  */
 export async function scheduleBreakGlassCase(anopod, body) {
@@ -389,6 +391,7 @@ export async function scheduleBreakGlassCase(anopod, body) {
 
   const status = await withLockedCase(found.caseId, REVIEW_STATUSES, async (client, locked) => {
     await insertEvent(client, locked.caseId, 'scheduled', anopod.anopodId, { at: new Date(body.at).toISOString(), meetLink: body.meetLink });
+    await notify(client, locked.anopodId, 'recoveryCaseScheduled', locked.caseId);
     if (locked.status === 'open') await updateStatus(client, locked.caseId, 'inReview');
     return 'inReview';
   });
