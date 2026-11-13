@@ -973,7 +973,7 @@ CREATE TABLE IF NOT EXISTS escrow_dispute_evidence (
   evidence_id  BYTEA       PRIMARY KEY CHECK (octet_length(evidence_id) = 32),
   case_id      BYTEA       NOT NULL CHECK (octet_length(case_id) = 32),
   anopod_id    BYTEA       NOT NULL CHECK (octet_length(anopod_id) = 32),
-  content_type TEXT        NOT NULL CHECK (content_type IN ('image/jpeg', 'image/png', 'image/webp', 'application/pdf')),
+  content_type TEXT        NOT NULL CHECK (content_type IN ('image/jpeg', 'image/png', 'image/webp')),
   file         BYTEA       NOT NULL,
   key_for_me   BYTEA       NOT NULL CHECK (octet_length(key_for_me) = 60),
   key_for_case BYTEA       CHECK (octet_length(key_for_case) = 1660),
@@ -993,7 +993,7 @@ COMMENT ON TABLE  escrow_dispute_evidence              IS 'One row per file a pa
 COMMENT ON COLUMN escrow_dispute_evidence.evidence_id  IS 'Random id, 32 raw bytes, minted by /add-dispute-evidence. A copy made for a later case gets its own.';
 COMMENT ON COLUMN escrow_dispute_evidence.case_id      IS 'The dispute case the row belongs to.';
 COMMENT ON COLUMN escrow_dispute_evidence.anopod_id    IS 'The uploader: the seller''s or the buyer''s pod.';
-COMMENT ON COLUMN escrow_dispute_evidence.content_type IS 'The plaintext''s type: image/jpeg, image/png, image/webp or application/pdf.';
+COMMENT ON COLUMN escrow_dispute_evidence.content_type IS 'The plaintext''s type: image/jpeg, image/png or image/webp.';
 COMMENT ON COLUMN escrow_dispute_evidence.file         IS 'The file''s bytes under the content key (iv || ciphertext || tag), at most MAX_IMAGE_BYTES plus the overhead.';
 COMMENT ON COLUMN escrow_dispute_evidence.key_for_me   IS 'The content key under the uploader''s pod encryption key (iv || ciphertext || tag, 60 bytes). The uploader''s copy; stays for good.';
 COMMENT ON COLUMN escrow_dispute_evidence.key_for_case IS 'The content key encrypted to the case key as a share is encrypted to a keyholder (keyholder spec 7.1, aad the case id), 1660 bytes. The attestors'' copy; null once the case is decided or dismissed.';
