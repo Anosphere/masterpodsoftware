@@ -1,4 +1,5 @@
 import { findById } from '../anopods/anopods.queries.js';
+import { env } from '../config/env.js';
 import { decodeId, randomId, toHex } from '../util/ids.js';
 import { isObject } from '../util/is-object.js';
 import { answer, ok, refuse } from '../util/result.js';
@@ -10,20 +11,24 @@ import { issue } from './challenges.queries.js';
  * itself is made in challenges.queries.js.
  */
 
-/** What /challenge issues for: the two purposes of spec section 5 and the three recovery ones of 12.4.2; openCase takes the anoPod id the keyholders named (2026-11-08). */
-const PURPOSES = ['create', 'unlock', 'openCase', 'unlockCase', 'recover'];
+/** What /challenge issues for: the two purposes of spec section 5, the three recovery ones of 12.4.2 and, the sixth, addPasskey of section 19 (2026-11-18); openCase takes the anoPod id the keyholders named (2026-11-08), addPasskey the id of the pod the passkey is added to. */
+const PURPOSES = ['create', 'unlock', 'openCase', 'unlockCase', 'recover', 'addPasskey'];
 
 /**
  * POST /challenge. Body { purpose }, one of create, unlock, openCase,
- * unlockCase and recover; openCase also takes { anopodId }, the pod the
- * keyholders named for the person's lookup id (keyholder spec section 15).
- * For 'create' the server mints the id the new pod will have; for
- * 'openCase' it looks the pod up by that id (400 invalid anopodId, 404
+ * unlockCase, recover and addPasskey; openCase also takes { anopodId }, the
+ * pod the keyholders named for the person's lookup id (keyholder spec
+ * section 15). For 'create' the server mints the id the new pod will have;
+ * for 'openCase' it looks the pod up by that id (400 invalid anopodId, 404
  * unknown anopod), binds the challenge to it and answers its username too,
  * so the wallet shows the account found and names the recovery passkey
  * with it. Either way the phone passes the id to WebAuthn as the user
  * handle and sends it back in /create-anopod or /open-recovery-case. The
- * other three answer without an id, like 'unlock'.
+ * sixth purpose, 'addPasskey' (spec section 19), takes { anopodId } too,
+ * the pod the passkey is added to: the pod is looked up the same way and
+ * the challenge bound to it, the answer carries the id and no username, and
+ * the challenge lives ADD_PASSKEY_CHALLENGE_SECONDS, not CHALLENGE_SECONDS.
+ * The other three answer without an id, like 'unlock'.
  */
 export async function challenge(req, res) {
   if (!isObject(req.body) || !PURPOSES.includes(req.body.purpose)) return answer(res, refuse(400, 'bad request shape'));
@@ -32,7 +37,7 @@ export async function challenge(req, res) {
   let anopodId = null;
   let anopod = null;
   if (purpose === 'create') anopodId = randomId();
-  if (purpose === 'openCase') {
+  if (purpose === 'openCase' || purpose === 'addPasskey') {
     if (typeof req.body.anopodId !== 'string') return answer(res, refuse(400, 'bad request shape'));
     anopodId = decodeId(req.body.anopodId);
     if (anopodId === null) return answer(res, refuse(400, 'invalid anopodId'));
@@ -40,9 +45,9 @@ export async function challenge(req, res) {
     if (anopod === null) return answer(res, refuse(404, 'unknown anopod'));
   }
 
-  const issued = await issue(purpose, anopodId);
+  const issued = await issue(purpose, anopodId, purpose === 'addPasskey' ? env.addPasskeyChallengeSeconds : env.challengeSeconds);
   const body = { challenge: toHex(issued.challenge), expiresAt: issued.expiresAt.toISOString() };
   if (anopodId !== null) body.anopodId = toHex(anopodId);
-  if (anopod !== null) body.username = anopod.username;
+  if (purpose === 'openCase') body.username = anopod.username;
   answer(res, ok(200, body));
 }

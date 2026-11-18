@@ -2,7 +2,7 @@
 
 The masterpod server for the anos system: an Express 5 server backed by
 PostgreSQL, laid out like anossoftware so the two read alike. It keeps the
-anoPods: a pod's public profile and selfie, its one passkey, its one live
+anoPods: a pod's public profile and selfie, its passkeys, its one live
 session, the vouching that makes a pod trusted, the pod's encrypted key
 material, the two security buckets, encrypted chat rooms, the marketplace
 of listings, and, since 2026-10-26, the recovery cases of locked-out people:
@@ -58,7 +58,7 @@ Every route is a `POST` with a JSON body. Four pod levels and three more:
 
 | session  | Signed by the pod's current ephemeral keys (the envelope below). Vouched or not.          |
 | vouched  | session, and `anopods.vouched` is true.                                                  |
-| setup    | vouched, and setup is complete (the pod has chat keys): every chat and marketplace route, the three anos account routes, the six wallet memory routes, `/rotate-backup-code` and `/store-break-glass-blob` after a recovery, the person's four attestation routes `/list-my-cases`, `/get-my-case`, `/share-lookup-id`, `/add-dispute-evidence`, and the person's two break-glass routes `/file-break-glass-moves`, `/list-my-break-glass-moves`. |
+| setup    | vouched, and setup is complete (the pod has chat keys): every chat and marketplace route, the three anos account routes, the six wallet memory routes, `/rotate-backup-code` and `/store-break-glass-blob` after a recovery, the person's four attestation routes `/list-my-cases`, `/get-my-case`, `/share-lookup-id`, `/add-dispute-evidence`, the person's two break-glass routes `/file-break-glass-moves`, `/list-my-break-glass-moves`, and the two passkey routes `/add-passkey`, `/list-passkeys`. |
 | recovery | Signed by a recovery pod's current ephemeral keys: the same envelope with `caseId` in place of `anopodId` (`src/auth/require-recovery-session.js`); `/get-recovery-pod`, `/complete-recovery-case`. |
 
 | moderator | session, and the pod holds a live appointment for the role (`appointments`, `docs/schemas.md` section 16, written by `npm run appoint`; `src/auth/require-moderator.js`; the stake is the keyholders' check); the six moderation routes. |
@@ -106,9 +106,9 @@ are base64 / base64url as the browser produces them.
 
 | Route                           | Level   | Does                                                                                     |
 | ------------------------------- | ------- | ---------------------------------------------------------------------------------------- |
-| `/challenge`                    | none    | Issues a single-use WebAuthn challenge for `create`, `unlock`, `openCase`, `unlockCase` or `recover`; `create` also mints the new pod's id; `openCase` takes the anoPod id the keyholders named for the lookup id and answers its username (2026-11-08) |
+| `/challenge`                    | none    | Issues a single-use WebAuthn challenge for `create`, `unlock`, `openCase`, `unlockCase`, `recover` or `addPasskey`; `create` also mints the new pod's id; `openCase` takes the anoPod id the keyholders named for the lookup id and answers its username (2026-11-08); `addPasskey` (2026-11-18) takes the pod's id, and its challenge lives `ADD_PASSKEY_CHALLENGE_SECONDS` |
 | `/create-anopod`                | none    | Creates a pod: profile, selfie, passkey registration (PRF required), first session        |
-| `/unlock`                       | none    | Opens a session: passkey assertion, new ephemeral keys; answers the blobs to unwrap, `identityBlob` included |
+| `/unlock`                       | none    | Opens a session: passkey assertion, by the main passkey or an added one, new ephemeral keys; answers the blobs to unwrap, `identityBlob` included; `wrappedKeyBlobKey` for an added one |
 | `/check-username`               | none    | Lowercases the username, checks the rule, says whether it is free                        |
 | `/check-anopod-status`          | session | The caller's vouched, vouchCount, setupComplete, isSeed, isSuperSeed, role (`moderator`, `attestor` or null, section 16), and its rows in each bucket (bucketOneImages, bucketTwoImages, bucketTwoInfos) |
 | `/get-anopod-profile`           | session | A pod's public profile with its selfie                                                   |
@@ -121,6 +121,8 @@ are base64 / base64url as the browser produces them.
 | `/approve-vouch-request`        | vouched | Records the vouch; flips `vouched` on a super seed's approval or the second vouch; a super seed's approval also makes a seed |
 | `/decline-vouch-request`        | vouched | Drops the request and notifies the requester                                             |
 | `/complete-setup`               | vouched | Stores the two encryption key blobs, the backup code keys, the chat keys and the identity blob (eight fields), once |
+| `/add-passkey`                  | setup   | Adds a passkey to the caller's pod (2026-11-18, section 19): a fresh tap of a passkey the pod has, the new passkey's registration (PRF required), and the new passkey's own locked copies of the pod's encryption key and key blob key; notifies the pod; no route removes one |
+| `/list-passkeys`                | setup   | The caller's passkeys by credential id: the main one, and the added ones, oldest first    |
 | `/add-to-security-bucket-one`   | vouched | Stores encrypted images in bucket one, under the bucket key `keyId` names                |
 | `/add-to-security-bucket-two`   | vouched | Stores encrypted images and texts in bucket two, under the bucket key `keyId` names      |
 | `/list-security-records`        | vouched | Everything in both buckets for the caller, each row with its `keyId`                     |
@@ -162,7 +164,7 @@ are base64 / base64url as the browser produces them.
 | `/sign-off-recovery-case`       | moderator | A verdict signed by pair one of an anos account in the caller's pod, verified against the stored creation; the second distinct approval approves the case |
 | `/dismiss-recovery-case`        | moderator | Closes the case with a preset reason and a note; final |
 | `/receive-recovery-share/:caseId` | none  | A keyholder's share for the case, stored as posted (a repeat is a no-op); the first one makes the case `delivering`; `409` before two approvals or after the end |
-| `/recover-with-backup-code`     | none    | The finish: the backup code proof (both signatures by the keys the code derives); the recovery passkey becomes the pod's, `blob1` is replaced, the lost device's session ends |
+| `/recover-with-backup-code`     | none    | The finish: the backup code proof (both signatures by the keys the code derives); the recovery passkey becomes the pod's, `blob1` is replaced, the lost device's session ends, the added passkeys are deleted |
 | `/complete-recovery-case`       | recovery | Closes the case; final                                                                   |
 | `/rotate-backup-code`           | setup   | A new backup code's `blob2` and keys, with a proof by the current code's keys; the old code is worthless from here |
 | `/store-break-glass-blob`       | setup   | A recovered break-glass seed under the encryption key, on the caller's anos account; a second call replaces it |
@@ -240,7 +242,8 @@ keep the references straight. Every table and column has a `COMMENT ON`
 
 | Table                     | Holds                                                                  |
 | ------------------------- | ---------------------------------------------------------------------- |
-| `anopods`                 | One row per pod: profile, passkey, live session, vouched, setup blobs and keys, the identity blob |
+| `anopods`                 | One row per pod: profile, main passkey, live session, vouched, setup blobs and keys, the identity blob |
+| `added_passkeys`          | One row per passkey a pod added after its first (section 19): the passkey and its own locked copies of the pod's encryption key and key blob key; deleted, all of the pod's, by the finish of a recovery |
 | `public_selfies`          | One plaintext selfie per pod                                           |
 | `challenges`              | Single-use WebAuthn challenges                                         |
 | `nonces`                  | The replay cache of signed requests                                    |
@@ -248,7 +251,7 @@ keep the references straight. Every table and column has a `COMMENT ON`
 | `vouches`                 | Approved vouches, never changed                                        |
 | `seeds`, `super_seeds`    | The pods that may vouch                                                |
 | `appointments`            | The pods that are moderators or attestors, and the pods that may stake for validator or masterPod: one row per appointment, revoked rows kept |
-| `notifications`           | What the phone polls; read, never deleted; sixteen kinds, the newest `recoveryCaseScheduled` (2026-11-11) |
+| `notifications`           | What the phone polls; read, never deleted; seventeen kinds, the newest `passkeyAdded` (2026-11-18) |
 | `security_images`         | Encrypted images of both buckets, each with the id of its bucket key; append-only |
 | `security_info`           | Encrypted texts of bucket two, each with the id of its bucket key; append-only |
 | `chat_rooms`              | Private, public and old marketplace rooms; `listing_id` when a room is about a listing, `case_id` and `case_kind` when it is about an attestor case |
@@ -296,6 +299,7 @@ at boot. Everything after `PGPASSWORD` has a default.
 | `RP_ID`                    | `localhost`             | WebAuthn relying party id                                        |
 | `EPHEMERAL_KEY_HOURS`      | `12`                    | Life of a session's ephemeral keys                               |
 | `CHALLENGE_SECONDS`        | `120`                   | Life of a challenge                                              |
+| `ADD_PASSKEY_CHALLENGE_SECONDS` | `600`              | Life of a challenge for `/add-passkey` (ten minutes)             |
 | `TIMESTAMP_WINDOW_SECONDS` | `120`                   | Allowed clock difference on a signed request, each way           |
 | `MAX_IMAGE_BYTES`          | `10485760`              | Largest image, decoded                                           |
 | `MAX_IMAGES_PER_REQUEST`   | `5`                     | Images per bucket request                                        |
@@ -351,6 +355,7 @@ src/
   util/              ids, images, is-object, the ok/refuse/answer result shape
   auth/              /challenge; requireSession, requireVouched, requireSetup, requireModerator, requireAttestor, requireRecoverySession; challenges, nonces, the signed envelope, WebAuthn
   anopods/           /create-anopod, /unlock, /check-username, /check-anopod-status, /get-anopod-profile, /complete-setup
+  passkeys/          /add-passkey, /list-passkeys (section 19); the added_passkeys table's queries
   vouching/          /search-usernames, /send-vouch-request, /list-vouch-requests, /approve-vouch-request, /decline-vouch-request
   appointments/      the appointments table's queries (section 16): who holds a live appointment as a moderator or an attestor, or as a pod that may stake for validator or masterPod; written only by scripts/appoint.js and scripts/revoke.js
   notifications/     /list-notifications, /mark-notifications-read; notify() for every feature
@@ -406,10 +411,12 @@ returning `ok(status, body)` or `refuse(status, reason)`) and its queries
   the ledger; the owner's dispute path, forwarding and a repeat sweep for
   money that lands in an old account after the move.
 
-- Several passkeys or several live sessions per pod.
+- Several live sessions per pod.
 - Purging pods that never got vouched, and their usernames.
 - Removing a member from a room and rotating the room key.
 - Editing a listing, a profile or a selfie.
 - Push delivery of notifications and messages; the phone polls.
 - Generic encrypted object storage, anoSphere, the anos interface.
 - Anti-abuse limits on `/challenge` and `/create-anopod`.
+- Removing one passkey; a cap on a pod's passkeys; a name or a date for the
+  main passkey (`docs/schemas.md` section 19).

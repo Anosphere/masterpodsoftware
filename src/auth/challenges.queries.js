@@ -4,24 +4,29 @@ import { query } from '../db/pool.js';
 
 /**
  * SQL for the challenges table: the single-use WebAuthn challenges that
- * /challenge hands out and /create-anopod and /unlock consume.
+ * /challenge hands out and /create-anopod, /unlock, the recovery routes and
+ * /add-passkey consume.
  */
 
 /**
- * Issues a challenge for `purpose` (create, unlock, openCase, unlockCase or
- * recover), bound to `anopodId`: the id minted for a sign-up, the pod the
- * keyholders named for openCase, or null for the others. One round trip: the
- * sweep of expired challenges, then the insert. Returns { challenge,
- * expiresAt } with the challenge as a 32-byte Buffer.
+ * Issues a challenge for `purpose` (create, unlock, openCase, unlockCase,
+ * recover or addPasskey), bound to `anopodId`: the id minted for a sign-up,
+ * the pod the keyholders named for openCase, the pod a passkey is added to
+ * for addPasskey (spec section 19), or null for the others. `seconds` is
+ * how long the challenge may be used: CHALLENGE_SECONDS unless the caller
+ * passes another life, as /challenge does for addPasskey
+ * (ADD_PASSKEY_CHALLENGE_SECONDS). One round trip: the sweep of expired
+ * challenges, then the insert. Returns { challenge, expiresAt } with the
+ * challenge as a 32-byte Buffer.
  */
-export async function issue(purpose, anopodId) {
+export async function issue(purpose, anopodId, seconds = env.challengeSeconds) {
   const challenge = randomBytes(32);
   const { rows } = await query(
     `WITH swept AS (DELETE FROM challenges WHERE expires_at < now())
      INSERT INTO challenges (challenge, purpose, anopod_id, expires_at)
      VALUES ($1, $2, $3, now() + ($4::int * interval '1 second'))
      RETURNING expires_at`,
-    [challenge, purpose, anopodId, env.challengeSeconds],
+    [challenge, purpose, anopodId, seconds],
   );
   return { challenge, expiresAt: rows[0].expires_at };
 }
@@ -29,8 +34,8 @@ export async function issue(purpose, anopodId) {
 /**
  * Looks a challenge up without consuming it: { anopodId } when a row with
  * this challenge and purpose exists and has not expired, else null. The
- * checks of /create-anopod, /unlock and the recovery routes run against
- * this; the write then calls take().
+ * checks of /create-anopod, /unlock, the recovery routes and /add-passkey
+ * run against this; the write then calls take().
  */
 export async function find(challenge, purpose) {
   const { rows } = await query(

@@ -69,11 +69,12 @@ $$;
 -- ---------------------------------------------------------------------------
 -- anopods: one row per anoPod.
 --
--- Profile, the one passkey, the one live session (the ephemeral keys), the
--- vouch state, and the key material that arrives at setup. The eight setup
--- columns are all null until /complete-setup and all set afterwards; the
--- num_nulls check enforces that. Long keys get their unique index on
--- sha256(column) so every value stays unique without a 2.6 KB index entry.
+-- Profile, the main passkey (the added ones are in added_passkeys), the one
+-- live session (the ephemeral keys), the vouch state, and the key material
+-- that arrives at setup. The eight setup columns are all null until
+-- /complete-setup and all set afterwards; the num_nulls check enforces
+-- that. Long keys get their unique index on sha256(column) so every value
+-- stays unique without a 2.6 KB index entry.
 -- identity_blob (added 2026-10-25 for the wallet) is the pod's public ledger
 -- id and lookup id under its encryption key; the server cannot read it.
 -- ---------------------------------------------------------------------------
@@ -115,12 +116,12 @@ CREATE OR REPLACE TRIGGER anopods_set_updated_at
   WHEN (OLD.* IS DISTINCT FROM NEW.*)
   EXECUTE FUNCTION set_updated_at();
 
-COMMENT ON TABLE  anopods                              IS 'One row per anoPod: profile, the one passkey, the one live session, vouch state, and the key material that arrives at setup.';
+COMMENT ON TABLE  anopods                              IS 'One row per anoPod: profile, the main passkey (the added ones are in added_passkeys), the one live session, vouch state, and the key material that arrives at setup.';
 COMMENT ON COLUMN anopods.anopod_id                    IS 'Random id, 32 raw bytes, minted by /challenge for the sign-up; also the passkey''s user handle.';
 COMMENT ON COLUMN anopods.first_name                   IS 'Public profile, 1 to 100 characters.';
 COMMENT ON COLUMN anopods.last_name                    IS 'Public profile, 1 to 100 characters.';
 COMMENT ON COLUMN anopods.username                     IS 'Public, unique, lowercase: 3 to 32 of a-z, 0-9 and _.';
-COMMENT ON COLUMN anopods.pass_key_credential_id       IS 'WebAuthn credential id of the pod''s one passkey, raw bytes. /unlock finds the row by it.';
+COMMENT ON COLUMN anopods.pass_key_credential_id       IS 'WebAuthn credential id of the pod''s main passkey, raw bytes. /unlock finds the row by it. An added passkey is found in added_passkeys.';
 COMMENT ON COLUMN anopods.pass_key_public_key          IS 'The passkey''s COSE public key, as the WebAuthn library returns it at registration.';
 COMMENT ON COLUMN anopods.ephemeral_auth_key           IS 'P-256 public key of the live session, 33 bytes compressed or 65 uncompressed. Signs every session request.';
 COMMENT ON COLUMN anopods.ephemeral_auth_key_pq        IS 'ML-DSA-87 public key of the live session, 2592 bytes.';
@@ -170,7 +171,7 @@ COMMENT ON COLUMN public_selfies.updated_at   IS 'When the row last changed. Mai
 
 CREATE TABLE IF NOT EXISTS challenges (
   challenge  BYTEA       PRIMARY KEY CHECK (octet_length(challenge) = 32),
-  purpose    TEXT        NOT NULL CHECK (purpose IN ('create', 'unlock', 'openCase', 'unlockCase', 'recover')),
+  purpose    TEXT        NOT NULL CHECK (purpose IN ('create', 'unlock', 'openCase', 'unlockCase', 'recover', 'addPasskey')),
   anopod_id  BYTEA       CHECK (octet_length(anopod_id) = 32),
   expires_at TIMESTAMPTZ NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -178,9 +179,9 @@ CREATE TABLE IF NOT EXISTS challenges (
 
 COMMENT ON TABLE  challenges            IS 'Single-use WebAuthn challenges from /challenge. Deleted inside the transaction that uses one; the expired ones are swept when a new one is issued.';
 COMMENT ON COLUMN challenges.challenge  IS 'Random, 32 raw bytes. The phone passes it to WebAuthn.';
-COMMENT ON COLUMN challenges.purpose    IS 'create for a sign-up, unlock for a session; openCase, unlockCase and recover for the recovery routes (spec 12.4.2).';
-COMMENT ON COLUMN challenges.anopod_id  IS 'For create, the id minted for this sign-up, which becomes the row''s id at the write; for openCase, the pod the phone named, found through the keyholders. Null for unlock, unlockCase and recover.';
-COMMENT ON COLUMN challenges.expires_at IS 'Issued + CHALLENGE_SECONDS.';
+COMMENT ON COLUMN challenges.purpose    IS 'create for a sign-up, unlock for a session; openCase, unlockCase and recover for the recovery routes (spec 12.4.2); addPasskey for /add-passkey (spec section 19).';
+COMMENT ON COLUMN challenges.anopod_id  IS 'For create, the id minted for this sign-up, which becomes the row''s id at the write; for openCase, the pod the phone named, found through the keyholders; for addPasskey, the pod the passkey is added to. Null for unlock, unlockCase and recover.';
+COMMENT ON COLUMN challenges.expires_at IS 'Issued + CHALLENGE_SECONDS; for addPasskey, issued + ADD_PASSKEY_CHALLENGE_SECONDS (spec section 19).';
 COMMENT ON COLUMN challenges.created_at IS 'When the row was inserted. Set by default, never changed.';
 
 
@@ -365,7 +366,8 @@ CREATE TABLE IF NOT EXISTS notifications (
                         'chatInvite', 'inviteAccepted', 'inviteDeclined',
                         'joinRequest', 'joinApproved', 'joinDeclined',
                         'tradeCaseOpened', 'disputeCaseOpened', 'caseScheduled',
-                        'caseDecided', 'caseDismissed', 'recoveryCaseScheduled')),
+                        'caseDecided', 'caseDismissed', 'recoveryCaseScheduled',
+                        'passkeyAdded')),
   reference_id        BYTEA       NOT NULL CHECK (octet_length(reference_id) = 32),
   read_at             TIMESTAMPTZ,
   created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -382,8 +384,8 @@ CREATE OR REPLACE TRIGGER notifications_set_updated_at
 COMMENT ON TABLE  notifications                     IS 'One row per event a pod should hear about, written inside the transaction of the event it reports. Read, never deleted.';
 COMMENT ON COLUMN notifications.notification_number IS 'Random id, 32 raw bytes.';
 COMMENT ON COLUMN notifications.anopod_id           IS 'The pod notified.';
-COMMENT ON COLUMN notifications.kind                IS 'What happened: vouchRequest, vouchApproved, vouchDeclined, vouched, chatInvite, inviteAccepted, inviteDeclined, joinRequest, joinApproved, joinDeclined, or, for an attestor case (spec 13.7), tradeCaseOpened, disputeCaseOpened, caseScheduled, caseDecided or caseDismissed, or, for a break-glass case (spec 14.7), recoveryCaseScheduled.';
-COMMENT ON COLUMN notifications.reference_id        IS 'The thing the kind is about: a vouch_id_number, the pod''s own anopod_id (vouched), an invite_id, a chat_room_id, a join_request_id, or the case id of an assisted_trades, escrow_disputes or break_glass_cases row.';
+COMMENT ON COLUMN notifications.kind                IS 'What happened: vouchRequest, vouchApproved, vouchDeclined, vouched, chatInvite, inviteAccepted, inviteDeclined, joinRequest, joinApproved, joinDeclined, or, for an attestor case (spec 13.7), tradeCaseOpened, disputeCaseOpened, caseScheduled, caseDecided or caseDismissed, or, for a break-glass case (spec 14.7), recoveryCaseScheduled, or passkeyAdded (spec section 19).';
+COMMENT ON COLUMN notifications.reference_id        IS 'The thing the kind is about: a vouch_id_number, the pod''s own anopod_id (vouched), an invite_id, a chat_room_id, a join_request_id, or the case id of an assisted_trades, escrow_disputes or break_glass_cases row, or the passkey_id of an added_passkeys row.';
 COMMENT ON COLUMN notifications.read_at             IS 'When the phone marked it read; null while unread.';
 COMMENT ON COLUMN notifications.created_at          IS 'When the row was inserted. Set by default, never changed.';
 COMMENT ON COLUMN notifications.updated_at          IS 'When the row last changed. Maintained by the notifications_set_updated_at trigger.';
@@ -822,8 +824,9 @@ COMMENT ON COLUMN recovery_events.created_at IS 'When the row was inserted. Set 
 
 
 -- The break-glass column on anos_accounts, and the challenges check widened
--- to the three recovery purposes. Both idempotent: IF NOT EXISTS, and a
--- drop-and-add of the check under its one name.
+-- to the three recovery purposes and, on 2026-11-18, to addPasskey (spec
+-- section 19). Both idempotent: IF NOT EXISTS, and a drop-and-add of the
+-- check under its one name.
 
 ALTER TABLE anos_accounts ADD COLUMN IF NOT EXISTS break_glass_blob BYTEA CHECK (octet_length(break_glass_blob) <= 1024);
 
@@ -831,7 +834,7 @@ COMMENT ON COLUMN anos_accounts.break_glass_blob IS 'The account''s 32-byte brea
 
 ALTER TABLE challenges DROP CONSTRAINT IF EXISTS challenges_purpose_check;
 ALTER TABLE challenges ADD CONSTRAINT challenges_purpose_check
-  CHECK (purpose IN ('create', 'unlock', 'openCase', 'unlockCase', 'recover'));
+  CHECK (purpose IN ('create', 'unlock', 'openCase', 'unlockCase', 'recover', 'addPasskey'));
 
 
 -- ---------------------------------------------------------------------------
@@ -1036,7 +1039,8 @@ COMMENT ON COLUMN attestor_events.created_at IS 'When the row was inserted: the 
 
 
 -- The notifications check widened to the five case kinds of spec 13.7
--- and, on 2026-11-11, to recoveryCaseScheduled (spec 14.7). Idempotent: a
+-- and, on 2026-11-11, to recoveryCaseScheduled (spec 14.7) and, on
+-- 2026-11-18, to passkeyAdded (spec section 19). Idempotent: a
 -- drop-and-add of the check under its one name, as the challenges check
 -- above.
 
@@ -1046,7 +1050,8 @@ ALTER TABLE notifications ADD CONSTRAINT notifications_kind_check
                   'chatInvite', 'inviteAccepted', 'inviteDeclined',
                   'joinRequest', 'joinApproved', 'joinDeclined',
                   'tradeCaseOpened', 'disputeCaseOpened', 'caseScheduled',
-                  'caseDecided', 'caseDismissed', 'recoveryCaseScheduled'));
+                  'caseDecided', 'caseDismissed', 'recoveryCaseScheduled',
+                  'passkeyAdded'));
 
 
 -- The marketplace block (2026-11-06): chat_rooms.listing_id, the listing a
@@ -1330,3 +1335,39 @@ ALTER TABLE recovery_cases ADD CONSTRAINT recovery_cases_contact_check
 COMMENT ON COLUMN chat_rooms.case_id           IS 'The attestor case the room is about, 32 raw bytes, or null: the case id of an assisted_trades, an escrow_disputes or a break_glass_cases row. Set on a private room made by /create-chat-room with a caseId (2026-11-11), by an appointed attestor while the case is open or in review: a case chat. Never set on a room about a listing (chat_rooms_case_check).';
 COMMENT ON COLUMN chat_rooms.case_kind         IS 'Which table case_id names: trade (assisted_trades), dispute (escrow_disputes) or recovery (break_glass_cases). Set with case_id and null with it (chat_rooms_case_check).';
 COMMENT ON COLUMN recovery_cases.contact_phone IS 'The phone of the contact email or phone (2026-11-11), where a moderator can reach the person: 6 to 32 characters, digits, spaces, +, - and round brackets, with at least 6 digits, kept as typed; null when the person gave an email alone. Plain text, like the email. A case has at least one of the two (recovery_cases_contact_check).';
+
+
+-- ---------------------------------------------------------------------------
+-- The added passkeys block (added 2026-11-18, spec section 19): the passkeys a
+-- pod added after its first one. The main passkey stays on the anopods row,
+-- and the pod's key blob key stays the one made from that passkey's PRF
+-- output (wallet spec 7). An added passkey carries its own copies: the pod's
+-- encryption key under its own KEK_prf, and the pod's key blob key under a
+-- key from its own PRF output. So every passkey of a pod opens the same two
+-- keys, and nothing stored before changes. /add-passkey inserts a row;
+-- /unlock looks here when the credential id is on no anopods row; the finish
+-- of a recovery (/recover-with-backup-code) deletes the pod's rows. No route
+-- removes one row. Stand-alone: no foreign keys. No trigger: a row is never
+-- updated.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS added_passkeys (
+  passkey_id                   BYTEA       PRIMARY KEY CHECK (octet_length(passkey_id) = 32),
+  anopod_id                    BYTEA       NOT NULL CHECK (octet_length(anopod_id) = 32),
+  pass_key_credential_id       BYTEA       NOT NULL UNIQUE CHECK (octet_length(pass_key_credential_id) BETWEEN 16 AND 1023),
+  pass_key_public_key          BYTEA       NOT NULL CHECK (octet_length(pass_key_public_key) <= 1024),
+  anopod_encryption_key_blob_1 BYTEA       NOT NULL CHECK (octet_length(anopod_encryption_key_blob_1) BETWEEN 1 AND 1024),
+  wrapped_key_blob_key         BYTEA       NOT NULL CHECK (octet_length(wrapped_key_blob_key) BETWEEN 1 AND 1024),
+  created_at                   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS added_passkeys_pass_key_public_key_key ON added_passkeys (sha256(pass_key_public_key));
+CREATE INDEX IF NOT EXISTS added_passkeys_anopod_id_created_at_idx ON added_passkeys (anopod_id, created_at);
+
+COMMENT ON TABLE  added_passkeys                              IS 'One row per passkey a pod added after its first (spec section 19): the passkey, and its own copies of the pod''s encryption key and key blob key. Inserted by /add-passkey; deleted, all of the pod''s, by the finish of a recovery. Never updated. Stand-alone; no foreign keys.';
+COMMENT ON COLUMN added_passkeys.passkey_id                   IS 'Random id, 32 raw bytes, minted by /add-passkey. The wallet keys the passkey''s name by it.';
+COMMENT ON COLUMN added_passkeys.anopod_id                    IS 'The pod the passkey unlocks. Also the passkey''s user handle.';
+COMMENT ON COLUMN added_passkeys.pass_key_credential_id       IS 'WebAuthn credential id of the added passkey, raw bytes. /unlock finds the row by it when no anopods row has it.';
+COMMENT ON COLUMN added_passkeys.pass_key_public_key          IS 'The added passkey''s COSE public key, as the WebAuthn library returns it at registration.';
+COMMENT ON COLUMN added_passkeys.anopod_encryption_key_blob_1 IS 'The pod''s encryption key wrapped under this passkey''s PRF-derived key (iv || ciphertext || tag, 60 bytes). The server cannot open it; /unlock hands it back as blob1.';
+COMMENT ON COLUMN added_passkeys.wrapped_key_blob_key         IS 'The pod''s key blob key wrapped under a key from this passkey''s PRF output (iv || ciphertext || tag, 60 bytes; wallet spec 7). The server cannot open it; /unlock hands it back.';
+COMMENT ON COLUMN added_passkeys.created_at                   IS 'When the row was inserted (the add). Set by default, never changed.';

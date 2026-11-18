@@ -84,6 +84,10 @@ export const env = Object.freeze({
   // How long a challenge from /challenge may be used.
   challengeSeconds: optionalInteger('CHALLENGE_SECONDS', 120),
 
+  // How long a challenge for /add-passkey may be used. An add takes three
+  // taps and maybe a new PIN on a security key, so it lives longer.
+  addPasskeyChallengeSeconds: optionalInteger('ADD_PASSKEY_CHALLENGE_SECONDS', 600),
+
   // How far a signed request's timestamp may be from the server clock,
   // each way. Nonces are kept twice this long.
   timestampWindowSeconds: optionalInteger('TIMESTAMP_WINDOW_SECONDS', 120),

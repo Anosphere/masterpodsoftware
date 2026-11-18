@@ -66,7 +66,7 @@ Four levels. A route's level is given with the route in section 5.
 | none | Plain JSON body, no signature. | `/challenge`, `/check-username`, `/get-anopod-session-keys`, `/get-anos-account`, and `/create-anopod`, `/unlock`, which are signed by the ephemeral keys inside them |
 | session | Signed by the pod's current ephemeral keys (section 3). Vouched or not. | `/search-usernames`, `/send-vouch-request`, `/check-anopod-status`, `/list-notifications`, `/mark-notifications-read`, `/get-anopod-profile` |
 | vouched | session, and `anopods.vouched` is true. | `/list-vouch-requests`, `/approve-vouch-request`, `/decline-vouch-request`, `/complete-setup`, `/add-to-security-bucket-one`, `/add-to-security-bucket-two`, `/list-security-records` |
-| setup | vouched, and setup is complete (`anopod_encryption_key_blob_2` is set, so the pod has chat keys). | every chat and marketplace route; `/create-anos-account`, `/mark-anos-account-submitted`, `/list-anos-accounts`; the six wallet memory routes, `/add-noted-transaction` to `/set-wallet-settings` (2026-11-07); the person's two break-glass routes, `/file-break-glass-moves` and `/list-my-break-glass-moves` (2026-11-08, section 14); the six DAO routes, `/create-dao-proposal` to `/list-dao-votes` (2026-11-08, section 15) |
+| setup | vouched, and setup is complete (`anopod_encryption_key_blob_2` is set, so the pod has chat keys). | every chat and marketplace route; `/create-anos-account`, `/mark-anos-account-submitted`, `/list-anos-accounts`; the six wallet memory routes, `/add-noted-transaction` to `/set-wallet-settings` (2026-11-07); the person's two break-glass routes, `/file-break-glass-moves` and `/list-my-break-glass-moves` (2026-11-08, section 14); the six DAO routes, `/create-dao-proposal` to `/list-dao-votes` (2026-11-08, section 15); `/add-passkey` and `/list-passkeys` (section 19) |
 
 Three middlewares: `requireSession`, `requireVouched`, `requireSetup`.
 Failing them: `401` (session), `403 anopod not vouched`, `403 setup not
@@ -123,8 +123,9 @@ failure:
 `/create-anopod` and `/unlock` carry no `path` or `nonce`: their payload holds
 a `challenge` instead, single use, and is signed by the ephemeral keys inside
 the payload (proof of possession). A challenge comes from `/challenge`, lives
-`CHALLENGE_SECONDS` (120) in the `challenges` table and is deleted inside the
-transaction that uses it.
+`CHALLENGE_SECONDS` (120; one for `/add-passkey` lives
+`ADD_PASSKEY_CHALLENGE_SECONDS`, 600, section 19) in the `challenges` table
+and is deleted inside the transaction that uses it.
 
 ## 4. Tables
 
@@ -149,12 +150,12 @@ $$;
 
 ### anopods
 
-One row per anoPod: profile, the one passkey, the one live session, vouch
-state, and the key material that arrives at setup. The eight setup columns
-(`identity_blob` added 2026-10-25 for the wallet) are all null until
-`/complete-setup` and all set afterwards; the `num_nulls` check enforces
-that. `vouched_by` on the seed tables is text so it can hold
-either a hex anopod id or the word `genesis`.
+One row per anoPod: profile, the main passkey (section 19 for the added
+ones), the one live session, vouch state, and the key material that arrives
+at setup. The eight setup columns (`identity_blob` added 2026-10-25 for the
+wallet) are all null until `/complete-setup` and all set afterwards; the
+`num_nulls` check enforces that. `vouched_by` on the seed tables is text so
+it can hold either a hex anopod id or the word `genesis`.
 
 ```sql
 CREATE TABLE IF NOT EXISTS anopods (
@@ -219,7 +220,7 @@ route changes it in this build.
 ```sql
 CREATE TABLE IF NOT EXISTS challenges (
   challenge  BYTEA       PRIMARY KEY CHECK (octet_length(challenge) = 32),
-  purpose    TEXT        NOT NULL CHECK (purpose IN ('create', 'unlock')),
+  purpose    TEXT        NOT NULL CHECK (purpose IN ('create', 'unlock', 'openCase', 'unlockCase', 'recover', 'addPasskey')),
   anopod_id  BYTEA       CHECK (octet_length(anopod_id) = 32),
   expires_at TIMESTAMPTZ NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -227,8 +228,14 @@ CREATE TABLE IF NOT EXISTS challenges (
 ```
 
 Single use. For `create`, `anopod_id` is the id the server minted for this
-sign-up; it becomes the row's id at the write. For `unlock` it is null.
-Issuing a challenge also deletes the expired ones.
+sign-up; it becomes the row's id at the write. For `openCase` it is the pod
+the phone named, found through the keyholders, and for `addPasskey` the pod
+the passkey is added to. For `unlock`, `unlockCase` and `recover` it is
+null. Issuing a challenge also deletes the expired ones. `create` and
+`unlock` are the first two purposes. The three recovery purposes came with
+section 12 (12.3 and 12.4.2) and `addPasskey` on 2026-11-18 (section 19).
+For a live database the ALTER pair in the recovery block of `db/schema.sql`
+drops and adds `challenges_purpose_check` with the same six purposes.
 
 ### nonces
 
@@ -343,7 +350,8 @@ CREATE TABLE IF NOT EXISTS notifications (
                         'chatInvite', 'inviteAccepted', 'inviteDeclined',
                         'joinRequest', 'joinApproved', 'joinDeclined',
                         'tradeCaseOpened', 'disputeCaseOpened', 'caseScheduled',
-                        'caseDecided', 'caseDismissed', 'recoveryCaseScheduled')),
+                        'caseDecided', 'caseDismissed', 'recoveryCaseScheduled',
+                        'passkeyAdded')),
   reference_id        BYTEA       NOT NULL CHECK (octet_length(reference_id) = 32),
   read_at             TIMESTAMPTZ,
   created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -355,10 +363,10 @@ CREATE INDEX IF NOT EXISTS notifications_anopod_id_created_at_idx ON notificatio
 `notification_number` is the row's random id. `reference_id` says which
 thing (section 6). Read, never deleted. The first ten kinds are of
 2026-10-24. The five kinds of an attestor case came on 2026-10-26 (13.3
-and 13.7), and `recoveryCaseScheduled` on 2026-11-11 (14.7 and section
-18). For a live database the ALTER pair after the attestation block of
-`db/schema.sql` drops and adds `notifications_kind_check` with the same
-sixteen kinds.
+and 13.7), `recoveryCaseScheduled` on 2026-11-11 (14.7 and section 18)
+and `passkeyAdded` on 2026-11-18 (section 19). For a live database the
+ALTER pair after the attestation block of `db/schema.sql` drops and adds
+`notifications_kind_check` with the same seventeen kinds.
 
 ### security_images and security_info
 
@@ -652,6 +660,12 @@ Answer: `200 { challenge, anopodId, expiresAt }` (`anopodId` only for
 `create`). The phone passes the challenge bytes to WebAuthn and the anopod
 id as the passkey's user handle.
 
+A sixth purpose, `addPasskey` (2026-11-18), is in 19.3, after the three
+recovery purposes of 12.4.2: it takes `{ purpose, anopodId }`, the pod the
+passkey is added to, is bound to that pod, lives
+`ADD_PASSKEY_CHALLENGE_SECONDS` and answers `200 { challenge, anopodId,
+expiresAt }`.
+
 ### POST /create-anopod (none, signed by the ephemeral keys inside)
 
 ```json
@@ -696,6 +710,8 @@ Checks:
    `selfie` decodes within the image rules and, since 2026-11-12, is a
    picture of its content type, at most 4096 pixels wide and high.
    `409 username taken`, else `400` with the field.
+7. Since 2026-11-18 (19.3): the credential id is on no `added_passkeys`
+   row and on no `recovery_pods` row; else `409 key already registered`.
 
 Writes: `INSERT INTO anopods` (profile, credential id, COSE key, ephemeral
 keys, `ephemeral_expires_at = now() + EPHEMERAL_KEY_HOURS`, `vouched =
@@ -750,6 +766,10 @@ chatPrivateKeyBlob, identityBlob, ephemeralExpiresAt }`. `blob1`,
 `chatPrivateKeyBlob` and `identityBlob` are hex or null before setup. The
 phone derives the PRF key, unwraps the encryption key from `blob1`, then the
 chat private key and the identity blob.
+
+Since 2026-11-18 the passkey may also be one the pod added: check 4's
+second lookup, `409 reload the wallet`, check 6 and the answer's new field
+`wrappedKeyBlobKey` are in 19.3.
 
 ### POST /check-username (none)
 
@@ -1376,6 +1396,7 @@ Answer: `200 { updatedAt }`, ISO 8601.
 | `caseDecided` | the parties of a trade or dispute case | the case id (13.7) |
 | `caseDismissed` | the parties of a trade or dispute case | the case id (13.7) |
 | `recoveryCaseScheduled` | the recovered pod of a break-glass case | the case id (14.7, 2026-11-11) |
+| `passkeyAdded` | the pod a passkey was added to | the `passkey_id` (section 19) |
 
 Every notification is written inside the transaction of the event it
 reports. The phone polls `/list-notifications` and marks what it has shown.
@@ -1410,6 +1431,7 @@ string.
 | anos `keyBlob` (2026-10-25) | key1 scalar (32) `\|\|` postQuantumKey1 seed (32) `\|\|` key2 scalar (32) `\|\|` postQuantumKey2 seed (32) under the encryption key: 156 bytes; opened only to sign |
 | `noteBlob` (2026-11-07) | a JSON object `{ v: 1, kind, money, currency, memo, tag }` as UTF-8 under the encryption key; a few hundred bytes; the wallet's `wrapJson` |
 | `settingsBlob` (2026-11-07) | a JSON object `{ v: 1, protect }` under the encryption key; the wallet's `wrapJson` |
+| `wrappedKeyBlobKey` (2026-11-18) | the pod's key blob key under HKDF(the added passkey's PRF output, `masterpod/kek-keys-wrap/v1`, 32), AES-256-GCM, 60 bytes |
 
 Keys live in RAM and die with the tab. Nothing secret is stored on the phone.
 
@@ -1421,6 +1443,7 @@ Keys live in RAM and die with the tab. Nothing secret is stored on the phone.
 | `RP_ID` | `localhost` | WebAuthn relying party id |
 | `EPHEMERAL_KEY_HOURS` | `12` | Life of a session's ephemeral keys |
 | `CHALLENGE_SECONDS` | `120` | Life of a challenge |
+| `ADD_PASSKEY_CHALLENGE_SECONDS` | `600` | Life of a challenge for `/add-passkey` (ten minutes; section 19) |
 | `TIMESTAMP_WINDOW_SECONDS` | `120` | Allowed clock difference on a signed request, each way |
 | `MAX_IMAGE_BYTES` | `10485760` | Largest image, decoded |
 | `MAX_IMAGES_PER_REQUEST` | `5` | Images per bucket request |
@@ -1467,13 +1490,15 @@ changes nothing and says so. There is no route for either.
 
 - Recovery with the backup code and backup code rotation: specified in
   section 12 on 2026-10-26, built by the three recovery builds.
-- Several passkeys or several live sessions per pod.
+- Several live sessions per pod.
 - Purging pods that never got vouched, and their usernames.
 - Removing a member from a room and rotating the room key.
 - Editing a listing, a profile or a selfie.
 - Push delivery of notifications and messages; the phone polls.
 - Generic encrypted object storage, anoSphere, the anos interface.
 - Anti-abuse limits on `/challenge` and `/create-anopod`.
+- Removing one passkey; a cap on a pod's passkeys; a name or a date for the
+  main passkey (section 19).
 
 ## 11. Notes from the build
 
@@ -2043,6 +2068,8 @@ Checks:
    bytes; `400 invalid <field>`.
 7. No case for this lookup id is open (status not completed or dismissed);
    `409 case already open`.
+8. Since 2026-11-18 (19.3): the credential id is on no `added_passkeys`
+   row; else `409 key already registered`.
 
 Writes: `INSERT INTO recovery_cases` (status `open`; the contact email and
 the contact phone, both of them), `INSERT INTO
@@ -2122,7 +2149,8 @@ Writes, one transaction: the challenge consumed; `UPDATE anopods SET
 pass_key_credential_id = <the recovery pod's>, pass_key_public_key = <the
 recovery pod's>, anopod_encryption_key_blob_1 = newBlob1,
 ephemeral_expires_at = now()` for the case's pod (the lost device's session
-dies now; the recovery passkey is the pod's passkey from here); the
+dies now; the recovery passkey is the pod's passkey from here); since
+2026-11-18 the pod's rows in `added_passkeys` deleted (section 19); the
 `recovered` event. A unique violation is `409 key already registered`.
 
 Answer: `200 { anopodId, username, recovered: true }`. The phone then
@@ -5523,3 +5551,633 @@ had its 36 tables. A first try of that run stopped on a quoting mistake
 in the check's own file, before the statement ran, and kept nothing
 either. No server was booted and no route was called: the run-through is
 the user's, with the wallet.
+
+## 19. More than one passkey (2026-11-18)
+
+Design settled 2026-11-17 and 2026-11-18 in a planning chat (the plan is
+`~/Desktop/Z-TestNet/forclaude/add-passkey-plan-1.md`, FINAL, 2026-11-18).
+Why: an anoPod has one passkey. A moderator or an attestor who unlocks with
+a YubiKey has no spare, so a lost key means the long recovery. A person who
+made their anoPod with a Google passkey and uses Apple devices cannot
+unlock in Safari with Face ID. The user: "I'm mostly thinking about yubi
+keys, and adding an apple key when you made your account with a google key
+for people with apple products. Because people on android already have
+their email shared anyways." So a person can add passkeys to their anoPod:
+every passkey unlocks the same anoPod and opens the same accounts. Two
+repos in order: this server (this section, step 1 of the plan: one table,
+two routes, and one change each in `/challenge`, `/unlock` and the finish
+of a recovery) and the wallet (its spec, step 2: unlocking with an added
+passkey, and the Passkeys page), then the record folders (step 3). This
+server's step goes out first (the plan's section 4). With this server
+alone deployed nothing changes for anyone: no wallet calls the new routes,
+so no added passkey exists. A new wallet against a masterpod of before
+shows the refusal on its Passkeys page and works as before everywhere
+else. One new env variable, which has the decided value as its default, so
+the servers' `.env` needs no line. No npm package. The validators, the
+doormen, the keyholders, the keyholder GUI, the signing server and the
+wallet's proxy are not touched. Two things the plan does not list were
+added on the user's word the same day, after the build's report (19.6):
+`/create-anopod` and `/open-recovery-case` look a new passkey's credential
+id up in the other passkey tables (19.3), and the places the step had left
+out of date were brought in line. For a real passkey the lookups change
+nothing: an authenticator makes a new credential id at every registration.
+Nothing above this section changes except the items in 19.5.
+
+### 19.1 The rule
+
+A passkey does two jobs. It signs this server's challenge, which proves who
+is there. And it gives the wallet a secret that never leaves the device,
+the PRF output. Two keys come from that secret: `KEK_prf`, which opens
+`blob1` and so the encryption key, and the key blob key, which opens every
+account's key blob (the wallet's spec, section 7).
+
+```
+main passkey's secret  -+-> KEK_prf opens blob1 (anopods row) ----> the encryption key
+                        +-> is the key blob key ------------------> every key blob
+
+added passkey's secret -+-> KEK_prf opens its own blob1 ----------> the same encryption key
+                        +-> opens its own wrapped_key_blob_key ---> the same key blob key
+```
+
+- A pod can have more than one passkey. Every passkey of a pod unlocks
+  that pod and opens the same two keys.
+- Nothing a person has already encrypted changes (the plan's decision 2).
+  No key blob, no `blob1` and no row of a live pod is rewritten. The first
+  passkey stays on the pod's `anopods` row: it is the main passkey. The pod
+  keeps the key blob key it has, the one made from the main passkey's PRF
+  output. An added passkey is a row of `added_passkeys` (19.2) with its
+  own locked copies: the pod's encryption key under its own `KEK_prf`, and
+  the pod's key blob key under a key from its own PRF output (section 7).
+  This server can open neither.
+- The key blob key stays reachable only through a passkey. The encryption
+  key, the backup code, the keyholders' shares and this server's stored
+  blobs still lead to no signing key (the rule of the break-glass plan,
+  section 14).
+- Adding needs a fresh tap of a passkey the pod already has, inside the
+  add request (decision 3): the session alone does not add a passkey. The
+  tap may be by any passkey the pod has, the main one or an added one
+  (decision 10).
+- One challenge serves both passkey steps of an add, the fresh tap and the
+  new passkey's registration, and is tied to the pod it was asked for. It
+  lives ten minutes, `ADD_PASSKEY_CHALLENGE_SECONDS` (decision 6): an add
+  takes three taps and maybe a new PIN on a security key. The other
+  challenges stay at two minutes.
+- No route removes a passkey (decision 4), and there is no cap on how many
+  a pod has (decision 8).
+- The pod is told: one notification per add, kind `passkeyAdded`
+  (decision 7; 19.4).
+- Everyone whose setup is done may list and add (decision 10): both routes
+  are at level setup, for the wallet and for its moderator and attestor
+  editions alike.
+- The finish of a recovery deletes the pod's added passkeys with the old
+  main one (decision 10): one that survived could still open the old key
+  blobs.
+- A credential id belongs to one passkey of one pod. Three tables hold
+  one, each with its own unique key: `anopods` (the main passkey),
+  `recovery_pods` (the recovery passkey of a case) and `added_passkeys`. A
+  route that writes a new one first looks where a second row with it would
+  hurt somebody: `/add-passkey` in `anopods` and `added_passkeys` (the
+  plan's check 7), `/create-anopod` in `added_passkeys` and
+  `recovery_pods`, and `/open-recovery-case` in `added_passkeys`. The last
+  two are not in the plan; they were added on the user's word the same day
+  (19.3 and 19.6).
+- No QR code work (decision 5). The QR code is a choice in the browser's
+  own passkey box; nothing here blocks it, tests it or points people to
+  it.
+- The old page guard (decision 11; the user: "Keep the guard"). A pod has
+  one key blob key for all its accounts, and every passkey has to arrive
+  at that same key. A wallet page loaded before the wallet's step does not
+  know the locked copy of it. If it unlocked with an added passkey it
+  would make a second key blob key from that passkey's secret, one that
+  nothing in the pod is locked with: every account would show as lost with
+  the old passkey, and an account made there would be locked under a key
+  the main passkey cannot make. So the new wallet says `addedPasskeys:
+  true` in its `/unlock` payload, and this server refuses an added passkey
+  without it: `409 reload the wallet`. An old page keeps working with the
+  main passkey.
+
+### 19.2 The table
+
+`db/schema.sql`, a new block after the case chat block, the last thing in
+the file: "The added passkeys block (added 2026-11-18, spec section 19)".
+
+```sql
+CREATE TABLE IF NOT EXISTS added_passkeys (
+  passkey_id                   BYTEA       PRIMARY KEY CHECK (octet_length(passkey_id) = 32),
+  anopod_id                    BYTEA       NOT NULL CHECK (octet_length(anopod_id) = 32),
+  pass_key_credential_id       BYTEA       NOT NULL UNIQUE CHECK (octet_length(pass_key_credential_id) BETWEEN 16 AND 1023),
+  pass_key_public_key          BYTEA       NOT NULL CHECK (octet_length(pass_key_public_key) <= 1024),
+  anopod_encryption_key_blob_1 BYTEA       NOT NULL CHECK (octet_length(anopod_encryption_key_blob_1) BETWEEN 1 AND 1024),
+  wrapped_key_blob_key         BYTEA       NOT NULL CHECK (octet_length(wrapped_key_blob_key) BETWEEN 1 AND 1024),
+  created_at                   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS added_passkeys_pass_key_public_key_key ON added_passkeys (sha256(pass_key_public_key));
+CREATE INDEX IF NOT EXISTS added_passkeys_anopod_id_created_at_idx ON added_passkeys (anopod_id, created_at);
+```
+
+One row per passkey a pod added after its first: the passkey, and its own
+copies of the pod's encryption key and key blob key. Inserted by
+`/add-passkey`; deleted, all of the pod's, by the finish of a recovery.
+Never updated, so it has no `updated_at` and no trigger. Stand-alone; no
+foreign keys.
+
+- `passkey_id`: random id, 32 raw bytes, minted by `/add-passkey`. The
+  wallet keys the passkey's name by it. The names are in the wallet
+  settings (the wallet's spec, 4.7), which this server cannot read, so the
+  table has no name.
+- `anopod_id`: the pod the passkey unlocks. Also the passkey's user
+  handle.
+- `pass_key_credential_id`: the WebAuthn credential id of the added
+  passkey, raw bytes, 16 to 1023 as on `anopods`, unique in this table.
+  `/unlock` finds the row by it when no `anopods` row has it.
+- `pass_key_public_key`: the added passkey's COSE public key, as the
+  WebAuthn library returns it at registration. Unique in this table by the
+  index on `sha256(pass_key_public_key)`, as on `anopods`.
+- `anopod_encryption_key_blob_1`: the pod's encryption key wrapped under
+  this passkey's PRF-derived key, `KEK_prf` (`iv || ciphertext || tag`, 60
+  bytes). The server cannot open it; `/unlock` hands it back as `blob1`.
+- `wrapped_key_blob_key`: the pod's key blob key wrapped under a key from
+  this passkey's PRF output (section 7; 60 bytes). The server cannot open
+  it; `/unlock` hands it back as `wrappedKeyBlobKey`.
+- `created_at`: when the row was inserted (the add). Set by default, never
+  changed.
+
+The second index serves the list and the delete, which both go by
+`anopod_id`.
+
+Two checks are widened, each in two places: inline in its `CREATE TABLE`,
+for a database built from nothing, and in the drop-and-add pair of its
+named check further down the file, for a database that has the table.
+`challenges.purpose` takes `addPasskey` (`challenges_purpose_check`), and
+`notifications.kind` takes `passkeyAdded` (`notifications_kind_check`). On
+`anopods` only comments change: "the one passkey" reads "the main passkey
+(the added ones are in added_passkeys)" in the header comment and in the
+table's comment, and the comment of `pass_key_credential_id` says where an
+added passkey is found. No column of `anopods` changes. Every line is
+idempotent, so the whole file applies to a live database and a second run
+changes nothing.
+
+### 19.3 The changes by route
+
+**POST /challenge** (none; section 5 and 12.4.2), a sixth purpose,
+`addPasskey`.
+
+Body: `{ purpose: "addPasskey", anopodId }`, the pod the passkey is added
+to.
+
+Checks, those of `openCase` in its order: `anopodId` is a string, else
+`400 bad request shape`; it is 32 bytes, else `400 invalid anopodId`; it is
+a pod's id, else `404 unknown anopod`.
+
+Writes: the challenge row with purpose `addPasskey`, bound to that pod,
+with `expires_at = now() + ADD_PASSKEY_CHALLENGE_SECONDS` (600); the
+expired rows swept, as at every issue.
+
+Answer: `200 { challenge, expiresAt, anopodId }`. It carries no
+`username`: that stays `openCase`'s alone. The route stays at level none: a
+challenge for an add is useless without the pod's session and one of its
+passkeys. The five other purposes are untouched and keep
+`CHALLENGE_SECONDS`.
+
+**POST /add-passkey** (setup), new.
+
+Body:
+
+```json
+{
+  "challenge":         "<hex, from /challenge addPasskey>",
+  "assertion":         { "...": "the fresh tap: the authentication PublicKeyCredential.toJSON()" },
+  "passkey":           { "...": "the new passkey: the registration PublicKeyCredential.toJSON()" },
+  "blob1":             "<hex, 60 bytes>",
+  "wrappedKeyBlobKey": "<hex, 60 bytes>"
+}
+```
+
+`assertion` is as `/unlock` takes it and `passkey` as `/create-anopod`
+takes it (section 5). The wallet removes the PRF output
+(`clientExtensionResults.prf.results`) from both, and the registration
+keeps `prf.enabled`. `blob1` is the pod's encryption key under the new
+passkey's `KEK_prf`. `wrappedKeyBlobKey` is the pod's key blob key under
+the key of section 7. The wallet makes both from the PRF output of a
+sign-in with the new passkey, its third tap (the wallet's spec).
+
+Checks, in order:
+
+1. Shape: `challenge`, `blob1` and `wrappedKeyBlobKey` strings; `assertion`
+   an object with an object `response`; `passkey` an object. Else `400 bad
+   request shape`.
+2. `blob1` 1 to 1024 bytes, else `400 invalid blob1`. `wrappedKeyBlobKey` 1
+   to 1024 bytes, else `400 invalid wrappedKeyBlobKey`.
+3. The challenge decodes, was issued for `addPasskey`, is unexpired and is
+   bound to the caller's pod; else `401 unknown or expired challenge`.
+4. No PRF output in the assertion or in the registration, else `400 prf
+   output in request`. The registration reports `prf.enabled`, else `400
+   passkey without prf`.
+5. The fresh tap. The assertion's credential id (`rawId`, base64url) is the
+   caller's main passkey (`anopods.pass_key_credential_id`) or an
+   `added_passkeys` row of the caller's pod; else `401 unknown passkey`.
+   When `response.userHandle` is there it equals the pod's id; else `401
+   user handle mismatch`. The library verifies the assertion against that
+   passkey's public key and the challenge, as `/unlock` does; else `401
+   passkey verification failed`, the reason logged.
+6. The new passkey. The library verifies the registration against the same
+   challenge, as `/create-anopod` does, and the credential id is 16 to 1023
+   bytes; else `401 passkey verification failed`, the reason logged.
+7. The new credential id is on no `anopods` row and on no `added_passkeys`
+   row; else `409 passkey already registered`.
+
+Writes, one transaction: the challenge taken (gone meanwhile: `401 unknown
+or expired challenge`); `INSERT INTO added_passkeys` with a fresh
+`passkey_id`; one notification to the pod, kind `passkeyAdded`, reference
+the `passkey_id` (19.4). A unique violation answers `409 passkey already
+registered`.
+
+Answer: `201 { passkeyId, credentialId, createdAt }`, the two ids hex and
+`createdAt` ISO 8601.
+
+**POST /list-passkeys** (setup), new.
+
+Body: `{ }`.
+
+Reads: the caller's row and its `added_passkeys` rows, oldest first
+(`ORDER BY created_at, passkey_id`).
+
+Answer: `200 { main: { credentialId }, added: [ { passkeyId, credentialId,
+createdAt } ] }`. Credential ids are hex, like every id. `main` is the
+passkey on the caller's `anopods` row. It carries no date: the row does not
+record when a recovery replaced it. `added` is an empty list for a pod
+that never added one.
+
+**POST /unlock** (none, signed by the ephemeral keys inside; section 5),
+three changes and nothing else.
+
+Body: the payload may carry `addedPasskeys: true`. The new wallet always
+sends it, and a masterpod of before ignores it. It is inside the signed
+payload, like every field.
+
+Checks:
+
+- Check 4, the pod by the credential id. When no `anopods` row has the
+  credential id, the `added_passkeys` row with it is looked for; with a
+  row, the pod is the one that row names. Neither: `401 unknown passkey`,
+  as before. An added passkey from a payload whose `addedPasskeys` is not
+  `true`: `409 reload the wallet` (19.1, the old page guard). The user
+  handle check stays as it is.
+- Check 6 verifies against the passkey found: the added row's credential
+  id and public key, or the `anopods` row's as before.
+
+Writes: as before. A pod has one live session, whichever passkey opened
+it.
+
+Answer: `200 { anopodId, username, vouched, setupComplete, blob1,
+wrappedKeyBlobKey, chatPrivateKeyBlob, identityBlob, ephemeralExpiresAt }`.
+`blob1` is the added row's `anopod_encryption_key_blob_1` for an added
+passkey, the `anopods` row's as before for the main one. `wrappedKeyBlobKey`
+is new: the added row's `wrapped_key_blob_key` in hex, `null` for the main
+passkey. The wallet opens `blob1` under `KEK_prf` either way. With a
+`wrappedKeyBlobKey` it opens that for the key blob key; without one it
+makes the key blob key from the PRF output, as before. A person who never
+adds a passkey takes the same path as before.
+
+**POST /recover-with-backup-code** (none; 12.4.2), one more write.
+
+Body, Checks and Answer: as 12.4.2.
+
+Writes: inside the one transaction with the case locked, right after the
+recovery passkey is copied onto the pod's row, `DELETE FROM added_passkeys
+WHERE anopod_id = <the case's pod>`. The `recovered` event's details stay
+`{}`. So after a recovery the pod has one passkey again: the recovery
+passkey, which is its main one from there.
+
+**POST /create-anopod** (none, signed by the ephemeral keys inside; section
+5), one more check. Not in the plan: added on the user's word the same day
+(19.6).
+
+Body, Writes and Answer: as section 5.
+
+Checks: a seventh, after the profile and before the writes. The new
+credential id is on no `added_passkeys` row and on no `recovery_pods` row;
+else `409 key already registered`, the words the route already has for a
+taken key. An `anopods` row with it is refused at the write by that
+table's unique key, as before.
+
+**POST /open-recovery-case** (none, signed by the ephemeral keys inside;
+12.4.2), one more check. Not in the plan either (19.6).
+
+Body, Writes and Answer: as 12.4.2.
+
+Checks: an eighth, after the open case check and before the writes. The
+new credential id is on no `added_passkeys` row; else `409 key already
+registered`. A `recovery_pods` row with it is refused at the write by that
+table's unique key, as before.
+
+Why the two routes look: `/unlock` asks `anopods` first. Without the
+lookups in `added_passkeys`, a registration made up with another pod's
+added credential id could put that id on an `anopods` row, straight
+through `/create-anopod` or through a recovery of the maker's own pod, and
+that added passkey would stop unlocking. Without the lookup in
+`recovery_pods`, one made up with the recovery passkey's credential id of
+an open case could put it on a new pod's row, and that case's finish would
+answer `409 key already registered`. A real passkey never meets these
+checks: an authenticator makes a new credential id at every registration.
+
+### 19.4 The notification
+
+One kind (section 6):
+
+| kind | to | reference_id |
+| ---- | -- | ------------ |
+| `passkeyAdded` | the pod a passkey was added to | the new `passkey_id` |
+
+Written by `/add-passkey` inside the transaction of the insert, as section
+6's are. The wallet's label for it links to its Passkeys page (the
+wallet's spec). With it there are seventeen kinds.
+
+### 19.5 Files
+
+- `db/schema.sql`: the two widened checks, each inline and in its ALTER
+  pair, with the comment over each pair; the comments of
+  `challenges.purpose`, `challenges.anopod_id`, `challenges.expires_at`,
+  `notifications.kind` and `notifications.reference_id`; on `anopods` the
+  header comment, the table's comment and the comment of
+  `pass_key_credential_id`; the added passkeys block, new, at the end.
+- `src/config/env.js`: `addPasskeyChallengeSeconds`. `.example.env`: its
+  line and its comment line.
+- `src/auth/challenges.queries.js`: `issue` takes `seconds` as a third
+  argument; the file's opening comment and the comment of `find` name the
+  recovery routes and `/add-passkey`.
+- `src/auth/auth.handlers.js`: `PURPOSES`, the branch that reads
+  `anopodId`, the life handed to `issue`, the username line.
+- `src/passkeys/`, new: `added-passkeys.queries.js`
+  (`findAddedByCredentialId`, `listAdded`, `insertAdded`, `deleteAddedOf`),
+  `passkeys.service.js` (`addPasskey`, `listPasskeys`),
+  `passkeys.handlers.js` and `passkeys.router.js`.
+- `src/app.js`: the passkeys router mounted after the anoPods router, with
+  its comment line.
+- `src/notifications/notifications.queries.js`: one comment, seventeen
+  kinds.
+- `src/anopods/anopods.service.js`: `unlock`, the three changes of 19.3;
+  `createAnopod`, its seventh check.
+- `src/recovery/recovery.service.js`: `recoverWithBackupCode`, the one
+  line; `openRecoveryCase`, its eighth check.
+- Here: section 2 (the setup row), section 3 (the life of a challenge),
+  section 4 (`### anopods`, the first sentence; `### challenges` and
+  `### notifications`, the SQL and the text under it), section 5
+  (`### POST /challenge` and `### POST /unlock`, a paragraph each;
+  `### POST /create-anopod`, check 7), section 6 (the row), section 7 (the
+  row), section 8 (the row), section 10 (the last item, and "Several
+  passkeys" out of the item on live sessions), 12.4.2
+  (`/open-recovery-case`, check 8; `/recover-with-backup-code`, the delete
+  in its writes) and this section. `README.md`: the first paragraph, "Who
+  may call what", the Endpoints table, the tables table (the rows of
+  `anopods`, `added_passkeys` and `notifications`), Configuration, Layout
+  and "Deferred, by decision" (the last item, and "Several passkeys" out
+  of the item on live sessions).
+
+Nothing else in existing code changes. One new env variable with a
+default, no npm package.
+
+### 19.6 Notes from the build
+
+#### Build 1, the masterpod (2026-11-18)
+
+Built from `~/Desktop/Z-TestNet/forclaude/add-passkey-plan-1.md` section 1,
+on main at cc09d36, the merge of pull request 8, the working tree clean.
+No new npm package, no test script and no rig (none was asked for). The
+schema was not applied to any database for keeps: the user applies the
+whole file as section 6 of `forclaude/masterpod-deploy-plan-1.md` says. It
+goes on before this code runs. On a database without `added_passkeys` this
+code fails at the finish of a recovery and at an unlock with a passkey no
+pod has, and `/challenge` cannot issue for `addPasskey`. With the lookups
+added the same day (below) it also fails at every `/create-anopod` and
+every `/open-recovery-case`. What the plan left open and how it was
+decided:
+
+- The date. BUILD-DATE is 2026-11-18, the day of the build and of the
+  plan's FINAL.
+- `db/schema.sql`. In both lists of notification kinds `'passkeyAdded'`
+  sits on a line of its own after the case kinds, so the lists keep their
+  short lines. The header comment of `anopods` was wrapped again and is
+  one line longer; the comment over each ALTER pair is one line longer.
+  The file's opening comment is unchanged: it lists the blocks that alter
+  a table, and the new block alters none. PostgreSQL names the new table's
+  constraints `added_passkeys_pkey`,
+  `added_passkeys_pass_key_credential_id_key` and
+  `added_passkeys_<column>_check` for the six column checks. After the
+  build the file had 1373 lines, 41 more than before, and its sha256 began
+  b96a3201. With the comment of `challenges.expires_at` brought in line
+  (below) it has the same 1373 lines and its sha256 begins a19592e9.
+- `/challenge`. `addPasskey` runs the branch of `openCase`, so its
+  refusals are the same and in the same order. The handler picks the life
+  and hands it to `issue`, whose third argument defaults to
+  `CHALLENGE_SECONDS`. The route asks for no session, as the plan says, so
+  anyone who knows a pod's id can have a challenge issued for that pod; it
+  is a row that the next issue sweeps once its ten minutes are over, as an
+  `openCase` challenge is after its two.
+- `/add-passkey`. A `userHandle` is "there" when it is neither absent nor
+  `null`. It must then decode from base64url to the pod's id, so an empty
+  string, a string that is not base64url and a value that is not a string
+  are `401 user handle mismatch`. A `rawId` that does not decode is `401
+  unknown passkey`, as in `/unlock`. Only the caller's own passkeys are
+  asked for the fresh tap, so a passkey of another pod, main or added, is
+  `401 unknown passkey` too. In check 4 a PRF output in either object is
+  asked first (`400 prf output in request`), then `prf.enabled` (`400
+  passkey without prf`); `/create-anopod` answers `400 passkey without
+  prf` for both, and here the plan names the two reasons. Check 7 asks
+  `anopods` first, then `added_passkeys`, and not `recovery_pods`: the
+  plan names the two tables. The `passkey_id` is minted before the
+  transaction. The transaction answers the new row's `created_at`, or
+  nothing when the challenge was gone, and `createdAt` in the answer is
+  that value. Whichever unique key a violation is on, the credential id or
+  the COSE key, the answer is `409 passkey already registered`. The pod's
+  row is not locked: two adds at the same moment each need a challenge and
+  a new passkey of their own, and both go in. The two blobs are checked
+  for their length only; the server cannot tell whether they open.
+- `/list-passkeys` reads nothing from its body, as `/list-anos-accounts`
+  reads nothing from its own. The main passkey comes from `req.anopod`, the
+  row the session check has just read.
+- `/unlock`. The second lookup runs only when no `anopods` row has the
+  credential id, so an unlock with a main passkey costs no query more than
+  before. `409 reload the wallet` comes right after `401 unknown passkey`
+  and before the user handle check, in the plan's order. An added row
+  whose pod's row is gone is `401 unknown passkey` (never, in practice: no
+  pod is deleted). `wrappedKeyBlobKey` follows `blob1` in the answer.
+- A gap, which the build left as the plan has it and reported.
+  `/create-anopod`, `/open-recovery-case` and the finish of a recovery did
+  not ask `added_passkeys` for the credential id they write, and the two
+  unique keys are one per table. So the same credential id could come to
+  stand on an `anopods` row and on an `added_passkeys` row. `/unlock` then
+  finds the `anopods` row, and the added passkey answers `401 user handle
+  mismatch`. An authenticator makes a credential id at random and never
+  twice, so this takes a registration made up by someone who knows another
+  pod's added credential id, which only that pod's own devices and this
+  server see. The build put it down for the follow-up list. It was closed
+  the same day (below).
+- `/recover-with-backup-code`. `deleteAddedOf` answers how many rows went
+  and the finish does not use the number. The delete runs at every finish,
+  also for a pod that never added a passkey, where it finds no row.
+- Here. Section 2's row takes the two routes at its end, in the plan's
+  words. In section 5, `### POST /challenge` still names `create` and
+  `unlock` in its body line, as it has since 2026-10-24; the sixth purpose
+  is a paragraph at its end that points to 12.4.2 for the three recovery
+  purposes and to 19.3. `### POST /unlock` takes its paragraph at its end.
+  Section 7's row is the last of the table, in the plan's words. Section
+  10's three items are one item, the last. In the README the two new
+  route rows follow `/complete-setup`, the `added_passkeys` row follows
+  `anopods`, the `passkeys/` line follows `anopods/`, and the three
+  deferred items are the last item of the list.
+- Checks (1.8): `node --check` on the eleven changed or new source files
+  (`env.js`, `challenges.queries.js`, `auth.handlers.js`, the four files
+  of `src/passkeys/`, `app.js`, `notifications.queries.js`,
+  `anopods.service.js`, `recovery.service.js`), clean, on Node 24.22.0.
+  Every name these files import from another file of `src` is exported
+  there; a throwaway script outside the repo read the files as text, and
+  no module was loaded. The schema by psql against the local `masterpod`
+  database as the superuser `codex` with `SET ROLE masterpodsoftware`, one
+  transaction, rolled back: the whole file ran twice with no error. That
+  database is of before the case chats step (36 tables, fifteen
+  notification kinds, no case columns), so the runs brought in that step's
+  block too. After the first run it had 37 tables. `added_passkeys` had
+  its seven columns, each `NOT NULL` and each with its comment, its
+  primary key, the unique key on `pass_key_credential_id`, its six column
+  checks, the unique index on `sha256(pass_key_public_key)` and the index
+  on `(anopod_id, created_at)`, no trigger, and `masterpodsoftware` as its
+  owner. `challenges_purpose_check` was there once with six purposes and
+  `notifications_kind_check` once with seventeen kinds, and the changed
+  comments read as written. The second run changed nothing: one md5 over
+  every column, comment, constraint definition, index definition, trigger
+  and function of the schema was the same after both runs. In the same
+  transaction each of the four statements of `added-passkeys.queries.js`
+  ran as a `PREPARE` of its exact text, lifted from the file as text with
+  `${COLUMNS}` filled in, its parameters untyped as `pg` sends them, and
+  as an `EXECUTE` on throwaway ids. Three inserts each answered
+  `created_at`: two rows for one pod id and one row for another. The find
+  by credential id answered its row, and no row for an unknown id. The
+  list answered the pod's two rows in the order `created_at, passkey_id`.
+  The delete of a pod's rows took 2 rows, and the other pod's row stayed.
+  The statement of `notify` wrote a row of kind `passkeyAdded`. The
+  statement of `issue` wrote a challenge of purpose `addPasskey` with 600
+  seconds, and its `expires_at - now()` read 00:10:00. On that database
+  every `CREATE TABLE` but the new one is skipped, so the texts for a
+  database built from nothing do not run there. For them the file ran
+  twice more inside the same transaction, into an empty scratch schema
+  (`SET search_path`): 37 tables, the same md5 after both runs, and the
+  statements once more on those tables with the same results. The tables
+  built from nothing came out equal to the local ones after their two runs
+  in everything but one check, `escrow_dispute_evidence_content_type_check`,
+  which a kept database keeps with `application/pdf` (section 11, the
+  pictures note). After the rollback the database was as before: the md5
+  of before, 36 tables, no `added_passkeys`, no scratch schema and no row.
+  A first try stopped on a mistake in the check's own file (a `min()` over
+  a `bytea`), after the two runs on the local tables and the four
+  statements had passed, and kept nothing either. No server was booted and
+  no route was called: both new routes and `/unlock` take a passkey, and
+  the run-through is the user's (the plan's section 4), with the wallet's
+  step 2.
+- Places the plan does not name that this step left out of date. The
+  build left them as they are and put them to the user. In `db/schema.sql`:
+  the comment of `challenges.expires_at`, "Issued + CHALLENGE_SECONDS". In
+  `src/auth/challenges.queries.js`: the file's opening comment and the
+  comment of `find` name the routes that use a challenge, without
+  `/add-passkey`. Here: section 3, "lives `CHALLENGE_SECONDS` (120)";
+  section 4, the SQL of `### notifications` with sixteen kinds and "the
+  same sixteen kinds" under it, and `### challenges` with the two purposes
+  of 2026-10-24; section 10, "Several passkeys or several live sessions
+  per pod", and the same line in the README's "Deferred, by decision";
+  12.4.2, whose writes of `/recover-with-backup-code` do not name the
+  delete; in the README's tables table, the line of `notifications`,
+  "sixteen kinds, the newest `recoveryCaseScheduled`". The copies of the
+  two ALTER pairs in 12.3 and 13.3 are as their builds left them, with
+  five purposes and fifteen kinds. The user had all of them brought in
+  line the same day (below).
+- Not touched: every other feature folder, `src/auth/webauthn.js`,
+  `src/anopods/anopods.queries.js`, the routers and handlers of `auth`,
+  `anopods` and `recovery`, `package.json`, the scripts. In
+  `src/notifications/` one comment changed and no line of code.
+
+#### After the build's report, the same day (2026-11-18)
+
+The user read the report in the build chat. Of the gap: "sounds like this
+should be address immediatly." Of the follow-up list: "Where is this follow
+up list? These sounds like fixes I'm going to forget to make." There is no
+single list: the house rules name sections at the end of the plans in
+`forclaude/`, and the gap stood only in these notes. So the user had the
+gap closed and the out-of-date places brought in line at once, before the
+commit: "Yes, do it all". Neither is in the plan.
+
+- The lookups (19.3). A credential id is written by three routes:
+  `/create-anopod` onto `anopods`, `/open-recovery-case` onto
+  `recovery_pods` and from there onto `anopods` at the finish, and
+  `/add-passkey` onto `added_passkeys`. Each table has its own unique key,
+  and before this step no route looked in another table. Somebody is hurt
+  in two cases, both by an `anopods` row. One: another pod's added
+  credential id on an `anopods` row, which `/unlock` finds first, so that
+  added passkey stops unlocking (the gap above). Two: the recovery
+  passkey's credential id of an open case on another pod's `anopods` row,
+  so that case's finish runs into the unique key and answers `409 key
+  already registered`. Case two is older than this step; the user had it
+  closed with the first. `/create-anopod` asks `added_passkeys` (case one)
+  and `recovery_pods` (case two). `/open-recovery-case` asks
+  `added_passkeys` (case one by way of a recovery of the maker's own pod).
+  Each lookup runs after the route's other checks and before its writes,
+  so a taken username and an open case answer first, as before. Each
+  answers `409 key already registered`, the words both routes have for a
+  taken key. `/create-anopod` asks every `recovery_pods` row, whatever its
+  case's status: no real passkey brings one of those ids again.
+- The finish of a recovery looks nothing up. A credential id that is on a
+  `recovery_pods` row can still be made an added passkey of another pod:
+  check 7 of `/add-passkey` does not ask `recovery_pods`, as the plan has
+  it. At the finish that id then stands on the recovered pod's `anopods`
+  row and on the made-up `added_passkeys` row. `/unlock` finds the
+  `anopods` row, so the recovered pod unlocks and the made-up row never
+  does. A lookup at the finish would turn this into a way to stop
+  somebody's recovery, so there is none. `/open-recovery-case` does not
+  ask `anopods` either: a recovery passkey made up with a pod's main
+  credential id stops only its maker's own finish, at the unique key.
+- What the lookups are not. They are a look before the write, not a lock,
+  and no unique key spans two tables. A made-up registration that lands
+  between the look and the write of another route still goes in. It would
+  have to carry a credential id that an authenticator made a moment
+  before, which only the device at hand knows.
+- Who can know a credential id. No route sends one to anyone but the pod's
+  own session at level setup (`/list-passkeys` and the answer of
+  `/add-passkey`), and no log line prints one. So a made-up registration
+  takes someone who holds the pod's unlocked wallet or one of the servers
+  the requests pass through.
+- The order of the deploy matters more with the lookups. The schema goes
+  on first, as the plan's section 4 has it. On a database without
+  `added_passkeys` every `/create-anopod` and every `/open-recovery-case`
+  would fail at its lookup, so nobody could make an anoPod or open a
+  recovery case until the schema was applied. The build alone failed only
+  at the finish of a recovery and at an unlock with a passkey no pod has.
+- The places brought in line, the ten the build had listed (above). In
+  `db/schema.sql` the comment of `challenges.expires_at`. In
+  `src/auth/challenges.queries.js` the opening comment and the comment of
+  `find`: both name the recovery routes and `/add-passkey` now (the
+  opening comment had named only `/create-anopod` and `/unlock`). Here:
+  section 3; section 4, where `### challenges` has the six purposes in its
+  SQL (it had the two of 2026-10-24) and says what `anopod_id` holds for
+  each, and `### notifications` has seventeen kinds in its SQL and in its
+  text; section 10; 12.4.2, the delete in the writes of
+  `/recover-with-backup-code`. In the README the row of `notifications` in
+  the tables table and the item on live sessions in "Deferred, by
+  decision". Section 5 and 12.4.2 also take the two new checks as numbered
+  items, so the lookups leave nothing out of date. The copies of the two
+  ALTER pairs in 12.3 and 13.3 and the counts of kinds in the notes of
+  earlier builds stay as those builds left them: they are records of
+  their day.
+- Checks. `node --check` again on the eleven source files, clean, and the
+  imports again. The lookups bring no new SQL: `findAddedByCredentialId`
+  is the statement the build ran, and the other is `findByCredentialId` of
+  `src/recovery/recovery-pods.queries.js`, which `/unlock-recovery-pod`
+  has called since the recovery builds. The whole schema file ran twice
+  more in one rolled-back transaction on the local `masterpod` database
+  and twice into an empty scratch schema, with the statements of 1.4, as
+  in the build: no error, and the second run changed nothing either time.
+  The output differed from the build's only in the md5 values, by the one
+  comment, which read as written, and in the times. After the rollback
+  the database was as before. No server was booted and no route was
+  called.
+- The numbers. `db/schema.sql` has 1373 lines and its sha256 begins
+  a19592e9 (b96a3201 after the build). One commit carries the build and
+  this.

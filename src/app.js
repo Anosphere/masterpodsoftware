@@ -13,6 +13,7 @@ import { marketplaceRouter } from './marketplace/marketplace.router.js';
 import { errorHandler } from './middleware/error-handler.js';
 import { notFound } from './middleware/not-found.js';
 import { notificationsRouter } from './notifications/notifications.router.js';
+import { passkeysRouter } from './passkeys/passkeys.router.js';
 import { recoveryRouter } from './recovery/recovery.router.js';
 import { securityRouter } from './security/security.router.js';
 import { vouchingRouter } from './vouching/vouching.router.js';
@@ -46,6 +47,7 @@ export function createApp() {
   app.use(authRouter); // owns /challenge
   app.use(notificationsRouter); // owns /list-notifications and /mark-notifications-read
   app.use(anopodsRouter); // owns /create-anopod, /unlock, /check-username, /check-anopod-status, /get-anopod-profile, /get-anopod-session-keys, /complete-setup
+  app.use(passkeysRouter); // owns /add-passkey and /list-passkeys
   app.use(vouchingRouter); // owns /search-usernames, /send-vouch-request, /list-vouch-requests, /approve-vouch-request, /decline-vouch-request
   app.use(securityRouter); // owns /add-to-security-bucket-one, /add-to-security-bucket-two, /list-security-records
   app.use(chatRouter); // owns the thirteen chat routes, /create-chat-room to /get-chat-public-keys
