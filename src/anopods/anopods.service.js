@@ -12,6 +12,8 @@ import { env } from '../config/env.js';
 import { decodeBytes } from '../crypto/bytes.js';
 import { ECDSA_P256, ML_DSA_87, decodePublicKey } from '../crypto/signatures.js';
 import { isUniqueViolation, withTransaction } from '../db/transaction.js';
+import { findAddedByCredentialId } from '../passkeys/added-passkeys.queries.js';
+import { findByCredentialId as findRecoveryPodByCredentialId } from '../recovery/recovery-pods.queries.js';
 import { decodeId, toHex } from '../util/ids.js';
 import { decodeImage, pictureProblem } from '../util/images.js';
 import { isObject } from '../util/is-object.js';
@@ -99,8 +101,10 @@ function hasEnvelopeShape(body) {
 }
 
 /**
- * POST /create-anopod. The six checks of the spec, then the three writes in
- * one transaction: the pod, its selfie, and the challenge consumed.
+ * POST /create-anopod. The six checks of the spec and a seventh (spec 19.3:
+ * the credential id is no added passkey's and no recovery pod's), then the
+ * three writes in one transaction: the pod, its selfie, and the challenge
+ * consumed.
  */
 export async function createAnopod(body) {
   // 1. Shape.
@@ -148,6 +152,14 @@ export async function createAnopod(body) {
   if (selfieProblem) return refuse(400, `invalid selfie: ${selfieProblem}`);
   if (await usernameTaken(username)) return refuse(409, 'username taken');
 
+  // 7. The passkey is nobody's yet (spec 19.3): not an added passkey, not a
+  //    recovery pod's. A pod's main passkey is refused by the unique key at
+  //    the write, with the same words.
+  if ((await findAddedByCredentialId(registration.credentialId)) !== null
+    || (await findRecoveryPodByCredentialId(registration.credentialId)) !== null) {
+    return refuse(409, 'key already registered');
+  }
+
   // The writes. The challenge is taken first; if another write got it
   // meanwhile, nothing is written.
   const ephemeralExpiresAt = sessionExpiry();
@@ -187,7 +199,13 @@ export async function createAnopod(body) {
 
 /**
  * POST /unlock. The six checks of the spec, then the new session keys
- * written and the challenge consumed in one transaction.
+ * written and the challenge consumed in one transaction. The passkey is the
+ * pod's main one, on its anopods row, or one the pod added (spec section
+ * 19), found in added_passkeys when no anopods row has the credential id.
+ * An added passkey is verified against its own row and answered its own
+ * blob1 and its wrappedKeyBlobKey, which is null for the main passkey; from
+ * a payload whose addedPasskeys is not true it is refused with 409 reload
+ * the wallet.
  */
 export async function unlock(body) {
   // 1. Shape.
@@ -209,9 +227,21 @@ export async function unlock(body) {
   if (prfResultsPresent(assertion)) return refuse(400, 'prf output in request');
 
   // 4. The pod, by the passkey's credential id; its user handle is the pod's id.
+  //    When no anopods row has the credential id, the passkey may be one a
+  //    pod added (spec section 19): its added_passkeys row names the pod. An
+  //    added passkey is refused unless the payload says addedPasskeys: true
+  //    (409 reload the wallet): a wallet page of before that build would
+  //    make a key blob key of its own from this passkey's PRF output, one
+  //    that nothing of the pod is locked with.
   const credentialId = decodeBase64Url(assertion.rawId);
-  const anopod = credentialId === null ? null : await findByCredentialId(credentialId);
+  let anopod = credentialId === null ? null : await findByCredentialId(credentialId);
+  let added = null;
+  if (anopod === null && credentialId !== null) {
+    added = await findAddedByCredentialId(credentialId);
+    if (added !== null) anopod = await findById(added.anopodId);
+  }
   if (anopod === null) return refuse(401, 'unknown passkey');
+  if (added !== null && payload.addedPasskeys !== true) return refuse(409, 'reload the wallet');
   const userHandle = decodeBase64Url(assertion.response.userHandle);
   if (userHandle === null || !userHandle.equals(anopod.anopodId)) return refuse(401, 'user handle mismatch');
 
@@ -221,8 +251,10 @@ export async function unlock(body) {
     return refuse(401, 'bad signature');
   }
 
-  // 6. The assertion, against the stored passkey.
-  const verified = await verifyAuthentication(assertion, challenge, anopod.passKeyCredentialId, anopod.passKeyPublicKey);
+  // 6. The assertion, against the stored passkey: the added row's for an
+  //    added passkey, the anopods row's for the main one.
+  const passkey = added ?? anopod;
+  const verified = await verifyAuthentication(assertion, challenge, passkey.passKeyCredentialId, passkey.passKeyPublicKey);
   if (!verified.ok) {
     console.log('passkey verification failed:', verified.reason);
     return refuse(401, 'passkey verification failed');
@@ -247,7 +279,8 @@ export async function unlock(body) {
     username: anopod.username,
     vouched: anopod.vouched,
     setupComplete: anopod.setupComplete,
-    blob1: toHex(anopod.encryptionKeyBlob1),
+    blob1: toHex(passkey.encryptionKeyBlob1),
+    wrappedKeyBlobKey: added === null ? null : toHex(added.wrappedKeyBlobKey),
     chatPrivateKeyBlob: toHex(anopod.chatPrivateKeyBlob),
     identityBlob: toHex(anopod.identityBlob),
     ephemeralExpiresAt: ephemeralExpiresAt.toISOString(),

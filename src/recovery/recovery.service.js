@@ -15,6 +15,7 @@ import { env } from '../config/env.js';
 import { decodeBytes } from '../crypto/bytes.js';
 import { ECDSA_P256, ML_DSA_87, decodePublicKey } from '../crypto/signatures.js';
 import { isUniqueViolation, withTransaction } from '../db/transaction.js';
+import { deleteAddedOf, findAddedByCredentialId } from '../passkeys/added-passkeys.queries.js';
 import { listFor as listSecurityRecords } from '../security/security.queries.js';
 import { decodeId, randomId, toHex } from '../util/ids.js';
 import { isObject } from '../util/is-object.js';
@@ -120,7 +121,8 @@ function isContactPhone(value) {
 }
 
 /**
- * POST /open-recovery-case. The seven checks of spec 12.4.2, then one
+ * POST /open-recovery-case. The seven checks of spec 12.4.2 and an eighth
+ * (spec 19.3: the credential id is no added passkey's), then one
  * transaction: the challenge consumed, the case, its recovery pod and the
  * opened event. The person gives a contact email and a contact phone, both
  * (2026-11-12; from 2026-11-11 until then at least one of the two was
@@ -183,6 +185,10 @@ export async function openRecoveryCase(body) {
 
   // 7. One open case per lookup id.
   if (await openCaseExists(lookupId)) return refuse(409, 'case already open');
+
+  // 8. The passkey is no pod's added passkey (spec 19.3). Another recovery
+  //    pod's is refused by the unique key at the write, with the same words.
+  if ((await findAddedByCredentialId(registration.credentialId)) !== null) return refuse(409, 'key already registered');
 
   // The writes. The challenge is taken first; if another write got it
   // meanwhile, nothing is written.
@@ -688,7 +694,8 @@ export async function receiveRecoveryShare(caseIdHex, body) {
  * newBlob1 } with the keys it derives. The five checks of spec 12.4.2, then
  * one transaction with the case locked: the challenge consumed, the
  * recovery passkey copied onto the pod with newBlob1 and the live session
- * ended (the lost device's keys die now), the recovered event.
+ * ended (the lost device's keys die now), the pod's added passkeys deleted,
+ * the recovered event.
  */
 export async function recoverWithBackupCode(body) {
   // 1. Shape.
@@ -732,6 +739,7 @@ export async function recoverWithBackupCode(body) {
         passKeyPublicKey: pod.passKeyPublicKey,
         blob1: newBlob1,
       });
+      await deleteAddedOf(client, locked.anopodId);
       await insertEvent(client, locked.caseId, 'recovered', null, {});
       return true;
     });
