@@ -39,7 +39,11 @@ export async function findById(caseId, db = pool) {
   return rows.length === 0 ? null : caseRow(rows[0]);
 }
 
-/** True when a case for this lookup id is open (status not completed or dismissed): the one-open-case rule. */
+/**
+ * True when a case for this lookup id is open (status not completed or
+ * dismissed): the one-open-case rule. Asked by /open-recovery-case and,
+ * since 2026-11-18, by /challenge for openCase (spec section 20).
+ */
 export async function openCaseExists(lookupId, db = pool) {
   const { rows } = await db.query(
     `SELECT EXISTS (SELECT 1 FROM recovery_cases WHERE lookup_id = $1 AND status <> ALL ($2::text[])) AS open`,

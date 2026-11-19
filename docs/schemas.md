@@ -666,6 +666,11 @@ passkey is added to, is bound to that pod, lives
 `ADD_PASSKEY_CHALLENGE_SECONDS` and answers `200 { challenge, anopodId,
 expiresAt }`.
 
+Since 2026-11-18 `openCase` may also take a `lookupId`, the person's lookup
+id: a case already open for it is refused `409 case already open`, and no
+challenge is issued. And the answer for `openCase` carries `credentialIds`,
+the credential ids of the pod's passkeys. Both are in 20.2.
+
 ### POST /create-anopod (none, signed by the ephemeral keys inside)
 
 ```json
@@ -1793,13 +1798,17 @@ draft's flows 4.6 and 4.7 are superseded by 12.4.5 and 12.4.7.
    lookup id (keyholder spec section 15, `/get-owner`) and the masterpod
    names the account (`/challenge` openCase, 12.4.2), so the person reads
    the username of the pod found and types none (since 2026-11-08; before
-   that they typed it). Then a contact email and a contact phone, both
+   that they typed it). Since 2026-11-18 that request carries the lookup
+   id, and a case already open for it stops the person there (section
+   20). Then a contact email and a contact phone, both
    (both required since 2026-11-12, 18.4; the phone came on 2026-11-11,
    section 18, and one of the two was enough then; before that the email
    alone), and they register a passkey. The masterpod opens a
    recovery case and a recovery pod for it (12.4.2). Of the birth record
-   only the lookup id reaches the server; the contact email and phone are
-   the plaintext facts about the person the masterpod keeps.
+   only the lookup id reaches the server (since 2026-11-18 already at the
+   `/challenge` request, for that one question, not stored); the contact
+   email and phone are the plaintext facts about the person the masterpod
+   keeps.
 2. A moderator (12.2) sees the case, schedules a video call (the meeting
    link shows to the person in the app; the phone is for the moderator to
    text or call first, and the email is there when a text is not
@@ -2013,7 +2022,15 @@ anopodId`; a pod's id, else `404 unknown anopod`. The challenge row is
 bound to that pod and the answer is `200 { challenge, anopodId, username,
 expiresAt }`, the id being the user handle the phone registers the
 recovery passkey with and `username` the pod row's, so the wallet shows
-the account found before any case opens. `unlockCase` and `recover` take
+the account found before any case opens. Since 2026-11-18 (20.2)
+`openCase` may take `lookupId` too, the person's lookup id. When the body
+has one, each of its three checks stands right after one of `anopodId`'s:
+a string, else `400 bad request shape`, after the same check of
+`anopodId`; 32 bytes, else `400 invalid lookupId`, after `400 invalid
+anopodId`; no case open for it, else `409 case already open`, after `404
+unknown anopod`, and then no challenge is issued. The answer also carries
+`credentialIds`, the credential ids of the pod's passkeys, the main one
+first. `unlockCase` and `recover` take
 `{ purpose }` alone and answer without `anopodId`, like `unlock`. The two
 existing purposes are untouched.
 
@@ -2067,7 +2084,8 @@ Checks:
    digits; then `hybridKey` 32 and 1568 bytes, `hybridKeyBlob` 1 to 1024
    bytes; `400 invalid <field>`.
 7. No case for this lookup id is open (status not completed or dismissed);
-   `409 case already open`.
+   `409 case already open`. Asked at `/challenge` already since 2026-11-18
+   (20.2); this check stays the rule.
 8. Since 2026-11-18 (19.3): the credential id is on no `added_passkeys`
    row; else `409 key already registered`.
 
@@ -2640,8 +2658,11 @@ is the route the wallet asks. The locked-out person no longer types a
 username: the wallet computes the lookup id, asks every keyholder
 `/get-owner` which pod deposited for it, and brings the anoPod id here.
 The masterpod is not in the lookup: it has no standing at the keyholders
-and stays unable to link a birth record to a pod, as designed. Where the
-plan was silent the simplest thing was chosen and is recorded here.
+and stays unable to link a birth record to a pod, as designed. (Since
+2026-11-18, section 20, the wallet sends it the lookup id with the anoPod
+id at `/challenge`, for the open case question alone, and it stores
+nothing of it.) Where the plan was silent the simplest thing was chosen
+and is recorded here.
 
 - `/challenge openCase` takes `{ purpose, anopodId }` and answers the
   pod's `username` beside `anopodId`. In `auth.handlers.js` `findById`
@@ -5727,7 +5748,9 @@ to.
 
 Checks, those of `openCase` in its order: `anopodId` is a string, else
 `400 bad request shape`; it is 32 bytes, else `400 invalid anopodId`; it is
-a pod's id, else `404 unknown anopod`.
+a pod's id, else `404 unknown anopod`. Since 2026-11-18 (20.2) `openCase`
+has three checks more, those of the lookup id; `addPasskey` has none of
+them.
 
 Writes: the challenge row with purpose `addPasskey`, bound to that pod,
 with `expires_at = now() + ADD_PASSKEY_CHALLENGE_SECONDS` (600); the
@@ -5968,7 +5991,9 @@ decided:
   b96a3201. With the comment of `challenges.expires_at` brought in line
   (below) it has the same 1373 lines and its sha256 begins a19592e9.
 - `/challenge`. `addPasskey` runs the branch of `openCase`, so its
-  refusals are the same and in the same order. The handler picks the life
+  refusals are the same and in the same order. (Since 2026-11-18, section
+  20, `openCase` has three refusals more, those of the lookup id, and
+  `addPasskey` has none of them.) The handler picks the life
   and hands it to `issue`, whose third argument defaults to
   `CHALLENGE_SECONDS`. The route asks for no session, as the plan says, so
   anyone who knows a pod's id can have a challenge issued for that pod; it
@@ -6011,8 +6036,9 @@ decided:
   mismatch`. An authenticator makes a credential id at random and never
   twice, so this takes a registration made up by someone who knows another
   pod's added credential id, which only that pod's own devices and this
-  server see. The build put it down for the follow-up list. It was closed
-  the same day (below).
+  server see. (Since 2026-11-18, section 20, anyone who knows the pod's id
+  can learn it.) The build put it down for the follow-up list. It was
+  closed the same day (below).
 - `/recover-with-backup-code`. `deleteAddedOf` answers how many rows went
   and the finish does not use the number. The delete runs at every finish,
   also for a pod that never added a passkey, where it finds no row.
@@ -6143,7 +6169,10 @@ commit: "Yes, do it all". Neither is in the plan.
   own session at level setup (`/list-passkeys` and the answer of
   `/add-passkey`), and no log line prints one. So a made-up registration
   takes someone who holds the pod's unlocked wallet or one of the servers
-  the requests pass through.
+  the requests pass through. (Since 2026-11-18, section 20, that no longer
+  holds for a pod's main id and its added ids: `/challenge` for `openCase`
+  sends them to anyone who knows the pod's id. 20.4 says what still
+  refuses them.)
 - The order of the deploy matters more with the lookups. The schema goes
   on first, as the plan's section 4 has it. On a database without
   `added_passkeys` every `/create-anopod` and every `/open-recovery-case`
@@ -6181,3 +6210,246 @@ commit: "Yes, do it all". Neither is in the plan.
 - The numbers. `db/schema.sql` has 1373 lines and its sha256 begins
   a19592e9 (b96a3201 after the build). One commit carries the build and
   this.
+
+## 20. The passkey check and the open case check at a case's opening (2026-11-18)
+
+Design settled 2026-11-18 in a planning chat (the plan is
+`~/Desktop/Z-TestNet/forclaude/recovery-passkey-check-plan-1.md`, FINAL,
+2026-11-18). Why: in the first days of production six people opened a
+recovery case without having lost their passkey. The user, 2026-11-18:
+"they're just confused, didn't know how to use their passkey and thought
+that account recovery was something more like forgot password". "Open my
+case" makes a new passkey on the device, with the anoPod id as its hidden
+user id. A place that stores passkeys keeps one passkey per user id and
+site. So where the person's own passkey sits in that same place (the same
+iCloud Keychain, the same Google Password Manager account), the new
+passkey takes its place and the person's own passkey is gone. That person
+is then truly locked out, and needs the case they opened by mistake. No
+screen warned of this. Two repos in order: this server (this section,
+step 1 of the plan: one change, in `/challenge` for `openCase`) and the
+wallet (its spec, step 2: the two recovery pages and their words), then
+the record folders (step 3). Either order of the two deploys is safe; the
+usual order is kept, this server first (the plan's section 4). With this
+server alone deployed nothing changes for anyone: a wallet of before sends
+no lookup id and does not read the ids. A new wallet against a masterpod
+of before shows its two warnings; its exclude list is empty and its lookup
+id is ignored, so both checks do nothing, as before. A wallet page loaded
+before the wallet's deploy behaves as before until it is loaded again. No
+new route, no table, no line of `db/schema.sql`, no env variable and no
+npm package. The validators, the doormen, the keyholders, the signing
+servers and the wallet's proxy are not touched. Nothing above this section
+changes except the items in 20.3.
+
+### 20.1 The rule
+
+- The passkey check (the plan's decision 1). At "Open my case" the wallet
+  hands the device the ids of the passkeys the anoPod already has. The
+  browser calls this the exclude list. A device that still holds one of
+  them makes no new passkey, so the person's own passkey stays. The user,
+  2026-11-18: "do your suggestion 1. stop the replacment before it
+  happens. All those steps sound perfect."
+- This server gives the wallet those ids (decision 3). Its `/challenge`
+  answer for `openCase` carries them: the main passkey first, then the
+  added ones, oldest first, in hex, as `/list-passkeys` gives them.
+- The open case check (decision 5). A person whose case is already open is
+  told so at the birth record step, before any passkey is made. The user:
+  "let's add that to the plan when we do. That's definitely something we
+  want". Before this change such a person could go through "I'm locked
+  out" a second time. The device made a second new passkey, and only then
+  did `/open-recovery-case` answer `409 case already open`. In the same
+  place the second passkey took the place of the first case's passkey. The
+  first case was still open, but the person could no longer continue it,
+  and a moderator had to dismiss it.
+- The passkey check does not cover that. Its list holds the anoPod's own
+  passkeys. The passkey of a case is kept with the case (`recovery_pods`),
+  apart, until the recovery ends.
+- The way: the wallet sends the lookup id with its `/challenge` request
+  for `openCase`. This server asks the question it asks at the very end,
+  in check 7 of `/open-recovery-case` (one open case per lookup id), and
+  refuses at once: `409 case already open`. Check 7 stays the rule; this
+  is the same question asked sooner.
+- What the open case check gives out, and to whom. In a recovery this
+  server first saw the lookup id when the case was opened. Now it sees the
+  lookup id one step earlier, in the same request as the anoPod id, also
+  for a person who then opens no case. It uses it for this one question
+  and stores nothing. Decision 1 of `forclaude/recovery-lookup-plan-1.md`
+  reads: "it stays unable to link a birth record to a pod, as it was
+  designed". Who can ask: whoever has a lookup id. A lookup id comes from
+  a full birth record, and that person could find out the same before, by
+  trying to open a case.
+- Not taken: asking by the anoPod id, which this server is given anyway.
+  Anyone who knows an anoPod id could then find out that its owner has a
+  case open.
+- What the passkey check gives out, and to whom. The ids are given out
+  without a log-in, because a locked-out person cannot log in. So anyone
+  who knows an anoPod id can learn the credential ids of its passkeys, and
+  with that how many passkeys it has. A credential id is not a secret: it
+  opens nothing without the passkey itself.
+
+### 20.2 The change by route
+
+**POST /challenge** (none; section 5, 12.4.2 and 19.3), for the purpose
+`openCase` alone.
+
+Body: `{ purpose: "openCase", anopodId, lookupId }`. `anopodId` is as
+before: the anoPod id the keyholders named for the person's lookup id.
+`lookupId` is new and optional: that lookup id, 32 bytes, hex like every
+id. It is read only when the body has one. The new wallet always sends
+it; a wallet page of before sends none and is answered as before.
+
+Checks, in order. The first, the third and the fifth are those of before,
+in their place and with their words.
+
+1. `anopodId` is a string, else `400 bad request shape`.
+2. `lookupId`, when the body has one, is a string, else `400 bad request
+   shape`.
+3. `anopodId` is 32 bytes, else `400 invalid anopodId`.
+4. `lookupId`, when given, is 32 bytes, else `400 invalid lookupId`, the
+   words `/open-recovery-case` has for it.
+5. A pod has that id, else `404 unknown anopod`.
+6. `lookupId` given, and a case for it is open (status not completed or
+   dismissed, the question of check 7 of `/open-recovery-case`, 12.4.2):
+   `409 case already open`. No challenge is issued.
+
+Writes: as before; none at a refusal. The lookup id is written nowhere,
+at a refusal or at an answer: no row, no event, no notification.
+
+Answer: `200 { challenge, expiresAt, anopodId, username, credentialIds }`.
+`credentialIds` is new: the credential ids of the pod's passkeys, a list
+of hex strings. The main passkey is first
+(`anopods.pass_key_credential_id`). Then come the added ones, oldest first
+(the pod's `added_passkeys` rows, `ORDER BY created_at, passkey_id`, read
+after the checks and before the challenge is issued). The list always
+holds the main one, so it is never empty. The wallet hands it to the
+device as the exclude list when it registers the recovery passkey (the
+wallet's spec).
+
+`addPasskey` shares the lines that read `anopodId` and stays as it was: a
+`lookupId` in its body is not read, and its answer carries no
+`credentialIds`. The four other purposes are untouched. The route stays at
+level none. `/open-recovery-case` and its eight checks are untouched.
+
+### 20.3 Files
+
+- `src/auth/auth.handlers.js`: two imports, `listAdded` and
+  `openCaseExists`; in `challenge()` the three checks of the lookup id,
+  the read of the added passkeys and `credentialIds` in the answer; the
+  comment over `PURPOSES` and the doc comment of `challenge()`.
+- `src/recovery/recovery-cases.queries.js`: the comment of
+  `openCaseExists`, which now names who asks. No line of code.
+- Here: section 5 (`### POST /challenge`, a paragraph at its end), 12.1
+  (step 1 of the flow, in two places), 12.4.2 (the `**POST /challenge**`
+  paragraph, and check 7 of `/open-recovery-case`) and this section; and,
+  on the user's word after the build, a clause each in 12.10 (the note of
+  2026-11-08), in 19.3 (the block on `addPasskey` at `/challenge`) and in
+  three notes of 19.6 (20.4). `README.md`: the `/challenge` row of the
+  Endpoints table.
+
+Nothing else in existing code changes: not
+`src/recovery/recovery.service.js` (check 7 of `/open-recovery-case` stays
+the rule), not `src/passkeys/`, not `db/schema.sql`, not `.example.env`.
+No new route, no table, no env variable, no npm package.
+
+### 20.4 Notes from the build
+
+#### Build 1, the masterpod (2026-11-18)
+
+Built from
+`~/Desktop/Z-TestNet/forclaude/recovery-passkey-check-plan-1.md` section
+1, on main at 3de0522, the merge of pull request 9, the working tree
+clean. No new npm package, no test script and no rig (none was asked
+for). There is no schema step: `db/schema.sql` is not touched, and the
+two tables the step reads, `recovery_cases` and `added_passkeys`, are read
+by the code of before too. What the plan left open and how it was decided:
+
+- The date. BUILD-DATE is 2026-11-18, the day of the build and of the
+  plan's FINAL.
+- "The body has one" is the plan's `req.body.lookupId !== undefined`. So
+  `lookupId: null` counts as given and is `400 bad request shape`; it is
+  not taken as absent, as `caseId: null` is at `/create-chat-room`. An
+  empty string is a string: it passes check 2 and is `400 invalid
+  lookupId` at check 4. The lookup id is read by `decodeId`, so base64 is
+  taken beside hex, as for every id.
+- The lines of the lookup id stand inside the branch that `openCase`
+  shares with `addPasskey`, each behind one flag, `hasLookupId`: the
+  purpose is `openCase` and the body has a `lookupId`. For `addPasskey`
+  the flag is false and `req.body.lookupId` is not looked at. The three
+  checks of before are the lines they were.
+- The plan's line `const added = await listAdded(anopodId);` is `const
+  added = purpose === 'openCase' ? await listAdded(anopodId) : [];` in the
+  code. The handler serves six purposes, and the answer reads `added`
+  after `issue`. So the line stands in the function's own scope, with the
+  purpose in it, where the plan puts it: after the checks and before
+  `issue`. For the five other purposes no query runs.
+- The order of the reads for `openCase` is the pod, the open case question
+  (only with a lookup id), the pod's added passkeys, then the challenge.
+  That is up to two queries more than before. A read that fails stops the
+  request before a challenge row is written.
+- `credentialIds` follows `username` in the answer, on a line of its own;
+  the line of `username` is as it was. A JSON reader sees `challenge`,
+  `expiresAt`, `anopodId`, `username`, `credentialIds`. A pod that never
+  added a passkey answers a list of one id.
+- This server cannot tell whether the lookup id belongs to the anoPod id
+  beside it, and does not try. The `409` answers for the lookup id alone:
+  a case open under it stops the request, whichever pod that case names.
+  Check 7 of `/open-recovery-case` asks the same way.
+- The `409` is a look, not a lock, as check 7 is. A case opened between
+  this answer and `/open-recovery-case` is refused there, by check 7 or by
+  the partial unique index. A `200` here promises nothing about the
+  opening.
+- A refusal is logged by its reason alone (`failed: case already open`),
+  as every refusal is. No log line prints the lookup id or a credential
+  id.
+- The comments. The comment over `PURPOSES` gained one sentence at its
+  end. The doc comment of `challenge()` gained a paragraph at its end; its
+  text of before is unchanged and still true.
+- Here. In section 5 the new paragraph is the last of `### POST
+  /challenge`. In 12.1 the new sentence stands after the whole sentence
+  that names the account, which ends "they typed it)". The plan's "at this
+  step" is written "at the `/challenge` request" there, because step 1 of
+  that list holds the opening of the case too. In 12.4.2 the new sentences
+  stand right after the answer of `openCase`; the answer named just before
+  them is the one of before, and `credentialIds` is named in the new
+  sentence. In the README the row gained its words at its end.
+- Checks (1.4): `node --check` on the two changed source files
+  (`src/auth/auth.handlers.js`, `src/recovery/recovery-cases.queries.js`),
+  clean, on Node 24.22.0. Then one load of the app with no server, run
+  from the build chat's scratch folder as one `node -e` line, with no file
+  kept: `src/app.js` imported and `createApp()` called, with made-up
+  `PGDATABASE`, `PGUSER` and `PGPASSWORD` and `PGHOST=/nonexistent`. It
+  counted 96 routes, as before the step, one of them `/challenge`, and
+  ended with exit 0. The step adds two imports across folders, and a wrong
+  one would have failed the load. Nothing listened, no database was
+  reached and no route was called. No psql: the step adds no SQL, and both
+  queries it calls were in use before. So no request was sent to the new
+  lines: the run-through is the user's, on a phone, with the wallet's step
+  2 (the plan's section 4). After the places below were brought in line,
+  both checks ran once more with the same results. The two source files
+  had not changed in between.
+- Places the plan does not name that this step left out of date. The build
+  left them as they were, listed them and asked. The user: "Yes, update
+  them". They were brought in line before the commit. Each got one clause
+  in brackets that begins "Since 2026-11-18", or one such sentence, and
+  its words of before stay. All four are here. 19.3, the block on
+  `addPasskey` at `/challenge`: "Checks, those of `openCase` in its
+  order". Since this build `openCase` has three checks more, those of the
+  lookup id, and `addPasskey` has none of them. 19.6, the note on
+  `/challenge`: "`addPasskey` runs the branch of `openCase`, so its
+  refusals are the same and in the same order", for the same reason. 19.6
+  again, in two notes: "Who can know a credential id. No route sends one
+  to anyone but the pod's own session at level setup", and in the note on
+  the gap "which only that pod's own devices and this server see". Each of
+  the two got its clause. Since this build `/challenge` for `openCase`
+  sends a pod's main id and its added ids to anyone who knows the pod's
+  id. Those ids are still refused at each route that writes a new passkey,
+  by the lookups of 19.3 or by a table's unique key. The one exception is
+  the one 19.6 names itself: a recovery passkey made up with a pod's main
+  id, which stops only its maker's own finish. And 12.10, the note "The
+  lookup through the keyholders (2026-11-08)": the masterpod "stays unable
+  to link a birth record to a pod, as designed". Since this build it is
+  sent the lookup id in one request with the anoPod id, before any case,
+  for the one question, and keeps nothing of it.
+- Not touched: every other feature folder, every router,
+  `src/recovery/recovery.service.js`, `src/passkeys/`, `db/schema.sql`,
+  `.example.env`, `package.json`, the scripts. In `src/recovery/` one
+  comment changed and no line of code.
