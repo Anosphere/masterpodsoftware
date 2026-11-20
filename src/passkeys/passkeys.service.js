@@ -1,4 +1,5 @@
-import { findByCredentialId } from '../anopods/anopods.queries.js';
+import { findByCredentialId, findById } from '../anopods/anopods.queries.js';
+import { findAccount } from '../anos-accounts/anos-accounts.queries.js';
 import { find as findChallenge, take as takeChallenge } from '../auth/challenges.queries.js';
 import {
   decodeBase64Url,
@@ -25,10 +26,13 @@ import { findAddedByCredentialId, insertAdded, listAdded } from './added-passkey
  * opens the same two keys. /add-passkey writes a row and /list-passkeys
  * reads them; /unlock finds an added passkey by its credential id
  * (src/anopods/anopods.service.js); the finish of a recovery deletes the
- * pod's rows (src/recovery/recovery.service.js). No route removes one
+ * pod's rows (src/recovery/recovery.service.js). /check-signing-passkey
+ * (spec section 22) answers the signing servers whether a
+ * passkey answer is from one of a pod's passkeys; it is at
+ * level none and writes nothing. No route removes one
  * passkey, and there is no cap. Each function runs its route's checks in
- * the spec's order (19.3) and returns ok(status, body) or refuse(status,
- * reason).
+ * the spec's order (19.3, and 22.4 for /check-signing-passkey) and returns
+ * ok(status, body) or refuse(status, reason).
  */
 
 const BAD_SHAPE = 'bad request shape';
@@ -162,4 +166,68 @@ export async function listPasskeys(anopod) {
       createdAt: row.createdAt.toISOString(),
     })),
   });
+}
+
+/**
+ * POST /check-signing-passkey (none). Body { accountId, challenge,
+ * assertion }: an anos account's id, a challenge of 32 bytes, and the
+ * WebAuthn JSON of a passkey's answer to that challenge. For the signing
+ * servers (spec section 22): before one signs for an account, it asks here
+ * whether the passkey answer that came with the request is from a passkey
+ * of the pod that made the account, and is an answer to the challenge the
+ * signing server worked out from the exact thing it is asked to sign.
+ * Unsigned, like /get-anos-account: the answer is yes or a refusal, and
+ * nothing is written. The challenge is the caller's own, not one of
+ * /challenge: the challenges table is neither read nor written, and the
+ * same answer may be checked again. The six checks of spec 22.4, in order.
+ */
+export async function checkSigningPasskey(body) {
+  // 1. Shape.
+  if (!isObject(body) || typeof body.accountId !== 'string' || typeof body.challenge !== 'string'
+    || !isObject(body.assertion) || !isObject(body.assertion.response)) {
+    return refuse(400, BAD_SHAPE);
+  }
+  const { assertion } = body;
+
+  // 2. The account id and the challenge, 32 bytes each.
+  const accountId = decodeId(body.accountId);
+  if (accountId === null) return refuse(400, 'invalid accountId');
+  const challenge = decodeId(body.challenge);
+  if (challenge === null) return refuse(400, 'invalid challenge');
+
+  // 3. The PRF output stayed on the phone.
+  if (prfResultsPresent(assertion)) return refuse(400, 'prf output in request');
+
+  // 4. The account, and the pod that made it.
+  const account = await findAccount(accountId);
+  const anopod = account === null ? null : await findById(account.anopodId);
+  if (anopod === null) return refuse(404, 'unknown account');
+
+  // 5. The passkey that answered is one of that pod's: its main one, or
+  //    one it added. A user handle is checked only when the answer carries
+  //    one: the passkey is matched to the pod by this server's own rows.
+  const credentialId = decodeBase64Url(assertion.rawId);
+  let passkey = null;
+  if (credentialId !== null) {
+    if (credentialId.equals(anopod.passKeyCredentialId)) {
+      passkey = anopod;
+    } else {
+      const added = await findAddedByCredentialId(credentialId);
+      if (added !== null && added.anopodId.equals(anopod.anopodId)) passkey = added;
+    }
+  }
+  if (passkey === null) return refuse(401, 'unknown passkey');
+  const { userHandle } = assertion.response;
+  if (userHandle !== undefined && userHandle !== null) {
+    const handle = decodeBase64Url(userHandle);
+    if (handle === null || !handle.equals(anopod.anopodId)) return refuse(401, 'user handle mismatch');
+  }
+
+  // 6. The answer itself, against that passkey's public key and the challenge.
+  const verified = await verifyAuthentication(assertion, challenge, passkey.passKeyCredentialId, passkey.passKeyPublicKey);
+  if (!verified.ok) {
+    console.log('passkey verification failed:', verified.reason);
+    return refuse(401, 'passkey verification failed');
+  }
+  return ok(200, { accountId: toHex(accountId), verified: true });
 }

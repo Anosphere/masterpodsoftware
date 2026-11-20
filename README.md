@@ -54,11 +54,11 @@ Every route is a `POST` with a JSON body. Four pod levels and three more:
 
 | Level    | Meaning                                                                                  |
 | -------- | ---------------------------------------------------------------------------------------- |
-| none     | Plain JSON body, no signature: `/challenge`, `/check-username`, `/get-anopod-session-keys`, `/get-anos-account`, the keyholders' `/receive-recovery-share/:caseId`; `/create-anopod`, `/unlock`, `/open-recovery-case` and `/unlock-recovery-pod` are signed by the ephemeral keys inside them, `/recover-with-backup-code` by the backup code keys inside it. |
+| none     | Plain JSON body, no signature: `/challenge`, `/check-username`, `/get-anopod-session-keys`, `/get-anos-account`, `/check-signing-passkey`, the keyholders' `/receive-recovery-share/:caseId`; `/create-anopod`, `/unlock`, `/open-recovery-case` and `/unlock-recovery-pod` are signed by the ephemeral keys inside them, `/recover-with-backup-code` by the backup code keys inside it. |
 
 | session  | Signed by the pod's current ephemeral keys (the envelope below). Vouched or not.          |
 | vouched  | session, and `anopods.vouched` is true.                                                  |
-| setup    | vouched, and setup is complete (the pod has chat keys): every chat and marketplace route, the three anos account routes, the six wallet memory routes, `/rotate-backup-code` and `/store-break-glass-blob` after a recovery, the person's four attestation routes `/list-my-cases`, `/get-my-case`, `/share-lookup-id`, `/add-dispute-evidence`, the person's two break-glass routes `/file-break-glass-moves`, `/list-my-break-glass-moves`, and the two passkey routes `/add-passkey`, `/list-passkeys`. |
+| setup    | vouched, and setup is complete (the pod has chat keys): every chat and marketplace route, the four anos account routes, the six wallet memory routes, `/rotate-backup-code` and `/store-break-glass-blob` after a recovery, the person's four attestation routes `/list-my-cases`, `/get-my-case`, `/share-lookup-id`, `/add-dispute-evidence`, the person's two break-glass routes `/file-break-glass-moves`, `/list-my-break-glass-moves`, and the two passkey routes `/add-passkey`, `/list-passkeys`. |
 | recovery | Signed by a recovery pod's current ephemeral keys: the same envelope with `caseId` in place of `anopodId` (`src/auth/require-recovery-session.js`); `/get-recovery-pod`, `/complete-recovery-case`. |
 
 | moderator | session, and the pod holds a live appointment for the role (`appointments`, `docs/schemas.md` section 16, written by `npm run appoint`; `src/auth/require-moderator.js`; the stake is the keyholders' check); the six moderation routes. |
@@ -123,6 +123,7 @@ are base64 / base64url as the browser produces them.
 | `/complete-setup`               | vouched | Stores the two encryption key blobs, the backup code keys, the chat keys and the identity blob (eight fields), once |
 | `/add-passkey`                  | setup   | Adds a passkey to the caller's pod (2026-11-18, section 19): a fresh tap of a passkey the pod has, the new passkey's registration (PRF required), and the new passkey's own locked copies of the pod's encryption key and key blob key; notifies the pod; no route removes one |
 | `/list-passkeys`                | setup   | The caller's passkeys by credential id: the main one, and the added ones, oldest first    |
+| `/check-signing-passkey`        | none    | For the signing servers: whether a passkey answer is from a passkey of the pod that made an account and is an answer to the given challenge; writes nothing |
 | `/add-to-security-bucket-one`   | vouched | Stores encrypted images in bucket one, under the bucket key `keyId` names                |
 | `/add-to-security-bucket-two`   | vouched | Stores encrypted images and texts in bucket two, under the bucket key `keyId` names      |
 | `/list-security-records`        | vouched | Everything in both buckets for the caller, each row with its `keyId`                     |
@@ -144,9 +145,10 @@ are base64 / base64url as the browser produces them.
 | `/close-listing`                | setup   | Closes the owner's listing; an old listing's room stays, new join requests and new rooms about it are refused |
 | `/list-listings`                | setup   | Listings filtered by side, currency, country and status (`any` allowed), the caller's own with `mine`, sorted and paged |
 | `/get-listing`                  | setup   | One listing by id, open or closed, in the list's form                                    |
-| `/create-anos-account`          | setup   | Records an anos account the pod made: type, the private halves under the pod's encryption key, the signed creation; `409` on a repeat, `403` at the limit of 20 new accounts in 30 days |
+| `/create-anos-account`          | setup   | Records an anos account the pod made: type, the blob with both pairs and the first key blob, both under the pod's key blob key, the signed creation; `409` on a repeat, `403` at the limit of 20 new accounts in 30 days |
 | `/mark-anos-account-submitted`  | setup   | Records that a validator answered the account's creation; the caller's accounts only     |
-| `/list-anos-accounts`           | setup   | The caller's anos accounts, oldest first, with the blob, the creation, `submittedAt` and `breakGlassBlob` (null until a recovery stored it) |
+| `/list-anos-accounts`           | setup   | The caller's anos accounts, oldest first, each with one blob: its first key blob once it has one, the blob with both pairs until then (`firstKeyOnly` says which; section 22), with the creation, `submittedAt` and `breakGlassBlob` (null until a recovery stored it); `409 reload the wallet` for a page that cannot open a first key blob |
+| `/store-first-key-blob`         | setup   | The first key blob of one of the caller's accounts, pair one alone; written once, `409` on a repeat |
 | `/add-noted-transaction`        | setup   | Records a note on a ledger transaction of the caller's, for their tax records: the ledger's facts in the clear, the private part as a blob under the pod's encryption key; one note per transaction, `409` on a second |
 | `/update-noted-transaction`     | setup   | Replaces a note's blob; the ledger's facts never change; the caller's notes only |
 | `/remove-noted-transaction`     | setup   | Deletes a note; the caller's notes only                                                  |
@@ -262,7 +264,7 @@ keep the references straight. Every table and column has a `COMMENT ON`
 | `chat_room_join_requests` | Open join requests                                                     |
 | `chat_room_messages`      | Ciphertext messages, numbered by `position`                            |
 | `listings`                | Marketplace listings; `chat_room_id` only on the old ones that got a room |
-| `anos_accounts`           | One row per anos account a pod made: type, key blob, the signed creation, when it was submitted, the break-glass blob after a recovery; never deleted |
+| `anos_accounts`           | One row per anos account a pod made: type, the blob with both pairs, the first key blob, the signed creation, when it was submitted, the break-glass blob after a recovery; never deleted |
 | `noted_transactions`      | One row per ledger transaction a pod noted for its tax records: the ledger's facts in the clear, the private part as a blob under the pod's encryption key; one per pod and transaction; deleted when the person removes it |
 | `wallet_settings`         | One row per pod: the small things its wallet remembers as one encrypted blob (the Protect your passkey answer first); replaced in place |
 | `recovery_cases`          | One row per recovery case: lookup id, the pod being recovered, contact email and phone (both on a case opened since 2026-11-12; the table's check is still at least one of the two, for a case of before), status; one open case per lookup id |
@@ -356,14 +358,14 @@ src/
   util/              ids, images, is-object, the ok/refuse/answer result shape
   auth/              /challenge; requireSession, requireVouched, requireSetup, requireModerator, requireAttestor, requireRecoverySession; challenges, nonces, the signed envelope, WebAuthn
   anopods/           /create-anopod, /unlock, /check-username, /check-anopod-status, /get-anopod-profile, /complete-setup
-  passkeys/          /add-passkey, /list-passkeys (section 19); the added_passkeys table's queries
+  passkeys/          /add-passkey, /list-passkeys (section 19), /check-signing-passkey (section 22); the added_passkeys table's queries
   vouching/          /search-usernames, /send-vouch-request, /list-vouch-requests, /approve-vouch-request, /decline-vouch-request
   appointments/      the appointments table's queries (section 16): who holds a live appointment as a moderator or an attestor, or as a pod that may stake for validator or masterPod; written only by scripts/appoint.js and scripts/revoke.js
   notifications/     /list-notifications, /mark-notifications-read; notify() for every feature
   security/          the three bucket routes
   chat/              the fourteen chat routes
   marketplace/       /create-listing, /close-listing, /list-listings
-  anos-accounts/     /create-anos-account, /mark-anos-account-submitted, /list-anos-accounts, /get-anos-account
+  anos-accounts/     /create-anos-account, /mark-anos-account-submitted, /list-anos-accounts, /store-first-key-blob, /get-anos-account
   wallet-memory/     the six wallet memory routes, /add-noted-transaction to /set-wallet-settings; the two tables' queries
   recovery/          /open-recovery-case, /unlock-recovery-pod, /get-recovery-pod, the six moderator routes, /receive-recovery-share/:caseId, /recover-with-backup-code, /complete-recovery-case, /rotate-backup-code, /store-break-glass-blob; the four recovery tables' queries
   attesting/         the fourteen attestor routes, /list-attestors to /dismiss-attestor-case, and the person's /list-my-cases, /get-my-case, /share-lookup-id, /add-dispute-evidence; the five attestation tables' queries; account-signatures.js, the validators' any-two-pairs rule
@@ -421,3 +423,8 @@ returning `ok(status, body)` or `refuse(status, reason)`) and its queries
 - Anti-abuse limits on `/challenge` and `/create-anopod`.
 - Removing one passkey; a cap on a pod's passkeys; a name or a date for the
   main passkey (`docs/schemas.md` section 19).
+- A route that hands out an account's blob with both pairs, for the screen
+  where a person asks for their second key; signing servers that keep
+  their own list of passkeys; a limit on how often `/check-signing-passkey`
+  may be asked; the masterpod's own passkey check at a moderator's sign-off
+  (section 22).

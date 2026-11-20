@@ -9,6 +9,9 @@ import { isObject } from '../util/is-object.js';
  * base64url form with clientDataJSON), RP_ID and the WEB_ORIGIN list from
  * the environment, and user verification. The library throws on every failure,
  * so each wrapper turns that into { ok: false, reason } for the log.
+ * Since 2026-11-20 one caller, /check-signing-passkey (spec section 22),
+ * hands verifyAuthentication a challenge this server did not issue: its
+ * caller's own.
  */
 
 /**
