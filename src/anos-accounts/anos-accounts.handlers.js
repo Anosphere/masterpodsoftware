@@ -1,5 +1,5 @@
 import { answer } from '../util/result.js';
-import { createAnosAccount, getAnosAccount, listAnosAccounts, markAnosAccountSubmitted } from './anos-accounts.service.js';
+import { createAnosAccount, getAnosAccount, listAnosAccounts, markAnosAccountSubmitted, storeFirstKeyBlob } from './anos-accounts.service.js';
 
 /**
  * Route handlers for the anos accounts feature. HTTP in and out only: on
@@ -20,7 +20,12 @@ export async function markAnosAccountSubmittedHandler(req, res) {
 
 /** POST /list-anos-accounts */
 export async function listAnosAccountsHandler(req, res) {
-  answer(res, await listAnosAccounts(req.anopod));
+  answer(res, await listAnosAccounts(req.anopod, req.body));
+}
+
+/** POST /store-first-key-blob */
+export async function storeFirstKeyBlobHandler(req, res) {
+  answer(res, await storeFirstKeyBlob(req.anopod, req.body));
 }
 
 /** POST /get-anos-account */

@@ -7,7 +7,8 @@
 -- EXISTS, functions and triggers use OR REPLACE, comments just overwrite.
 -- It never alters a table that already exists, though, apart from the
 -- idempotent ALTERs of the appointments block and of the recovery,
--- attestation, marketplace, case chat and seen position blocks at the end.
+-- attestation, marketplace, case chat, seen position and first key blob
+-- blocks at the end.
 -- After changing this file, rebuild the local database from scratch with
 --
 --   npm run db:reset
@@ -626,7 +627,9 @@ COMMENT ON COLUMN listings.updated_at   IS 'When the row last changed. Maintaine
 -- ---------------------------------------------------------------------------
 -- anos_accounts: one row per anos account a pod made (added 2026-10-25 for
 -- the wallet). The masterpod keeps the account's private halves for the pod
--- (key_blob, under the pod's encryption key, which the server cannot open)
+-- (key_blob, both pairs, and since 2026-11-20 first_key_blob, pair one
+-- alone, spec section 22; both under the pod's key blob key, which the
+-- server cannot open)
 -- and the signed creation as it went to the validator, and records when a
 -- validator answered the creation (submitted_at). /get-anos-account answers
 -- the validators' binding check from it: the pod that made the account and
@@ -639,6 +642,7 @@ CREATE TABLE IF NOT EXISTS anos_accounts (
   anopod_id    BYTEA       NOT NULL CHECK (octet_length(anopod_id) = 32),
   account_type TEXT        NOT NULL CHECK (account_type IN ('spending', 'guarded', 'vault', 'assisted')),
   key_blob     BYTEA       NOT NULL CHECK (octet_length(key_blob) <= 1024),
+  first_key_blob BYTEA     CHECK (octet_length(first_key_blob) BETWEEN 1 AND 1024),
   creation     JSONB       NOT NULL,
   submitted_at TIMESTAMPTZ,
   created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -652,11 +656,11 @@ CREATE OR REPLACE TRIGGER anos_accounts_set_updated_at
   WHEN (OLD.* IS DISTINCT FROM NEW.*)
   EXECUTE FUNCTION set_updated_at();
 
-COMMENT ON TABLE  anos_accounts              IS 'One row per anos account a pod made: the pod, the type, the private halves under the pod''s encryption key, the signed creation, and when a validator answered it. Never deleted. Stand-alone; no foreign keys.';
+COMMENT ON TABLE  anos_accounts              IS 'One row per anos account a pod made: the pod, the type, the private halves under the pod''s key blob key (both pairs in key_blob, pair one alone in first_key_blob), the signed creation, and when a validator answered it. Never deleted. Stand-alone; no foreign keys.';
 COMMENT ON COLUMN anos_accounts.account_id   IS 'The anos account id: SHA-256 of key1 + postQuantumKey1, as the validators compute it. 32 raw bytes.';
 COMMENT ON COLUMN anos_accounts.anopod_id    IS 'The pod that made the account.';
 COMMENT ON COLUMN anos_accounts.account_type IS 'spending, guarded, vault or assisted.';
-COMMENT ON COLUMN anos_accounts.key_blob     IS 'Pair one and pair two''s private halves (key1 scalar || postQuantumKey1 seed || key2 scalar || postQuantumKey2 seed) wrapped under the pod''s encryption key, 156 bytes. The server cannot open it.';
+COMMENT ON COLUMN anos_accounts.key_blob     IS 'Pair one and pair two''s private halves (key1 scalar || postQuantumKey1 seed || key2 scalar || postQuantumKey2 seed) wrapped under the pod''s key blob key, 156 bytes. The server cannot open it. Never changed. /list-anos-accounts hands it to the wallet only while first_key_blob is null (spec section 22).';
 COMMENT ON COLUMN anos_accounts.creation     IS 'The signed creation transaction, all eight signatures, exactly as posted to the validator.';
 COMMENT ON COLUMN anos_accounts.submitted_at IS 'When a validator answered the creation (/mark-anos-account-submitted). Null until then.';
 COMMENT ON COLUMN anos_accounts.created_at   IS 'When the row was inserted. Set by default, never changed.';
@@ -1383,3 +1387,19 @@ COMMENT ON COLUMN added_passkeys.created_at                   IS 'When the row w
 ALTER TABLE chat_room_members ADD COLUMN IF NOT EXISTS seen_position BIGINT NOT NULL DEFAULT 0 CHECK (seen_position >= 0);
 
 COMMENT ON COLUMN chat_room_members.seen_position IS 'The highest message position the member has seen in the room (spec section 21), 0 until the member''s wallet reports one. Raised by /mark-messages-seen, never lowered, never above the room''s newest message. /list-chat-rooms hands it to every member of the room.';
+
+
+-- The first key blob block (2026-11-20, spec section 22):
+-- anos_accounts.first_key_blob, pair one's private halves alone, under the
+-- pod's key blob key. Once an account has one, /list-anos-accounts hands
+-- the wallet that blob and no longer key_blob, which holds pair two as
+-- well. The wallet stores it with a new account (/create-anos-account)
+-- and, for an account made before this block, at the pod's next login
+-- (/store-first-key-blob). Written once and never changed; key_blob is
+-- never changed either. The column is also inline in the CREATE TABLE
+-- above, for a fresh database. No index: nothing looks an account up by
+-- it. Idempotent: IF NOT EXISTS.
+
+ALTER TABLE anos_accounts ADD COLUMN IF NOT EXISTS first_key_blob BYTEA CHECK (octet_length(first_key_blob) BETWEEN 1 AND 1024);
+
+COMMENT ON COLUMN anos_accounts.first_key_blob IS 'Pair one''s private halves alone (key1 scalar || postQuantumKey1 seed) wrapped under the pod''s key blob key, 92 bytes (spec section 22). The server cannot open it. Once it is set, /list-anos-accounts hands it to the wallet as keyBlob in place of key_blob. Null until the wallet stored it, with the account (/create-anos-account) or later (/store-first-key-blob). Written once, never changed.';

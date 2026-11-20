@@ -66,10 +66,10 @@ Four levels. A route's level is given with the route in section 5.
 
 | Level | Meaning | Routes |
 | ----- | ------- | ------ |
-| none | Plain JSON body, no signature. | `/challenge`, `/check-username`, `/get-anopod-session-keys`, `/get-anos-account`, and `/create-anopod`, `/unlock`, which are signed by the ephemeral keys inside them |
+| none | Plain JSON body, no signature. | `/challenge`, `/check-username`, `/get-anopod-session-keys`, `/get-anos-account`, `/check-signing-passkey` (section 22), and `/create-anopod`, `/unlock`, which are signed by the ephemeral keys inside them |
 | session | Signed by the pod's current ephemeral keys (section 3). Vouched or not. | `/search-usernames`, `/send-vouch-request`, `/check-anopod-status`, `/list-notifications`, `/mark-notifications-read`, `/get-anopod-profile` |
 | vouched | session, and `anopods.vouched` is true. | `/list-vouch-requests`, `/approve-vouch-request`, `/decline-vouch-request`, `/complete-setup`, `/add-to-security-bucket-one`, `/add-to-security-bucket-two`, `/list-security-records` |
-| setup | vouched, and setup is complete (`anopod_encryption_key_blob_2` is set, so the pod has chat keys). | every chat and marketplace route; `/create-anos-account`, `/mark-anos-account-submitted`, `/list-anos-accounts`; the six wallet memory routes, `/add-noted-transaction` to `/set-wallet-settings` (2026-11-07); the person's two break-glass routes, `/file-break-glass-moves` and `/list-my-break-glass-moves` (2026-11-08, section 14); the six DAO routes, `/create-dao-proposal` to `/list-dao-votes` (2026-11-08, section 15); `/add-passkey` and `/list-passkeys` (section 19) |
+| setup | vouched, and setup is complete (`anopod_encryption_key_blob_2` is set, so the pod has chat keys). | every chat and marketplace route; `/create-anos-account`, `/mark-anos-account-submitted`, `/list-anos-accounts`, `/store-first-key-blob` (section 22); the six wallet memory routes, `/add-noted-transaction` to `/set-wallet-settings` (2026-11-07); the person's two break-glass routes, `/file-break-glass-moves` and `/list-my-break-glass-moves` (2026-11-08, section 14); the six DAO routes, `/create-dao-proposal` to `/list-dao-votes` (2026-11-08, section 15); `/add-passkey` and `/list-passkeys` (section 19) |
 
 Three middlewares: `requireSession`, `requireVouched`, `requireSetup`.
 Failing them: `401` (session), `403 anopod not vouched`, `403 setup not
@@ -414,7 +414,8 @@ a moderator holding the shares of key `key_id` knows which rows it opens.
 
 Added 2026-10-25 for the wallet (its spec, section 4.4). One row per anos
 account a pod made: the pod, the type, pair one and pair two's private
-halves under the pod's encryption key (which this server cannot open), the
+halves under the pod's key blob key, and pair one's alone in a second blob
+(section 22) (which this server cannot open), the
 signed creation as it went to the validator, and when a validator answered
 it. No foreign keys, never deleted. The masterpod never verifies anos
 signatures; the validators do.
@@ -425,6 +426,7 @@ CREATE TABLE IF NOT EXISTS anos_accounts (
   anopod_id    BYTEA       NOT NULL CHECK (octet_length(anopod_id) = 32),
   account_type TEXT        NOT NULL CHECK (account_type IN ('spending', 'guarded', 'vault', 'assisted')),
   key_blob     BYTEA       NOT NULL CHECK (octet_length(key_blob) <= 1024),
+  first_key_blob BYTEA     CHECK (octet_length(first_key_blob) BETWEEN 1 AND 1024),
   creation     JSONB       NOT NULL,
   submitted_at TIMESTAMPTZ,
   created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -434,7 +436,8 @@ CREATE INDEX IF NOT EXISTS anos_accounts_anopod_id_idx ON anos_accounts (anopod_
 ```
 
 `account_id` is the SHA-256 of key1 + postQuantumKey1, as the validators
-compute it. `key_blob` is 156 bytes in practice (section 7). `submitted_at`
+compute it. `key_blob` is 156 bytes in practice (section 7).
+`first_key_blob` is 92. `submitted_at`
 is null until `/mark-anos-account-submitted`. Since 2026-11-10 the account
 limit counts a pod's rows by `created_at`: at most 20 in the last 30 days
 (section 17).
@@ -1249,7 +1252,9 @@ wallet's listing page, which has its own address and reads one listing
 
 Added 2026-10-25 (the wallet's spec, 4.4). Level setup implies vouched and
 setup complete, which is "they are vouched" of the flow, and the encryption
-key the `keyBlob` is under exists.
+key the `keyBlob` is under exists. (Since 2026-11-08 the `keyBlob` is under
+the pod's key blob key, which comes from the passkey's PRF output, and no
+longer under the encryption key: the wallet's spec, section 7.)
 
 ```json
 {
@@ -1280,6 +1285,9 @@ Writes: `INSERT anos_accounts`, `submitted_at` null.
 
 Answer: `201 { accountId }`.
 
+Since 2026-11-20 the body may also carry `firstKeyBlob`, pair one's
+private halves alone (`400 invalid firstKeyBlob`): it is in 22.3.
+
 ### POST /mark-anos-account-submitted (setup)
 
 Body: `{ accountId }`.
@@ -1300,6 +1308,10 @@ Body: `{}`.
 Answer: `200 { accounts: [ { accountId, accountType, keyBlob, creation,
 submittedAt, createdAt } ] }`, the caller's rows, oldest first; `keyBlob`
 hex, `submittedAt` ISO 8601 or null.
+
+Since 2026-11-20 the body may carry `firstKeyBlobs`, every account comes
+with `firstKeyOnly`, and a page that cannot open a first key blob is
+refused `409 reload the wallet`: all three are in 22.3.
 
 ### POST /get-anos-account (none)
 
@@ -1462,7 +1474,8 @@ string.
 | message | UTF-8 text under the room key, base64 on the wire |
 | security bucket key | 32 random bytes per add, deposited with the keyholders as Shamir shares and not kept; images and info are encrypted under it the same way, content type in the clear; `keyId`, 32 random bytes per key, travels with the shares and with the add |
 | `identityBlob` (2026-10-25) | public ledger id (32) `\|\|` lookup id (32) under the encryption key: 92 bytes; the ids as `~/Desktop/Z/web_app/docs/public-ledger-id.md` makes them |
-| anos `keyBlob` (2026-10-25) | key1 scalar (32) `\|\|` postQuantumKey1 seed (32) `\|\|` key2 scalar (32) `\|\|` postQuantumKey2 seed (32) under the encryption key: 156 bytes; opened only to sign |
+| anos `keyBlob` (2026-10-25) | key1 scalar (32) `\|\|` postQuantumKey1 seed (32) `\|\|` key2 scalar (32) `\|\|` postQuantumKey2 seed (32) under the key blob key (wallet spec 7): 156 bytes; opened only to sign |
+| anos `firstKeyBlob` (2026-11-20) | key1 scalar (32) `\|\|` postQuantumKey1 seed (32) under the key blob key: 92 bytes |
 | `noteBlob` (2026-11-07) | a JSON object `{ v: 1, kind, money, currency, memo, tag }` as UTF-8 under the encryption key; a few hundred bytes; the wallet's `wrapJson` |
 | `settingsBlob` (2026-11-07) | a JSON object `{ v: 1, protect }` under the encryption key; the wallet's `wrapJson` |
 | `wrappedKeyBlobKey` (2026-11-18) | the pod's key blob key under HKDF(the added passkey's PRF output, `masterpod/kek-keys-wrap/v1`, 32), AES-256-GCM, 60 bytes |
@@ -1533,6 +1546,11 @@ changes nothing and says so. There is no route for either.
 - Anti-abuse limits on `/challenge` and `/create-anopod`.
 - Removing one passkey; a cap on a pod's passkeys; a name or a date for the
   main passkey (section 19).
+- A route that hands out an account's blob with both pairs, for the screen
+  where a person asks for their second key; signing servers that keep
+  their own list of passkeys; a limit on how often `/check-signing-passkey`
+  may be asked; the masterpod's own passkey check at a moderator's sign-off
+  (section 22).
 
 ## 11. Notes from the build
 
@@ -6120,8 +6138,10 @@ decided:
   a new passkey of their own, and both go in. The two blobs are checked
   for their length only; the server cannot tell whether they open.
 - `/list-passkeys` reads nothing from its body, as `/list-anos-accounts`
-  reads nothing from its own. The main passkey comes from `req.anopod`, the
-  row the session check has just read.
+  reads nothing from its own. (Since 2026-11-20, section 22,
+  `/list-anos-accounts` reads one field of its body, `firstKeyBlobs`;
+  `/list-passkeys` still reads nothing.) The main passkey comes from
+  `req.anopod`, the row the session check has just read.
 - `/unlock`. The second lookup runs only when no `anopods` row has the
   credential id, so an unlock with a main passkey costs no query more than
   before. `409 reload the wallet` comes right after `401 unknown passkey`
@@ -6887,3 +6907,620 @@ is, a record of its day. None of this is in the plan.
   begins a3de2618 where it began 72ac460b after the build. The schema
   line of the deploy carries the whole hash, so it was written again. One
   commit carries the build and this: the same eight files.
+
+## 22. The first key blob, and the passkey check for the signing servers (2026-11-20)
+
+Design settled 2026-11-19 and 2026-11-20, in a talking chat and a planning
+chat (the plan is
+`~/Desktop/Z-TestNet/forclaude/second-key-and-signing-passkey-plan-1.md`,
+FINAL, 2026-11-20). Why: an anos account has three signing pairs, and the
+validators take any two. Pair one and pair two are the person's own; the
+third is the wallet pair, which the signing servers hold. The wallet got
+pair one and pair two at every login, in one blob per account
+(`anos_accounts.key_blob`), and the key that opens that blob stays in the
+browser tab. A signing server signed for whoever showed pair one's
+signatures. So a copy of what an open tab holds was enough to move the
+person's anos, in two ways: with pair one and pair two and no signing
+server, or with pair one and a signing server. The user, 2026-11-19: "only
+giving the user the first anos key when they log in, and not their
+second", and "Making so the signing server required the user to use their
+passkey before the signing server would sign the transaction." Each half
+of the plan closes one of the two ways, and neither half works alone. The
+first half: this server keeps the blob with both pairs as it is, and hands
+the wallet a new, small blob with pair one alone, the first key blob. The
+second half: a signing server signs only when a passkey answer made for
+the exact thing to sign comes with the request, and it asks this server
+whether that answer is good. Three repos in order, which is also the order
+of the deploys: this server (this section, step 1 of the plan: one column,
+two new routes, and a change each in `/create-anos-account` and
+`/list-anos-accounts`), the wallet (its spec, step 2: a login stores the
+first key blob of each account, and every request to a signing server
+carries the passkey's answer), the signing server (its `README.md`, which
+is its spec, step 3: it asks `/check-signing-passkey` before it signs),
+then the record folders (step 4). With this server alone deployed nothing
+changes for anyone: no wallet calls the new routes or sends the new
+fields, and no signing server asks. Nothing is enforced until the signing
+servers are updated. Inside this server's own deploy the order matters:
+the schema file goes onto the database before the new code runs (22.6).
+Two new routes and one new column. No table, no env variable and no npm
+package. The validators, the doormen, the keyholders, the keyholder GUI
+and the wallet's proxy are not touched. Nothing above this section changes
+except the items in 22.5.
+
+### 22.1 The rule
+
+- The second key stays here (the plan's decision 2). An account's blob
+  with both pairs, `key_blob`, stays under the pod's key blob key, as it
+  is today, and once the account has a first key blob this server hands
+  `key_blob` to nobody. This is the simple lock. It is this server's rule,
+  so a copy of an open tab together with a copy of this server's database,
+  or of one of its backups, is the second key. The stronger lock, a second
+  secret from the passkey, is not built; it is a line of the
+  after-production list.
+- Nothing hands the second key out yet (decision 9). The route that hands
+  out the blob with both pairs comes later, with the screen where a person
+  asks for their second key (section 10). Until then nobody can get their
+  second key out, the person included.
+- The accounts that exist (decision 14). `key_blob` is kept exactly as it
+  is: nothing a person has already encrypted is changed or deleted. At the
+  person's next login the wallet makes one new, small blob for each of
+  their accounts, with pair one alone. Before it sends the blob, the
+  wallet opens it again and compares its keys with the public keys that
+  the account's creation names. This server stores the small blob beside
+  the old one, in `first_key_blob`, once. From then on it hands the wallet
+  only the small one. The person sees nothing of this. When something
+  fails, the old blob is still there, the wallet works as before, and the
+  next login tries again. A new account is stored the same way: the blob
+  with both pairs, as before, and the first key blob, in the one call that
+  registers it.
+- Two limits of that (decision 14). A copy of a tab made before that login
+  already holds both pairs of the accounts the person had then. And until
+  a person logs in again, this server still hands their old blob to their
+  own wallet.
+- A wallet page loaded before the wallet's update (decision 15) keeps its
+  old code until the person reloads it, and that code cannot open a first
+  key blob. So the wallet of step 2 says `firstKeyBlobs: true` when it
+  asks for the list, and a page of before says nothing. Once one of the
+  pod's accounts has a first key blob, a call that does not say it is
+  refused, `409 reload the wallet` (the old page guard, 22.3). A person
+  meets it when they log in on an old page after having logged in
+  somewhere with the new wallet. After a reload it works.
+- Anyone may ask `/check-signing-passkey`, with no login (decision 6),
+  like `/get-anos-account`, the read the validators use to ask which pod
+  made an account. The answer is yes or a refusal, it changes nothing, and
+  it is of no use without a real passkey answer.
+- A signing server that gets no answer from this server signs nothing
+  (decision 7). The wallet then asks the other signing server, and when
+  that fails too the person is told to try again. The cost: until now a
+  wallet tab that was already open could still send while this server was
+  down, and once the signing servers ask here it cannot.
+- A new anos account needs no passkey answer at the signing server
+  (decision 8). It moves no money, this server does not know the account
+  yet at that moment (the signing server signs the creation before the
+  wallet registers the account here), and the validators already refuse a
+  new account unless this server says a vouched pod made it. So
+  `/create-anos-account` asks for the session alone, as before, and
+  `/check-signing-passkey` is not asked about a creation.
+
+A login, in short (the plan's "How it works"):
+
+```
+the row of an account                    what the wallet is handed
+key_blob        both pairs (as before)   until the first key blob exists: key_blob
+first_key_blob  pair one alone (new)     from then on: first_key_blob, and
+                                         key_blob to nobody
+```
+
+For each account that has no first key blob yet, the wallet opens the old
+blob, wraps pair one's two secrets again alone, checks the new blob
+against the account's public keys, and stores it. The old blob is never
+written. With both halves of the plan in place a copy of a tab made after
+that login holds pair one only, and pair one alone gets no signature from
+a signing server.
+
+### 22.2 The column
+
+`db/schema.sql`, in two places. Inline in the `CREATE TABLE` of
+`anos_accounts`, after `key_blob`, for a database built from nothing
+(section 4). And in a new block after the seen position block, the last
+thing in the file, "The first key blob block (2026-11-20, spec section
+22)", for a database that has the table:
+
+```sql
+ALTER TABLE anos_accounts ADD COLUMN IF NOT EXISTS first_key_blob BYTEA CHECK (octet_length(first_key_blob) BETWEEN 1 AND 1024);
+```
+
+- `first_key_blob`: pair one's private halves alone, key1 scalar (32) ||
+  postQuantumKey1 seed (32), wrapped under the pod's key blob key: 92
+  bytes in practice (section 7). A `BYTEA` that may be null, 1 to 1024
+  bytes when it is set (the check). This server cannot open it. Null until
+  the wallet stored it, with the account (`/create-anos-account`) or later
+  (`/store-first-key-blob`). Written once and never changed: the one
+  statement that writes it later writes only where it is null. Once it is
+  set, `/list-anos-accounts` hands it to the wallet as `keyBlob` in place
+  of `key_blob`.
+
+`key_blob` is never changed: no statement of this server updates it,
+before this section or after it. Every account row of today has null in
+the new column. The column's comment is in the block only. No index:
+nothing looks an account up by it. The table's `updated_at` trigger moves
+`updated_at` when a first key blob is stored. The line is idempotent (`IF
+NOT EXISTS`), so the whole file applies to a live database and a second
+run changes nothing.
+
+Three comments of the file were brought in line with it: the comment over
+the `anos_accounts` block, the table's comment and the comment of
+`key_blob`. All three said "the pod's encryption key". The key blobs have
+been under the key blob key since 2026-11-08 (the wallet's spec, section
+7), and the step rewrote the three sentences anyway.
+
+### 22.3 The changes by route
+
+**POST /create-anos-account** (setup; section 5), one optional field more.
+
+Body: as section 5, and `firstKeyBlob`, optional: hex, 1 to 1024 bytes, 92
+in practice, pair one's private halves alone under the pod's key blob key.
+The wallet of step 2 sends it with every new account. A wallet page of
+before sends none, and the row then has none until that pod's next login.
+
+Checks, in order: as section 5, with one more after the check of
+`keyBlob`. When the body has a `firstKeyBlob`, it is 1 to 1024 bytes, else
+`400 invalid firstKeyBlob`. Only a body without the field counts as none:
+a `firstKeyBlob` that is `null`, a number or an empty string gets the
+`400`.
+
+Writes: `INSERT anos_accounts`, as section 5, with `first_key_blob` the
+blob that was sent, or null.
+
+Answer: `201 { accountId }`, as before.
+
+**POST /list-anos-accounts** (setup; section 5), one field in the body,
+one field more in the answer, and one refusal.
+
+Body: `{ firstKeyBlobs }`. `firstKeyBlobs: true` says that the caller's
+wallet can open a first key blob. A wallet page of before sends `{}`.
+
+Checks: the old page guard. When `firstKeyBlobs` is not `true` and at
+least one of the caller's rows has a first key blob, `409 reload the
+wallet`. Anything but the boolean `true` counts as not said. A pod none
+of whose rows has a first key blob is answered as before, whatever the
+body says.
+
+Reads: the caller's rows, oldest first, as before.
+
+Answer: `200 { accounts: [ { accountId, accountType, keyBlob,
+firstKeyOnly, creation, submittedAt, breakGlassBlob, createdAt } ] }`. For
+a row that has a first key blob, `keyBlob` is that blob, in hex, and
+`firstKeyOnly` is `true`. For a row without one, `keyBlob` is the blob
+with both pairs, as before, and `firstKeyOnly` is `false`. The field keeps
+its name, so the wallet's code that opens pair one from `keyBlob` does not
+change. Once a row has a first key blob, its blob with both pairs is
+answered to nobody: this is the only route that ever answered `key_blob`,
+and no other route does.
+
+**POST /store-first-key-blob** (setup), new.
+
+Body: `{ accountId, firstKeyBlob }`. `accountId` is one of the caller's
+accounts, hex like every id. `firstKeyBlob` is hex, 1 to 1024 bytes, 92 in
+practice: pair one's private halves alone under the pod's key blob key.
+The wallet sends it at a login, once for each account that has none.
+
+Checks, in order:
+
+1. The body is an object, and `accountId` and `firstKeyBlob` are strings,
+   else `400 bad request shape`.
+2. `accountId` is 32 bytes, else `400 invalid accountId`.
+3. `firstKeyBlob` is 1 to 1024 bytes, else `400 invalid firstKeyBlob`.
+4. A row with this `accountId` exists and is the caller's pod's, else
+   `404 account not found`.
+5. The row has no first key blob yet, else `409 first key blob already
+   stored`.
+
+Writes, one statement: `UPDATE anos_accounts SET first_key_blob = <the
+blob> WHERE account_id = <the account> AND anopod_id = <the caller> AND
+first_key_blob IS NULL`. It writes only where the column is null, so of
+two calls at the same moment one writes and the other gets the `409`.
+`key_blob` is not touched. No notification, no event.
+
+Answer: `200 { accountId }`, the account in hex.
+
+This server checks the blob's length and nothing else. It cannot open the
+blob, so it cannot tell whether pair one is inside; the wallet opens the
+new blob and compares its keys with the account's creation before it
+sends it (the wallet's spec).
+
+Nothing else changes: not `/mark-anos-account-submitted`, not
+`/get-anos-account`, not `/store-break-glass-blob`, and not the routes of
+other features that read an account row for its pod, its type or its
+creation. They read the new column along with the others and do not use
+it.
+
+### 22.4 `/check-signing-passkey`
+
+**POST /check-signing-passkey** (none), new. For the signing servers.
+Before a signing server signs for an account, it asks here whether the
+passkey answer that came with the request is from a passkey of the pod
+that made the account, and is an answer to the challenge the signing
+server worked out from the exact thing it is asked to sign. Unsigned, like
+`/get-anos-account`: a plain JSON body, no session, and anyone may ask.
+
+Body: `{ accountId, challenge, assertion }`. `accountId` is an anos
+account's id, hex like every id. `challenge` is 32 bytes, hex. `assertion`
+is the WebAuthn JSON of a passkey's answer to that challenge, the
+browser's `PublicKeyCredential.toJSON()`, in the form `/unlock` and
+`/add-passkey` take it.
+
+Checks, in order:
+
+1. The body is an object, `accountId` and `challenge` are strings, and
+   `assertion` and `assertion.response` are objects, else `400 bad request
+   shape`.
+2. `accountId` is 32 bytes, else `400 invalid accountId`. `challenge` is
+   32 bytes, else `400 invalid challenge`.
+3. The answer carries no PRF output (`clientExtensionResults.prf.results`),
+   else `400 prf output in request`. The PRF output is the phone's secret
+   and reaches no server.
+4. The account has a row in `anos_accounts`, and the pod that made it has
+   its row in `anopods`, else `404 unknown account`.
+5. The passkey that answered (`assertion.rawId`) is one of that pod's: its
+   main one, on the pod's `anopods` row, or one it added, an
+   `added_passkeys` row of that pod. Else `401 unknown passkey`: a passkey
+   nobody has, another pod's passkey and an answer without a `rawId` all
+   get it. When the answer carries a user handle, it is the pod's id, else
+   `401 user handle mismatch`. An answer without a user handle passes, as
+   in `/add-passkey` (19.3): the passkey is matched to the pod by this
+   server's own rows.
+6. The answer itself verifies, by the check `/unlock` uses
+   (`verifyAuthentication` in `src/auth/webauthn.js`): the signature by
+   that passkey's stored public key, the challenge in the client data
+   equal to the body's `challenge`, the origin one of `WEB_ORIGIN`, the RP
+   id `RP_ID`, and user verification. Else `401 passkey verification
+   failed`; the library's own reason goes to the log.
+
+Reads: `anos_accounts`, `anopods` and, when the passkey is not the pod's
+main one, `added_passkeys`. Writes: nothing. The challenge is the caller's
+own, not one of `/challenge`: the `challenges` table is neither read nor
+written. So an answer is not used up, and the same answer may be checked
+again and gets the same yes.
+
+Answer: `200 { accountId, verified: true }`, the account in hex. A no is a
+refusal, `{ error: '<reason>' }` with its status, as everywhere.
+
+Any passkey of the pod is good here, the main one or an added one. The
+wallet asks for the one that opened the session (its spec). There is no
+limit on how often the route may be asked (section 10).
+
+How the signing server works the challenge out (the plan's decision 17;
+the signing server's `README.md` has it once step 3 is built). The
+fingerprint of a thing to sign is the SHA-256 of the canonical bytes of
+its payload, the same bytes pair one signs and a signing server signs, as
+64 lowercase hex characters. The challenge the passkey answers is the
+SHA-256 of the fixed label `anos/signing-passkey/v1:` followed by the
+fingerprints, joined by commas. For one transfer that is one fingerprint.
+For the attestors' "Sign all attestations" on a recovery case it is one
+per move. One answer covers at most 100 fingerprints. The wallet sends the
+list with its request. The signing server finds the fingerprint of its own
+payload in that list, works the challenge out again from the list, and
+asks here with the signer's account id, the challenge and the passkey's
+answer. So a yes from this server says: a passkey of the pod that made
+this account answered for exactly the things in that list. This server
+sees the 32 bytes of the challenge. It does not see the list or the
+payload.
+
+A passkey answer has no time limit of its own here. The same transfer
+cannot be written twice, and the validators refuse a transfer whose date
+is more than 10 minutes from their clock; a follow-up carries no such
+limit (decision 17). A signing server gives this server 4 seconds to
+answer, follows no redirect, and counts a `200` only when it says
+`verified: true` (step 3 of the plan).
+
+### 22.5 Files
+
+- `db/schema.sql`: the line in the `CREATE TABLE` of `anos_accounts`; the
+  first key blob block, new, at the end; the comment over the
+  `anos_accounts` block, the table's comment and the comment of
+  `key_blob`; and, on the user's word after the build, the file's opening
+  comment, which names the new block among the idempotent ALTERs.
+- `src/anos-accounts/anos-accounts.queries.js`: `accountRow` and
+  `COLUMNS`, the new column; `insertAccount`, the new field;
+  `setFirstKeyBlob`, new.
+- `src/anos-accounts/anos-accounts.service.js`: `accountOf` (`keyBlob`,
+  `firstKeyOnly`); `createAnosAccount`, the optional `firstKeyBlob`;
+  `listAnosAccounts`, the body and the old page guard;
+  `storeFirstKeyBlob`, new; the import of `setFirstKeyBlob`; the comment
+  of `keyBlobLength` and the file's opening comment.
+- `src/anos-accounts/anos-accounts.handlers.js`: `listAnosAccountsHandler`
+  hands the body on; `storeFirstKeyBlobHandler`, new, and the import of
+  `storeFirstKeyBlob`.
+- `src/anos-accounts/anos-accounts.router.js`: the route's line, the
+  import of `storeFirstKeyBlobHandler`, and "Four routes" in the comment.
+- `src/passkeys/passkeys.service.js`: `checkSigningPasskey`, new, at the
+  end; the imports of `findById` and `findAccount`; one sentence in the
+  file's opening comment, and, on the user's word after the build, that
+  comment's last sentence. `addPasskey` and `listPasskeys` keep their
+  bodies: the lookup of check 5 is written out in the new function, not
+  shared with `addPasskey`.
+- `src/passkeys/passkeys.handlers.js`: `checkSigningPasskeyHandler`, new,
+  the import of `checkSigningPasskey`, and the file's opening comment.
+- `src/passkeys/passkeys.router.js`: the route's line, with no middleware
+  in it, the import of `checkSigningPasskeyHandler`, and the comment.
+- `src/app.js`: the comments on the lines of the passkeys router and of
+  the anos accounts router. No line of code.
+- `src/auth/webauthn.js`: on the user's word after the build, one sentence
+  at the end of the file's opening comment. No line of code.
+- Here: section 2 (the none row and the setup row), section 4
+  (`### anos_accounts`: the first sentence, the line in the SQL and the
+  sentence on the lengths), section 5 (`### POST /create-anos-account` and
+  `### POST /list-anos-accounts`, a sentence at the end of each), section
+  7 (the row of the anos `keyBlob`, and a new row after it), section 10
+  (a new last item) and this section; and, on the user's word after the
+  build, a sentence in brackets in section 5
+  (`### POST /create-anos-account`) and one in 19.6. `README.md`: "Who may
+  call what"
+  (the none row and the setup row), the Endpoints table (the rows of
+  `/create-anos-account` and `/list-anos-accounts`, and two new rows), the
+  row of `anos_accounts` in the tables table, the `passkeys/` and
+  `anos-accounts/` lines of the Layout, and "Deferred, by decision" (a
+  new last item).
+
+Nothing else in existing code changes: not `/get-anos-account`, not
+`/mark-anos-account-submitted`, not `/add-passkey`, not `/list-passkeys`,
+not `/challenge`, not the code of `src/auth/webauthn.js`, not
+`.example.env`. Two new routes and one new column; no table, no env
+variable, no npm package.
+
+### 22.6 Notes from the build
+
+#### Build 1, the masterpod (2026-11-20)
+
+Built from
+`~/Desktop/Z-TestNet/forclaude/second-key-and-signing-passkey-plan-1.md`
+section 1, on main at 521b3bb, the working tree clean. No new npm package,
+no test script and no rig (none was asked for). The schema was not applied
+to any database for keeps: the user applies the whole file as section 6 of
+`forclaude/masterpod-deploy-plan-1.md` says. It goes on before this code
+runs. On a database without the column this code cannot answer
+`/list-anos-accounts`, so every wallet's account list would fail, and with
+it every other route that reads an account row (listed below). The other
+way round is safe: the code of before names its columns and never looks at
+the new one. Both were tried (the checks below). What the plan left open
+and how it was decided:
+
+- The date. BUILD-DATE is 2026-11-20, the day of the build and of the
+  plan's FINAL.
+- The plan's code blocks are in the files as written. To catch a copying
+  mistake, the working tree was compared with a copy of 521b3bb that the
+  planning chat's own script had patched (`patch_mp.py`, counted exact
+  replacements, the script the plan's code was tried with).
+  `db/schema.sql` and the eight source files were equal to it, but for
+  the four comments that script does not write: the opening comments of
+  `anos-accounts.service.js`, `passkeys.service.js` and
+  `passkeys.handlers.js`, and the comment of `passkeys.router.js`.
+- Comments. Where the plan gives a comment's new words and not its lines,
+  the lines the change does not reach keep their breaks, so the diff shows
+  the changed sentence alone. The comment of `createAnosAccount` has the
+  breaks of the planning chat's copy.
+- `db/schema.sql`. The new line of the `CREATE TABLE` stands after
+  `key_blob`, as the plan has it. So on a database built from nothing
+  `first_key_blob` is the table's fifth column, and on a database that had
+  the table it is the last, the tenth. The code names its columns, so the
+  position does not matter. PostgreSQL names the check
+  `anos_accounts_first_key_blob_check` on both ways. The block is the last
+  thing in the file, after the seen position block, in that block's form.
+- `listAnosAccounts` reads `body.firstKeyBlobs` with no shape check of its
+  own. It needs none: the session check lets a request through only when
+  its `payload.body` is an object (`parseSignedRequest`).
+- `storeFirstKeyBlob` reads the row first (`findAccount`), for the `404`
+  and the `409`. The `UPDATE` then carries both conditions again, the pod
+  and the null, so it cannot write another pod's row or a row that got a
+  blob in between; a write that finds no such row is the `409`.
+- `checkSigningPasskey`. The checks run in the plan's order, so a body
+  with a PRF output is refused before the account is looked up. The
+  account id and the challenge are read by `decodeId`, so base64 is taken
+  beside hex, as for every id, and the answer gives the account in hex.
+  The pod is read by `findById`; an account whose pod row is gone answers
+  `404 unknown account`, like an account this server does not know. The
+  second lookup, in `added_passkeys`, runs only when the passkey is not
+  the pod's main one, so a check with the main passkey costs two reads.
+- The log. A yes writes no line: `answer()` logs refusals alone (`failed:
+  <reason>`). A failed check 6 also logs the library's reason before it
+  (`passkey verification failed: <reason>`), as `/add-passkey` does. For
+  a wrong challenge that reason names the two challenges, and for another
+  site the origin. Nothing else of a request is logged: no account id, no
+  credential id and no signature.
+- Here. In section 2 the none row takes the new route after
+  `/get-anos-account`, and the setup row takes `/store-first-key-blob`
+  after `/list-anos-accounts`, each with "(section 22)", as the plan has
+  it. In section 4 the plan's words stand in the place of the old ones, so
+  "(which this server cannot open)" now follows "(section 22)". In section
+  5 each of the two routes got one sentence at its end that points to
+  22.3, in the form of the sentences that point to 19.3 and 20.2. The body
+  line of `/list-anos-accounts` there still reads `{}`, and its answer
+  line still lists six fields, without `breakGlassBlob`, as before this
+  step. The new row of section 7 writes the two bars in the table's own
+  form. Section 10 got the four things as one new last item.
+- The README. The build put the plan's sentence into the row of
+  `/list-anos-accounts`. The old row's words "the creation, `submittedAt`
+  and `breakGlassBlob` (null until a recovery stored it)" are not in that
+  sentence, so the row no longer named those three; section 5, 12.4.5 and
+  22.3 here do. The row got them back the same day (below). In "Who may
+  call what" the none row names the new route after `/get-anos-account`,
+  with no words around it.
+- Checks (1.8). `node --check` on the eight changed `.js` files, clean, on
+  Node 24.22.0. Then one load of the app with no server, by a throwaway
+  script in the build chat's scratch folder: `src/app.js` imported and
+  `createApp()` called, with made-up `PGDATABASE`, `PGUSER` and
+  `PGPASSWORD` and `PGHOST=/nonexistent`. It counted 99 routes, where the
+  files of 521b3bb count 97, with `/store-first-key-blob` between
+  `/list-anos-accounts` and `/get-anos-account`, and
+  `/check-signing-passkey` after `/list-passkeys`. Nothing listened and no
+  database was reached. The schema by psql against this Mac's PostgreSQL
+  (17.11), as the superuser `codex` with `SET LOCAL ROLE
+  masterpodsoftware`, in one transaction that was rolled back. First on
+  this Mac's own `masterpod` database, which is an old build of 36 tables:
+  the new file made it 37 tables, `first_key_blob` a `bytea` that may be
+  null, with no default; the new file once more changed nothing. One md5
+  over every column, constraint, index, trigger, comment and function of
+  the schema was the same after both runs. Then a scratch schema that
+  first got the file of 521b3bb: 37 tables, no `first_key_blob`, and one
+  account row put in. The new file on top: the column was there as the
+  tenth, with its check and its comment, the table's comment and the
+  comment of `key_blob` read as written, and the account row kept its
+  `key_blob` of 156 bytes and had null in the new column. The new file
+  once more changed nothing, by the same md5. After the rollback the
+  database was as before: its 36 tables, no scratch schema, the same md5.
+- The modules themselves (1.8), called as a route calls them, against that
+  scratch schema inside a rolled-back transaction, with the planning
+  chat's throwaway script (`check_mp.mjs`) pointed at the working tree. It
+  puts a stand-in in the place of `src/db/pool.js`: one client, with the
+  transaction of `withTransaction` turned into a savepoint, so nothing
+  could commit. The passkey answers were made with `node:crypto`: a P-256
+  key, its COSE form as the stored public key, the authenticator data for
+  the RP id `localhost` with the flags user present and user verified, and
+  a signature over it and the hash of the client data. 37 results, all as
+  the plan's table has them. The new code on the tables of 521b3bb failed
+  `/list-anos-accounts` with `column "first_key_blob" does not exist`.
+  With the new file on top: a creation without `firstKeyBlob` (`201`); the
+  list before a store, with and without `firstKeyBlobs` (the blob with
+  both pairs, `firstKeyOnly` false); the store's refusals (`404 account
+  not found` for another pod's account, `400 bad request shape`, `400
+  invalid firstKeyBlob` for 1025 bytes), the store (`200`) and a second
+  one (`409 first key blob already stored`); the list without
+  `firstKeyBlobs` after it (`409 reload the wallet`) and with it (the
+  small blob, `firstKeyOnly` true, the blob with both pairs nowhere in the
+  answer); the row after it (`key_blob` as it was); a creation with both
+  blobs and its list; `400 invalid firstKeyBlob` for a number; a second
+  pod untouched by the first pod's small blobs. The check: `200 {
+  accountId, verified: true }` for the pod's passkey, its account and the
+  challenge it answered, the same again, and with the pod's id as user
+  handle; `401 passkey verification failed` for an answer to another
+  challenge, for one made for another site and for one without user
+  verification; `401 unknown passkey` for another pod's passkey, for this
+  pod's passkey with another pod's account and for a passkey nobody has;
+  `404 unknown account`; `401 user handle mismatch`; `400 prf output in
+  request`, `400 invalid challenge`, `400 bad request shape`; `200` for a
+  passkey the pod added, and `401 unknown passkey` for that passkey with
+  another pod's account. The `challenges` table held no row at the end.
+- Beyond the letter of 1.8, with nothing kept. (a) The schema: the new
+  file alone into a second empty scratch schema, twice. 37 tables, the
+  column the fifth, and the same md5 as the updated schema after both runs
+  (the md5 leaves the column's position out). The column's check refused
+  an empty blob and one of 1025 bytes and took none, 92 bytes and 1024
+  bytes. The only difference between this Mac's own tables with the new
+  file on top and tables built from nothing was an older check on
+  `escrow_dispute_evidence`, which is not this step's. (b) The new code on
+  the tables of 521b3bb, call by call: `/create-anos-account`,
+  `/store-first-key-blob` and `/check-signing-passkey` failed like the
+  list, with the same missing column, because each reads an account row
+  through `findAccount`, which names the column. By the code the same
+  holds for the other routes that call `findAccount`:
+  `/add-noted-transaction`, `/list-anos-account-profiles`,
+  `/open-trade-case`, `/open-dispute-case`, `/file-break-glass-moves`, and
+  the sign-offs of a recovery case, a trade case, a dispute case and a
+  break-glass case. `/get-anos-account`, the validators' read, and
+  `/mark-anos-account-submitted` answered: they name their own columns.
+  (c) The other way round: the code of 521b3bb, from a copy of that
+  commit's files, on the new tables. Its `/create-anos-account`,
+  `/list-anos-accounts`, `/get-anos-account` and
+  `/mark-anos-account-submitted` answered, and the row it wrote had null
+  in the new column. For an account that had a first key blob it handed
+  out the blob with both pairs, and the row kept both blobs: that is the
+  way back of the plan's section 5. (d) The handlers with a stand-in for
+  the response: `200 { accountId }` and `409 { error: 'first key blob
+  already stored' }` for the store, `409 { error: 'reload the wallet' }`
+  for the list without `firstKeyBlobs` and with the string `"true"`, the
+  eight fields of an account in the answer's order, `200 { accountId,
+  verified: true }` and `401 { error: 'unknown passkey' }` for the check,
+  and `400 bad request shape` for a check with no body at all. (e) A few
+  more refusals: `firstKeyBlob` as `null` or an empty string at a creation
+  (`400 invalid firstKeyBlob`); at the store a blob that is a number (`400
+  bad request shape`), an empty string (`400 invalid firstKeyBlob`), an
+  account id of 2 bytes (`400 invalid accountId`) and an account nobody
+  made (`404 account not found`); at the check the ids in base64 (`200`),
+  an account id of 2 bytes, an assertion without `response`, an answer
+  without `rawId` (`401 unknown passkey`), the pod's passkey id with
+  another key's signature (`401 passkey verification failed`) and an
+  account whose pod row is gone (`404 unknown account`). 37 further
+  results, all as expected.
+- Not tried. No server was booted, no request was signed and no route was
+  called over HTTP: the session check and the envelope are as they were.
+  No real passkey, no browser, no phone, no wallet and no signing server
+  was part of it. Two stores at the same moment were not raced, since the
+  runs use one client: that one writes and the other gets the `409` is
+  read from the `UPDATE`, which writes only where the column is null.
+- Places the plan does not name that this step left out of date. The
+  build left them as they are and put them to the user. In
+  `db/schema.sql`: the file's opening comment lists the blocks at the end
+  whose ALTERs change a table that exists, without the first key blob
+  block. Here, 19.6, a note of the build of 2026-11-18: "`/list-passkeys`
+  reads nothing from its body, as `/list-anos-accounts` reads nothing from
+  its own"; `/list-anos-accounts` now reads `firstKeyBlobs`. In
+  `src/passkeys/passkeys.service.js`: the opening comment ends "Each
+  function runs its route's checks in the spec's order (19.3)", and the
+  new function's checks are in 22.4. In `src/auth/webauthn.js`, which this
+  step does not touch: the opening comment says both verifications expect
+  "the challenge the server issued", and `/check-signing-passkey` hands
+  `verifyAuthentication` a challenge of the caller's own. One more place
+  is older than this step: section 5, `### POST /create-anos-account`,
+  says "the encryption key the `keyBlob` is under exists", and the key
+  blobs have been under the key blob key since 2026-11-08. The user had
+  all five brought in line the same day (below).
+- Not touched by the build: every other feature folder, `src/auth/`,
+  `.example.env`, `package.json`, the scripts. In `src/app.js` two
+  comments changed and no line of code. One comment in
+  `src/auth/webauthn.js` changed the same day (below).
+- The numbers. After the build `db/schema.sql` had 1404 lines, 19 more
+  than before, and its sha256 began dbc98dcc. With its opening comment
+  brought in line (below) it has 1405 lines and its sha256 begins
+  b65403d0. Before the step it had 1385 lines and its sha256 began
+  a3de2618. It makes 37 tables, as before: the count that the deploy's
+  schema line prints does not change with this step, so a look at the
+  column itself shows that the change landed.
+
+#### After the build's report, the same day (2026-11-20)
+
+The user read the report in the build chat. It listed the five places
+above, with the advice to bring all five in line. The user: "go ahead and
+change those things you listed." So the five were brought in line before
+the commit. None of this is in the plan.
+
+- `db/schema.sql`, the file's opening comment. The list of the blocks
+  whose ALTERs change a table that exists now ends "marketplace, case
+  chat, seen position and first key blob blocks at the end". The comment
+  is one line longer.
+- Here, 19.6, a note of the build of 2026-11-18. The sentence of before
+  stays. A sentence in brackets after it, which begins "Since 2026-11-20,
+  section 22", says that `/list-anos-accounts` now reads one field of its
+  body.
+- `src/passkeys/passkeys.service.js`, the opening comment. Its last
+  sentence now reads "the spec's order (19.3, and 22.4 for
+  /check-signing-passkey)". No line of code.
+- `src/auth/webauthn.js`, the opening comment. Its sentences stay. One
+  sentence at its end, which begins "Since 2026-11-20", says that
+  `/check-signing-passkey` hands `verifyAuthentication` a challenge this
+  server did not issue: its caller's own. No line of code.
+- Here, section 5, `### POST /create-anos-account`. The sentence of before
+  stays. A sentence in brackets after it, which begins "Since 2026-11-08",
+  says that the `keyBlob` is under the pod's key blob key and no longer
+  under the encryption key. This place was out of date before the step.
+- `README.md`, the row of `/list-anos-accounts`. This one was not among
+  the five. The planning chat, which wrote the plan, read the build's
+  report and wrote in the work note that its sentence for the row had
+  left out "the creation, `submittedAt` and `breakGlassBlob`" by a slip
+  and not by choice. So the row has the old words back, between the blob
+  and the `409`: "with the creation, `submittedAt` and `breakGlassBlob`
+  (null until a recovery stored it)". Told to the user in the same
+  report.
+- Checks. All of them ran again, with the same results. `node --check` on
+  nine files, the eight of the build and `src/auth/webauthn.js`, clean.
+  The load with no server: 99 routes. The schema check in scratch schemas,
+  rolled back: the second run changed nothing, and the tables built from
+  nothing equalled the updated ones, by the same md5s as before, since a
+  comment at the top of the file stores nothing. The two runs of the
+  modules: 37 and 37 results, all as expected. After the rollback the
+  database was as before.
+- The numbers. `db/schema.sql` has 1405 lines, one more, and its sha256
+  begins b65403d0 where it began dbc98dcc after the build. The schema line
+  of the deploy carries the whole hash, so it was written with this one.
+  One commit carries the build and this: twelve files, the eleven of the
+  build and `src/auth/webauthn.js`.

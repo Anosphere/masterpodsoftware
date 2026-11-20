@@ -15,6 +15,7 @@ function accountRow(row) {
     anopodId: row.anopod_id,
     accountType: row.account_type,
     keyBlob: row.key_blob,
+    firstKeyBlob: row.first_key_blob,
     creation: row.creation,
     submittedAt: row.submitted_at,
     breakGlassBlob: row.break_glass_blob,
@@ -22,7 +23,7 @@ function accountRow(row) {
   };
 }
 
-const COLUMNS = 'account_id, anopod_id, account_type, key_blob, creation, submitted_at, break_glass_blob, created_at';
+const COLUMNS = 'account_id, anopod_id, account_type, key_blob, first_key_blob, creation, submitted_at, break_glass_blob, created_at';
 
 
 /** The row with this account id (a 32-byte Buffer), or null. */
@@ -73,15 +74,30 @@ export async function countAccountsSince(client, anopodId, days) {
 
 /**
  * Inserts one account: { accountId, anopodId, accountType, keyBlob,
- * creation }, submitted_at null. A duplicate account id throws a unique
- * violation (db/transaction.js isUniqueViolation).
+ * firstKeyBlob, creation }, submitted_at null. firstKeyBlob is a Buffer,
+ * or null when the wallet sent none (spec section 22). A duplicate account
+ * id throws a unique violation (db/transaction.js isUniqueViolation).
  */
-export async function insertAccount({ accountId, anopodId, accountType, keyBlob, creation }, db = pool) {
+export async function insertAccount({ accountId, anopodId, accountType, keyBlob, firstKeyBlob, creation }, db = pool) {
   await db.query(
-    `INSERT INTO anos_accounts (account_id, anopod_id, account_type, key_blob, creation)
-     VALUES ($1, $2, $3, $4, $5::jsonb)`,
-    [accountId, anopodId, accountType, keyBlob, JSON.stringify(creation)],
+    `INSERT INTO anos_accounts (account_id, anopod_id, account_type, key_blob, first_key_blob, creation)
+     VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
+    [accountId, anopodId, accountType, keyBlob, firstKeyBlob, JSON.stringify(creation)],
   );
+}
+
+/**
+ * Stores the first key blob on this pod's account (spec section 22,
+ * /store-first-key-blob): pair one's private halves alone. Written once: a
+ * row that already has one is left as it is. Returns true when the row is
+ * this pod's, had none and was written; false otherwise.
+ */
+export async function setFirstKeyBlob(accountId, anopodId, blob) {
+  const { rowCount } = await query(
+    'UPDATE anos_accounts SET first_key_blob = $3 WHERE account_id = $1 AND anopod_id = $2 AND first_key_blob IS NULL',
+    [accountId, anopodId, blob],
+  );
+  return rowCount === 1;
 }
 
 /**
