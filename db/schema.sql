@@ -7,8 +7,8 @@
 -- EXISTS, functions and triggers use OR REPLACE, comments just overwrite.
 -- It never alters a table that already exists, though, apart from the
 -- idempotent ALTERs of the appointments block and of the recovery,
--- attestation, marketplace and case chat blocks at the end. After changing
--- this file, rebuild the local database from scratch with
+-- attestation, marketplace, case chat and seen position blocks at the end.
+-- After changing this file, rebuild the local database from scratch with
 --
 --   npm run db:reset
 --
@@ -494,11 +494,12 @@ CREATE TABLE IF NOT EXISTS chat_room_members (
   chat_room_id BYTEA       NOT NULL CHECK (octet_length(chat_room_id) = 32),
   anopod_id    BYTEA       NOT NULL CHECK (octet_length(anopod_id) = 32),
   created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  seen_position BIGINT NOT NULL DEFAULT 0 CHECK (seen_position >= 0),
   PRIMARY KEY (chat_room_id, anopod_id)
 );
 CREATE INDEX IF NOT EXISTS chat_room_members_anopod_id_idx ON chat_room_members (anopod_id);
 
-COMMENT ON TABLE  chat_room_members              IS 'Who is in which room. Written and deleted together with the member''s chat_hpke row.';
+COMMENT ON TABLE  chat_room_members              IS 'Who is in which room, and how far each has read (seen_position). Written and deleted together with the member''s chat_hpke row.';
 COMMENT ON COLUMN chat_room_members.chat_room_id IS 'The room.';
 COMMENT ON COLUMN chat_room_members.anopod_id    IS 'The member.';
 COMMENT ON COLUMN chat_room_members.created_at   IS 'When the member joined. Set by default, never changed.';
@@ -1371,3 +1372,14 @@ COMMENT ON COLUMN added_passkeys.pass_key_public_key          IS 'The added pass
 COMMENT ON COLUMN added_passkeys.anopod_encryption_key_blob_1 IS 'The pod''s encryption key wrapped under this passkey''s PRF-derived key (iv || ciphertext || tag, 60 bytes). The server cannot open it; /unlock hands it back as blob1.';
 COMMENT ON COLUMN added_passkeys.wrapped_key_blob_key         IS 'The pod''s key blob key wrapped under a key from this passkey''s PRF output (iv || ciphertext || tag, 60 bytes; wallet spec 7). The server cannot open it; /unlock hands it back.';
 COMMENT ON COLUMN added_passkeys.created_at                   IS 'When the row was inserted (the add). Set by default, never changed.';
+
+
+-- The seen position block (2026-11-19, spec section 21):
+-- chat_room_members.seen_position, the highest message position a member
+-- has seen in the room, 0 until the member's wallet reports one. The
+-- column is also inline in the CREATE TABLE above, for a fresh database.
+-- No index: nothing looks a member up by it. Idempotent: IF NOT EXISTS.
+
+ALTER TABLE chat_room_members ADD COLUMN IF NOT EXISTS seen_position BIGINT NOT NULL DEFAULT 0 CHECK (seen_position >= 0);
+
+COMMENT ON COLUMN chat_room_members.seen_position IS 'The highest message position the member has seen in the room (spec section 21), 0 until the member''s wallet reports one. Raised by /mark-messages-seen, never lowered, never above the room''s newest message. /list-chat-rooms hands it to every member of the room.';

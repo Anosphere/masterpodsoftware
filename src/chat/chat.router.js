@@ -12,12 +12,13 @@ import {
   listChatRooms,
   listMessagesHandler,
   listPublicChatRooms,
+  markSeenHandler,
   requestToJoinHandler,
   sendMessageHandler,
 } from './chat.handlers.js';
 
 /**
- * Chat feature router. All thirteen routes are level "setup": a vouched pod
+ * Chat feature router. All fourteen routes are level "setup": a vouched pod
  * with chat keys.
  *
  * Mounted at the root in app.js, so the paths below are the full public
@@ -37,4 +38,5 @@ chatRouter.post('/list-chat-rooms', requireSetup, listChatRooms);
 chatRouter.post('/list-public-chat-rooms', requireSetup, listPublicChatRooms);
 chatRouter.post('/list-messages', requireSetup, listMessagesHandler);
 chatRouter.post('/send-message', requireSetup, sendMessageHandler);
+chatRouter.post('/mark-messages-seen', requireSetup, markSeenHandler);
 chatRouter.post('/get-chat-public-keys', requireSetup, getChatPublicKeysHandler);
