@@ -43,8 +43,11 @@ backup code, backup code rotation, several passkeys, several sessions).
   does, and the width and the height its own header names must each be at
   most 4096 pixels. A security image cannot be looked into.
 - Every table has `created_at`, and `updated_at` with the `set_updated_at`
-  trigger unless the rows never change (then `created_at` only). Every table
-  and column gets a `COMMENT ON`. No foreign keys, as in anossoftware; the
+  trigger unless the rows never change (then `created_at` only). (Since
+  2026-11-19, section 21, one table is an exception: a `chat_room_members`
+  row changes when its `seen_position` rises, and the table still has
+  `created_at` only. The row says how far, not when.) Every table and
+  column gets a `COMMENT ON`. No foreign keys, as in anossoftware; the
   services keep the references straight.
 - Errors are `{ error: '<reason>' }` with `400` for a bad shape or value,
   `401` for anything wrong with the signature or the session, `403` for a
@@ -544,6 +547,7 @@ CREATE TABLE IF NOT EXISTS chat_room_members (
   chat_room_id BYTEA       NOT NULL CHECK (octet_length(chat_room_id) = 32),
   anopod_id    BYTEA       NOT NULL CHECK (octet_length(anopod_id) = 32),
   created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  seen_position BIGINT NOT NULL DEFAULT 0 CHECK (seen_position >= 0),
   PRIMARY KEY (chat_room_id, anopod_id)
 );
 CREATE INDEX IF NOT EXISTS chat_room_members_anopod_id_idx ON chat_room_members (anopod_id);
@@ -561,6 +565,11 @@ CREATE TABLE IF NOT EXISTS chat_hpke (
 that member's chat public key (section 7). Stored as delivered; only that
 member can open it. A member row and its `chat_hpke` row are always written
 and deleted together.
+
+`seen_position` (added 2026-11-19, section 21) is the highest message
+position the member has seen in the room, 0 until the member's wallet
+reports one: /mark-messages-seen raises it, and /list-chat-rooms hands it
+to every member of the room.
 
 ### chat_room_invites, chat_room_join_requests
 
@@ -1092,7 +1101,7 @@ Answer:
 ```json
 {
   "rooms": [ { "chatRoomId", "type", "name", "listingId", "listing", "caseId", "caseKind", "creatorAnopodId", "hpkeKey",
-               "members": [ { "anopodId", "username" } ], "invited": [ { "anopodId", "username" } ],
+               "members": [ { "anopodId", "username", "seenPosition" } ], "invited": [ { "anopodId", "username" } ],
                "lastMessage", "lastPosition", "createdAt" } ],
   "invites": [ { "inviteId", "chatRoomId", "type", "name", "listingId", "listing", "caseId", "caseKind", "from": profile, "createdAt" } ],
   "joinRequests": [ { "joinRequestId", "chatRoomId", "from": profile, "createdAt" } ]
@@ -1121,6 +1130,10 @@ A room about an attestor case (`chat_rooms.case_id`, 2026-11-11, section
 or `recovery`), straight from the room's two columns; for other rooms both
 are null. Each invite carries the same two, so the person's request can say
 which kind of case it is about.
+Each entry of `members` carries `seenPosition` (2026-11-19, section 21),
+the highest message position that member has seen in the room, as a
+number, 0 until that member's wallet reports one; an entry of `invited`
+carries none.
 
 ### POST /list-public-chat-rooms (setup)
 
@@ -1152,6 +1165,22 @@ Checks: member (`403 not a member`).
 Writes: `chat_room_messages`.
 
 Answer: `201 { messageId, position }`.
+
+### POST /mark-messages-seen (setup)
+
+Body: `{ chatRoomId, position }`, `position` a whole number, 1 or more: the
+highest message position the caller's wallet has shown (2026-11-19, section
+21).
+
+Checks: `400 bad request shape`, `400 invalid chatRoomId`, `400 invalid
+position`, then member (`403 not a member`).
+
+Writes: `chat_room_members`, the caller's `seen_position`: it rises to
+`position`, never above the room's newest message; a lower position changes
+nothing.
+
+Answer: `200 { chatRoomId, seenPosition }`, `seenPosition` what the row
+holds afterwards, as a number.
 
 ### POST /get-chat-public-keys (setup)
 
@@ -6453,3 +6482,336 @@ by the code of before too. What the plan left open and how it was decided:
   `src/recovery/recovery.service.js`, `src/passkeys/`, `db/schema.sql`,
   `.example.env`, `package.json`, the scripts. In `src/recovery/` one
   comment changed and no line of code.
+
+## 21. Seen in chat (2026-11-19)
+
+Design settled 2026-11-19 in a planning chat (the plan is
+`~/Desktop/Z-TestNet/forclaude/wallet-chat-and-passkey-plan-1.md`, FINAL,
+2026-11-19). Why: in a chat of the production wallet nothing said whether
+the other person had seen a message. The user, 2026-11-19: "It's unclear
+as to whether or not there is a read notification." And, asked which of
+two things was meant: "Yes, we want to know if the other person has seen
+the message." This server did not know what anyone had read: each device
+kept its own list, for its unread dot. So this server now keeps how far
+each member of a chat has read, and the wallet shows it as the words
+"Sent" and "Seen" under a person's own messages. Two repos in order: this
+server (this section, step 3 of the plan: one column, one route, and one
+field more in the answer of `/list-chat-rooms`) and the wallet (its spec,
+step 4: the report while a chat is on the screen, and the two words), then
+the record folder (step 6). Steps 1, 2 and 5 of the plan are the wallet's
+alone. Either order of the two deploys is safe; the usual order is kept,
+this server first (the plan's section 7). With this server alone deployed
+nothing changes for anyone: a wallet of before calls no new route and
+ignores the new field. A new wallet against a masterpod of before gets a
+`404` for its first report in a chat and reports nothing more until that
+chat is opened again; it shows neither "Sent" nor "Seen". The same happens
+to a report that reaches a server not yet updated, while the three servers
+are updated one after the other. Inside this server's own deploy the order
+matters: the schema file goes onto the database before the new code runs
+(21.5). One new route and one new column. No table, no env variable and no
+npm package. The validators, the doormen, the keyholders, the signing
+servers and the wallet's proxy are not touched. Nothing above this section
+changes except the items in 21.4.
+
+### 21.1 The rule
+
+- A seen position is the highest message position a member has seen in a
+  room. Every message has a position (`chat_room_messages.position`,
+  section 4), so one number per member and room says how far that member
+  has read. It is 0 until the member's wallet reports one. "Seen" means
+  that the chat was open on a visible page after the message arrived; it
+  does not mean the person read it.
+- The member's own wallet writes it, with `/mark-messages-seen`, and only
+  while the chat is on the screen: a chat left open in a hidden tab
+  reports nothing (the wallet's spec). The row written is the caller's
+  own, found by the session; no route writes another member's position.
+- It is never lowered, and never above the room's newest message. A report
+  of a lower position changes nothing. A report above the newest message
+  stores the newest message's position.
+- Every member of the room reads every member's position, in the answer of
+  `/list-chat-rooms`. An attestor who was invited into a marketplace chat
+  and accepted is a member (section 18): the attestor reads the two
+  traders' positions, and they read the attestor's. A person who is only
+  invited so far is no member yet: they have no position and read none.
+- What this server learns: how far each member of each room has read. It
+  keeps the number alone, with no time beside it. It still learns nothing
+  of what a message says.
+
+### 21.2 The column
+
+`db/schema.sql`, in two places. Inline in the `CREATE TABLE` of
+`chat_room_members`, after `created_at`, for a database built from nothing
+(section 4). And in a new block after the added passkeys block, the last
+thing in the file, "The seen position block (2026-11-19, spec section
+21)", for a database that has the table:
+
+```sql
+ALTER TABLE chat_room_members ADD COLUMN IF NOT EXISTS seen_position BIGINT NOT NULL DEFAULT 0 CHECK (seen_position >= 0);
+```
+
+- `seen_position`: the highest message position the member has seen in the
+  room, 0 until the member's wallet reports one. A `BIGINT`, as
+  `chat_room_messages.position` is, `NOT NULL`, default 0, never negative
+  (the check). Raised by `/mark-messages-seen`, never lowered, never above
+  the room's newest message. `/list-chat-rooms` hands it to every member
+  of the room.
+
+Every member row of today gets 0. A new member starts at 0 by the default:
+the routes that add a member name no value for it. The column's comment is
+in the block only. No index: nothing looks a member up by it. No trigger
+and no `updated_at`: the row says how far, not when. The line is
+idempotent (`IF NOT EXISTS`), so the whole file applies to a live database
+and a second run changes nothing.
+
+### 21.3 The changes by route
+
+**POST /mark-messages-seen** (setup), new.
+
+Body: `{ chatRoomId, position }`. `chatRoomId` is the room, hex like every
+id. `position` is a whole number from 1 to 9007199254740991, the largest
+whole number JavaScript keeps exact: the highest message position the
+caller's wallet has shown.
+
+Checks, in order:
+
+1. The body is an object and `chatRoomId` is a string, else `400 bad
+   request shape`.
+2. `chatRoomId` is 32 bytes, else `400 invalid chatRoomId`.
+3. `position` is a whole number in that range, else `400 invalid
+   position`. A body without a `position` gets the same.
+4. The caller is a member of the room, else `403 not a member`. A room
+   that does not exist gets the same.
+
+Writes, one transaction of one statement: the caller's `chat_room_members`
+row, `seen_position = GREATEST(seen_position, LEAST(position, N))`, where
+N is the room's newest message position, 0 for a room without a message.
+A row that is gone by then (the caller left in between) answers `403 not a
+member`. No notification, no event, nothing else.
+
+Answer: `200 { chatRoomId, seenPosition }`. `chatRoomId` is the room in
+hex. `seenPosition` is what the row holds afterwards, as a number: the
+`position` sent, or the room's newest position when `position` was above
+it, or what the row held before when that was higher.
+
+**POST /list-chat-rooms** (setup; section 5), one field more.
+
+Body and Checks: as section 5.
+
+Answer: every entry of a room's `members` is `{ anopodId, username,
+seenPosition }`. `seenPosition` is that member's `seen_position`, as a
+number, 0 until that member's wallet reports one. The entries of `invited`
+stay `{ anopodId, username }`, and so does the `owner` of a `listing`.
+Nothing else in the answer changes.
+
+Nothing else changes: not `/send-message` (a message sent does not raise
+its sender's position; the sender's wallet reports like any other), not
+`/list-messages`, not the routes that add a member.
+
+### 21.4 Files
+
+- `db/schema.sql`: the line in the `CREATE TABLE` of `chat_room_members`;
+  the seen position block, new, at the end; and, on the user's word after
+  the build, the file's opening comment, which names the new block among
+  the idempotent ALTERs, and the table comment of `chat_room_members`.
+- `src/chat/chat.queries.js`: `raiseSeenPosition`, new; `listRoomsFor`,
+  the third pair in the `json_build_object` of the members, and its doc
+  comment.
+- `src/chat/chat.service.js`: `markSeen`, new, and the import of
+  `raiseSeenPosition`; and, on the user's word after the build, the
+  file's opening comment.
+- `src/chat/chat.handlers.js`: `markSeenHandler`, new, and the import of
+  `markSeen`.
+- `src/chat/chat.router.js`: the route's line, the import of
+  `markSeenHandler`, and "fourteen" in the comment.
+- `src/app.js`: "fourteen" in the comment on the chat router's line. No
+  line of code.
+- Here: section 4 (`### chat_room_members, chat_hpke`, the line in the SQL
+  and a sentence under it), section 5 (`### POST /mark-messages-seen`, new,
+  after `/send-message`; `### POST /list-chat-rooms`, the `members` entry
+  of the JSON block and a sentence at its end) and this section; and, on
+  the user's word after the build, section 1 (the item on `created_at`
+  and `updated_at`).
+  `README.md`: the Endpoints table (the new row, and the row of
+  `/list-chat-rooms`), the row of `chat_room_members` in the tables table,
+  and the `chat/` line of the Layout.
+
+Nothing else in existing code changes: not `/send-message`, not
+`/list-messages`, not the routes that add a member, not `.example.env`.
+One new route and one new column; no table, no env variable, no npm
+package.
+
+### 21.5 Notes from the build
+
+#### Build 1, the masterpod (2026-11-19)
+
+Built from
+`~/Desktop/Z-TestNet/forclaude/wallet-chat-and-passkey-plan-1.md` section
+3, on main at 5f102e2, the merge of pull request 10, the working tree
+clean. No new npm package, no test script and no rig (none was asked
+for). The schema was not applied to any database for keeps: the user
+applies the whole file as section 6 of
+`forclaude/masterpod-deploy-plan-1.md` says. It goes on before this code
+runs. On a database without the column this code fails every
+`/list-chat-rooms`, so every wallet's chat list would fail, and every
+`/mark-messages-seen`. The other way round is safe: the code of before
+names its columns and never looks at the new one. Both were tried (the
+checks below). What the plan left open and how it was decided:
+
+- The date. BUILD-DATE is 2026-11-19, the day of the build and of the
+  plan's FINAL.
+- `db/schema.sql`. The new line of the `CREATE TABLE` has single spaces,
+  and the three lines above it keep their columns, as the plan says. The
+  block is the last thing in the file, after the added passkeys block,
+  with plain comment lines in the form of the case chat block. PostgreSQL
+  names the check `chat_room_members_seen_position_check` on both ways,
+  and the column is the table's fourth on both ways. The build left the
+  file's opening comment and the table's comment as they were; both were
+  brought in line the same day (below).
+- `raiseSeenPosition` stands after `isMember`. One statement reads the
+  room's newest position and writes the row, so nothing can come between
+  the two. It answers the row's value after the write, or no row.
+- `markSeen`. `position` is read by `integerOption` with no fallback. So
+  an absent `position`, `null`, 0, a negative number, a fraction, a string
+  and a number above 9007199254740991 are all `400 invalid position`. The
+  room id is read by `decodeId`, so base64 is taken beside hex, as for
+  every id, and the answer gives it in hex. The position is checked before
+  membership, in the plan's order: a pod outside the room that sends a bad
+  position gets the `400`. `isMember` asks first, as in `/send-message`;
+  the write then runs in its own transaction, and a row gone in between is
+  the second `403 not a member`.
+- What the stored number can be. Positions are one sequence for all rooms
+  (the identity column of `chat_room_messages`), so the positions of one
+  room have gaps. A member can report a position that is no message of
+  that room; it is stored when it is not above the room's newest. It then
+  says "everything up to here", which is what a reader of the number asks
+  (`seenPosition >= position`).
+- A room without a message stores 0 for every report and answers `200`
+  with `seenPosition: 0`.
+- A member who leaves and is let in again starts at 0:
+  `/leave-chat-room` deletes the row, and the insert names no value.
+- `/list-chat-rooms`. `seenPosition` is the third key of a member, after
+  `username`. `json_build_object` writes the `BIGINT` as a JSON number,
+  and the `pg` library hands it to the code as a JavaScript number.
+- A report writes no log line: `answer()` logs refusals alone (`failed:
+  not a member`).
+- Here. In section 4 the sentence on the column is a paragraph of its own
+  after the paragraph on `chat_hpke`. In section 5 the new route has the
+  short form of its neighbours; the numbered checks are in 21.3. The
+  sentence of `/list-chat-rooms` is the last of its text, after the
+  paragraph on case chats. In the README the new row follows
+  `/send-message`, and the three other places have the plan's words.
+- Checks (3.5). `node --check` on the four changed files of `src/chat/`
+  and on `src/app.js`, clean, on Node 24.22.0. Then one load of the app
+  with no server, run from the build chat's scratch folder as one `node
+  -e` line, with no file kept: `src/app.js` imported and `createApp()`
+  called, with made-up `PGDATABASE`, `PGUSER` and `PGPASSWORD` and
+  `PGHOST=/nonexistent`. It counted 97 routes, one more than before the
+  step, with `/mark-messages-seen` between `/send-message` and
+  `/get-chat-public-keys`, fourteen chat routes, and ended with exit 0.
+  Nothing listened and no database was reached. The schema by psql
+  against this Mac's PostgreSQL (17.11), as the superuser `codex` with
+  `SET LOCAL ROLE masterpodsoftware`, in scratch schemas inside one
+  transaction that was rolled back. The file of 5f102e2 went into an
+  empty scratch schema first. That is the file GitHub's `main` hands out:
+  `git ls-remote` gave 5f102e2 for `main` that day. It made 37 tables,
+  `chat_room_members` with its three columns. Rows: three pods, a room
+  with two members and three messages (positions 1 to 3), and a second
+  room with one member and one message (position 4). Then the new file on
+  top. The column was there as the fourth, `bigint`, `NOT NULL`, default
+  0, with its check and its comment, and all three member rows held 0.
+  The new file once more changed nothing: one md5 over every column,
+  constraint, index, trigger, comment and function of the schema was the
+  same after both runs. Then the statement of `raiseSeenPosition`, as a
+  `PREPARE` of its exact text, lifted from the file as text. For the
+  first member, 9007199254740991 answered 3, the newest of that room and
+  not the 4 of the other room; 1 after it answered 3. For the second
+  member, 1 answered 1 and 2 answered 2. A pod outside the room and a
+  room that does not exist answered no row. The SELECT of `listRoomsFor`,
+  lifted the same way with `${ROOM_LISTING_COLUMNS}` filled in, answered
+  the one room, its `members` with `"seenPosition" : 3` and
+  `"seenPosition" : 2`, `json_typeof` `number` for both, and `invited`
+  `[]`. An `UPDATE` to -1 was refused by the check. For a database built
+  from nothing the new file went alone into a second empty scratch
+  schema, twice: 37 tables, the same md5 as the updated schema after both
+  runs, and a new member row started at 0. After the rollback the
+  database was as before: its 36 tables, no scratch schema, the same md5
+  over its columns.
+- Beyond the letter of 3.5, with nothing kept: the modules themselves,
+  called as a route calls them, in a scratch schema inside a rolled-back
+  transaction. A throwaway script outside the repo put a stand-in in the
+  place of `src/db/pool.js`: one client, with the transaction of
+  `withTransaction` turned into a savepoint, so nothing could commit. On
+  the tables of 5f102e2 the new code failed as said above:
+  `/list-chat-rooms` with `column m.seen_position does not exist`,
+  `/mark-messages-seen` with `column "seen_position" does not exist`,
+  while `/send-message` and `/list-messages` answered. With the new file
+  on top: every refusal of `markSeen` in its order, the writes as in the
+  psql run, both members reading both positions as JavaScript numbers,
+  the cases of the notes above (a new member, a member who comes back, a
+  room without a message), and `markSeenHandler` with a stand-in for the
+  response, `200 { chatRoomId, seenPosition }` and `403 { error: 'not a
+  member' }`. 51 results, all as expected. And the other way round: the
+  code of 5f102e2, from a copy of that commit's files, on the new tables.
+  `/send-message`, `/list-chat-rooms` (the members as before, `{
+  anopodId, username }`), `/list-messages` and `/leave-chat-room`
+  answered, and the member rows it wrote held 0. No server was booted, no
+  request was signed and no route was called over HTTP. The session
+  check, the envelope and the wallet are the user's run-through (the
+  plan's section 7), with the wallet's step 4.
+- Places the plan does not name that this step left out of date. The
+  build left them as they are and put them to the user. In
+  `db/schema.sql`: the file's opening comment lists the blocks at the end
+  whose ALTERs change a table that exists, without the seen position
+  block; and the table comment of `chat_room_members` says "Who is in
+  which room" and nothing of how far each has read. Here, section 1:
+  "Every table has `created_at`, and `updated_at` with the
+  `set_updated_at` trigger unless the rows never change (then
+  `created_at` only)". A `chat_room_members` row now changes, and the
+  table still has `created_at` only, as the plan has it. In
+  `src/chat/chat.service.js`: the opening comment lists what the chat
+  feature holds, without the seen positions. `docs/build-plan.md`, the
+  build plan of 2026-10-24, says "the thirteen routes": a record of its
+  day. The user had the first four brought in line the same day (below).
+- Not touched: every other feature folder, `.example.env`,
+  `package.json`, the scripts. In `src/app.js` one comment changed and no
+  line of code.
+- The numbers. After the build `db/schema.sql` had 1385 lines, 12 more
+  than before, and its sha256 began 72ac460b. With the two comments
+  brought in line (below) it has the same 1385 lines and its sha256
+  begins a3de2618. Before the step it had 1373 lines and its sha256 began
+  a19592e9. It makes 37 tables, as before: the count that the deploy's
+  schema line prints does not change with this step.
+
+#### After the build's report, the same day (2026-11-19)
+
+The user read the report in the build chat. It listed the five places
+above, with the advice to bring four in line and to leave the old build
+plan. The user: "Go ahead and change comments 1 to 4". So the four were
+brought in line before the commit, and `docs/build-plan.md` stays as it
+is, a record of its day. None of this is in the plan.
+
+- `db/schema.sql`, the file's opening comment. The list of the blocks
+  whose ALTERs change a table that exists now ends "marketplace, case chat
+  and seen position blocks at the end".
+- `db/schema.sql`, the table comment of `chat_room_members`: "Who is in
+  which room, and how far each has read (seen_position). Written and
+  deleted together with the member's chat_hpke row."
+- Here, section 1. The sentence of before stays. A sentence in brackets
+  after it, which begins "Since 2026-11-19, section 21", names the one
+  exception: a `chat_room_members` row changes when its `seen_position`
+  rises, and the table still has `created_at` only.
+- `src/chat/chat.service.js`, the opening comment. The list of what the
+  chat feature holds gained "how far each member has read (the seen
+  positions, since 2026-11-19)". No line of code.
+- Checks. All of them ran again, with the same results. `node --check` on
+  the five files, clean. The load with no server: 97 routes. The schema
+  check in scratch schemas, rolled back: the table's comment read as
+  written, the second run changed nothing, and the tables built from
+  nothing equalled the updated ones. The two runs of the modules: 51 and
+  6 results, all as expected. The md5 over the schema differed from the
+  build's by the one table comment. After the rollback the database was
+  as before.
+- The numbers. `db/schema.sql` has the same 1385 lines, and its sha256
+  begins a3de2618 where it began 72ac460b after the build. The schema
+  line of the deploy carries the whole hash, so it was written again. One
+  commit carries the build and this: the same eight files.

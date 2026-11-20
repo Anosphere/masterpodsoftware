@@ -33,11 +33,13 @@ import {
   listMessagesBefore,
   listPublicRooms as listPublicRoomsQuery,
   listRoomsFor,
+  raiseSeenPosition,
   roomAboutListingBy,
 } from './chat.queries.js';
 
 /**
- * The chat feature: rooms, invites, join requests, membership, messages and
+ * The chat feature: rooms, invites, join requests, membership, messages,
+ * how far each member has read (the seen positions, since 2026-11-19) and
  * the chat public keys. The server never opens a wrapped room key or a
  * message; it checks who may do what and stores bytes. Each function runs
  * its route's checks in the spec's order (section 5) and returns
@@ -404,6 +406,27 @@ export async function sendMessage(anopod, body) {
     insertMessage(client, { messageId, chatRoomId, senderAnopodId: anopod.anopodId, message }),
   );
   return ok(201, { messageId: toHex(messageId), position });
+}
+
+/**
+ * POST /mark-messages-seen. Body { chatRoomId, position }. Members
+ * only. The caller's seen position in the room rises to `position`,
+ * never above the room's newest message; a lower position changes
+ * nothing.
+ */
+export async function markSeen(anopod, body) {
+  if (!isObject(body) || typeof body.chatRoomId !== 'string') return refuse(400, BAD_SHAPE);
+  const chatRoomId = decodeId(body.chatRoomId);
+  if (chatRoomId === null) return refuse(400, 'invalid chatRoomId');
+  const position = integerOption(body.position, undefined, 1, Number.MAX_SAFE_INTEGER);
+  if (position === undefined) return refuse(400, 'invalid position');
+  if (!(await isMember(chatRoomId, anopod.anopodId))) return refuse(403, 'not a member');
+
+  const seenPosition = await withTransaction((client) =>
+    raiseSeenPosition(client, chatRoomId, anopod.anopodId, position),
+  );
+  if (seenPosition === null) return refuse(403, 'not a member');
+  return ok(200, { chatRoomId: toHex(chatRoomId), seenPosition });
 }
 
 /** POST /get-chat-public-keys. Body { anopodIds }, 1 to 50; pods without setup are left out. */

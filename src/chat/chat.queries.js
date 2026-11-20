@@ -115,6 +115,27 @@ export async function isMember(chatRoomId, anopodId, db = pool) {
   return rows[0].member;
 }
 
+/**
+ * Raises `anopodId`'s seen position in the room on `client` to
+ * `position`, never above the room's newest message and never below
+ * what the row holds, and returns what the row holds afterwards, as a
+ * number; null when `anopodId` is not in the room.
+ */
+export async function raiseSeenPosition(client, chatRoomId, anopodId, position) {
+  const { rows } = await client.query(
+    `UPDATE chat_room_members
+        SET seen_position = GREATEST(seen_position,
+                                     LEAST($3::bigint,
+                                           (SELECT COALESCE(max(position), 0)
+                                              FROM chat_room_messages
+                                             WHERE chat_room_id = $1)))
+      WHERE chat_room_id = $1 AND anopod_id = $2
+      RETURNING seen_position`,
+    [chatRoomId, anopodId, position],
+  );
+  return rows.length === 0 ? null : Number(rows[0].seen_position);
+}
+
 /** The highest message position in the room, 0 when it has none. */
 export async function lastPosition(chatRoomId, db = pool) {
   const { rows } = await db.query(
@@ -305,10 +326,11 @@ function listingFromRow(row) {
 
 /**
  * The rooms `anopodId` is a member of, newest first, each with the caller's
- * own wrapped key, the members (id and username), the people invited who
- * have not answered yet (oldest first), the newest message in the wire form
- * of listMessages (null when the room has none) with its position as
- * lastPosition (0 when none) and, for a room about a listing
+ * own wrapped key, the members (id, username and, since 2026-11-19,
+ * `seenPosition`), the people invited who have not answered yet (oldest
+ * first), the newest message in the wire form of listMessages (null when
+ * the room has none) with its position as lastPosition (0 when none)
+ * and, for a room about a listing
  * (chat_rooms.listing_id: a private room made with a listingId, or an old
  * marketplace room), its listing id and the listing as listingFromRow
  * gives it, and, for a room about an attestor case (chat_rooms.case_id: a
@@ -325,7 +347,8 @@ export async function listRoomsFor(anopodId) {
             lm.sender_anopod_id AS last_sender_anopod_id, lm.message AS last_message,
             lm.created_at AS last_created_at,
             (SELECT COALESCE(json_agg(json_build_object('anopodId', encode(m.anopod_id, 'hex'),
-                                                         'username', ma.username)
+                                                         'username', ma.username,
+                                                         'seenPosition', m.seen_position)
                                       ORDER BY m.created_at, m.anopod_id), '[]'::json)
                FROM chat_room_members m
                JOIN anopods ma ON ma.anopod_id = m.anopod_id

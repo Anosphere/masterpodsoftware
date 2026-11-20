@@ -134,10 +134,11 @@ are base64 / base64url as the browser produces them.
 | `/approve-join`                 | setup   | The creator lets the requester in with the wrapped key                                   |
 | `/decline-join`                 | setup   | Drops the join request                                                                   |
 | `/leave-chat-room`              | setup   | Leaves a room; the creator cannot                                                        |
-| `/list-chat-rooms`              | setup   | The caller's rooms (members, invited, own wrapped key, newest message, the listing a room is about with its owner, the case a room is about with its kind), open invites (each with its listing and its case too), join requests on its rooms |
+| `/list-chat-rooms`              | setup   | The caller's rooms (members, each with how far they have read, invited, own wrapped key, newest message, the listing a room is about with its owner, the case a room is about with its kind), open invites (each with its listing and its case too), join requests on its rooms |
 | `/list-public-chat-rooms`       | setup   | Public rooms by name, newest first, paged                                                |
 | `/list-messages`                | setup   | A room's messages after a position, or the newest ones before a position, members only   |
 | `/send-message`                 | setup   | Stores a ciphertext message, members only                                                |
+| `/mark-messages-seen`           | setup   | Records how far the caller has read in a room, members only                              |
 | `/get-chat-public-keys`         | setup   | The chat public keys of up to 50 pods that completed setup                               |
 | `/create-listing`               | setup   | A listing of anos for a fiat currency; since 2026-11-06 without a room of its own, people connect with a private room each |
 | `/close-listing`                | setup   | Closes the owner's listing; an old listing's room stays, new join requests and new rooms about it are refused |
@@ -255,7 +256,7 @@ keep the references straight. Every table and column has a `COMMENT ON`
 | `security_images`         | Encrypted images of both buckets, each with the id of its bucket key; append-only |
 | `security_info`           | Encrypted texts of bucket two, each with the id of its bucket key; append-only |
 | `chat_rooms`              | Private, public and old marketplace rooms; `listing_id` when a room is about a listing, `case_id` and `case_kind` when it is about an attestor case |
-| `chat_room_members`       | Who is in which room                                                   |
+| `chat_room_members`       | Who is in which room, and how far each has read                        |
 | `chat_hpke`               | Each member's wrapped room key                                         |
 | `chat_room_invites`       | Open invites, carrying the wrapped key                                 |
 | `chat_room_join_requests` | Open join requests                                                     |
@@ -360,7 +361,7 @@ src/
   appointments/      the appointments table's queries (section 16): who holds a live appointment as a moderator or an attestor, or as a pod that may stake for validator or masterPod; written only by scripts/appoint.js and scripts/revoke.js
   notifications/     /list-notifications, /mark-notifications-read; notify() for every feature
   security/          the three bucket routes
-  chat/              the thirteen chat routes
+  chat/              the fourteen chat routes
   marketplace/       /create-listing, /close-listing, /list-listings
   anos-accounts/     /create-anos-account, /mark-anos-account-submitted, /list-anos-accounts, /get-anos-account
   wallet-memory/     the six wallet memory routes, /add-noted-transaction to /set-wallet-settings; the two tables' queries

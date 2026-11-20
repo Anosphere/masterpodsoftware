@@ -50,7 +50,7 @@ export function createApp() {
   app.use(passkeysRouter); // owns /add-passkey and /list-passkeys
   app.use(vouchingRouter); // owns /search-usernames, /send-vouch-request, /list-vouch-requests, /approve-vouch-request, /decline-vouch-request
   app.use(securityRouter); // owns /add-to-security-bucket-one, /add-to-security-bucket-two, /list-security-records
-  app.use(chatRouter); // owns the thirteen chat routes, /create-chat-room to /get-chat-public-keys
+  app.use(chatRouter); // owns the fourteen chat routes, /create-chat-room to /get-chat-public-keys
   app.use(marketplaceRouter); // owns /create-listing, /close-listing, /list-listings, /get-listing
   app.use(anosAccountsRouter); // owns /create-anos-account, /mark-anos-account-submitted, /list-anos-accounts, /get-anos-account
   app.use(walletMemoryRouter); // owns the six wallet memory routes, /add-noted-transaction to /set-wallet-settings

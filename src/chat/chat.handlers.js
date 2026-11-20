@@ -11,6 +11,7 @@ import {
   listPublicRooms,
   listRoomMessages,
   listRooms,
+  markSeen,
   requestToJoin,
   sendMessage,
 } from './chat.service.js';
@@ -79,6 +80,11 @@ export async function listMessagesHandler(req, res) {
 /** POST /send-message */
 export async function sendMessageHandler(req, res) {
   answer(res, await sendMessage(req.anopod, req.body));
+}
+
+/** POST /mark-messages-seen */
+export async function markSeenHandler(req, res) {
+  answer(res, await markSeen(req.anopod, req.body));
 }
 
 /** POST /get-chat-public-keys */
