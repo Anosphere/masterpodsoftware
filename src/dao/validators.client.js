@@ -9,9 +9,9 @@ import { isObject } from '../util/is-object.js';
  * every failure one outcome. The URLs are env.validatorUrls, tried in
  * order; the first good answer wins, so a doorman or a validator that has
  * not pulled the route (a 404), a joiner (503 not counted yet), a refusal,
- * a timeout or a body of the wrong shape moves to the next URL with one log
- * line. The doormen's certificates are Let's Encrypt, so the fetch verifies
- * them as any other.
+ * a redirect, which is not followed, a timeout or a body of the wrong
+ * shape moves to the next URL with one log line. The doormen's
+ * certificates are Let's Encrypt, so the fetch verifies them as any other.
  */
 
 /** How long each validator has to answer. */
@@ -48,6 +48,7 @@ async function askOne(url) {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({}),
+      redirect: 'manual',
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
   } catch (err) {

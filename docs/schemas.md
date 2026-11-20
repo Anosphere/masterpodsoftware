@@ -4365,8 +4365,12 @@ account with DAO stake above zero, `accountId` 64 lowercase hex,
 shape is the answer; anything else moves to the next URL with one log line:
 a doorman or a validator that has not pulled the route (`404`), a joiner
 (`503 not counted yet`), the doorman's own refusals (doormansoftware spec
-6: `400`, `413`, `429 too many requests`, `502`, `504`), a timeout, a body
-of the wrong shape. When every URL failed, null. The read is public and
+6: `400`, `413`, `429 too many requests`, `502`, `504`), a redirect
+(2026-11-19, 15.10), a timeout, a body of the wrong shape. A redirect is
+not followed (`redirect: 'manual'` in the fetch): a doorman is a machine
+we do not own, and a redirect that is followed lets it pick another
+address for the call, which this server would then make from inside its
+own network. When every URL failed, null. The read is public and
 unsigned: everything in it is on the public chain, and this server has no
 anos account or validator key to sign with. The doormen's certificates are
 Let's Encrypt, so the fetch verifies them as any other.
@@ -4547,6 +4551,74 @@ decided:
   middlewares, `package.json`, the scripts; in the README the level table
   and the paragraph after the routes table (the plan names the routes
   list, the tables list, the folder list and the variables table).
+
+#### The validator read does not follow a redirect (2026-11-19)
+
+Built from `~/Desktop/Z-TestNet/forclaude/validator-redirects-plan-1.md`
+(FINAL, 2026-11-19), its step 1 of two, its section 1, one commit, on
+main at e308d3e. One line of code: in `askOne` of
+`src/dao/validators.client.js` the options of the `fetch` gain `redirect:
+'manual'`, after the `body` line. The comment at the top of that file and
+the sentence of 15.6 that lists what moves the read to the next URL each
+gain the redirect. No route, no table, no variable, no npm package.
+
+- Why. A redirect is an answer that says "ask this other address
+  instead". Node's `fetch` follows one by itself, up to 20 in a row. The
+  read goes to a validator's doorman, a machine we do not own. Whoever
+  runs that doorman, or breaks into it, could so pick another address for
+  the call, and this server would make that call from inside its own
+  network, where addresses answer that the outside cannot reach. The same
+  word already stands in the doorman's relay to its worker
+  (`doormansoftware/src/door/forward.js`) and in the monitor's sweep
+  (`monitorsoftware/server/sweep/ask.js`).
+- What a redirect is now: an answer with its own status, and nothing
+  more. `askOne` gives the text `status 302` (or 301, 303, 307, 308, with
+  the body's `error` after it when the body is JSON and has one),
+  `fetchDaoStakes` writes its one log line, `dao: <url>/list-dao-stakes
+  failed: status 302`, and asks the next URL. Nothing is sent to the
+  address the redirect names. No new handling was needed: a status that is
+  not 200 already moved the read on.
+- What a person sees: nothing. Honest validators send no redirect.
+- The validator's own two calls to the other validators get the same word
+  in step 2 of that plan, in anossoftware (its spec, 19.1 and 19.5). The
+  validator's call to this server and the keyholder's calls are left as
+  they are, on purpose (the plan's decision 5).
+- Checked. `git status --short` showed a clean tree at e308d3e at the
+  start, and this step's two files and no others at the end:
+  `src/dao/validators.client.js` and this file. `node --check
+  src/dao/validators.client.js` passes. The built file equals the planning
+  chat's own trial file but for the three comment lines. No server was
+  started and no database was opened. Beyond the plan's two checks, one
+  throwaway run on loopback, on the user's Mac, Node v24.22.0: the real
+  `fetchDaoStakes` of the working tree, loaded with made-up database
+  names, in front of three made-up validators and one more made-up server,
+  "the other address", which stands in for an address inside the
+  masterpod's own network and answers a stake list of its own. The script
+  is in the build chat's scratchpad and nothing of it is in the repo. 31
+  checks, all as expected. A first validator that answers 301, 302, 303,
+  307 or 308 with the other address as its target: the other address gets
+  no call, the log line says `status` and the number, and the answer taken
+  is the second validator's. A redirect with a JSON body, and one to a
+  path on the validator's own address: the same. Three validators that all
+  redirect: null, one log line for each, no call to the other address. As
+  before: a good first answer wins and nobody else is asked; a 404, a 503
+  `not counted yet`, a 429, an HTML 502, a body of the wrong shape and the
+  five-second timeout each move to the next URL with the log line they
+  had; the call is still `POST /list-dao-stakes` with the body `{}`. The
+  file of e308d3e went through the same script: 6 of the 31 checks were as
+  expected, and the 25 others are what this step changes. There the other
+  address got the call, a GET after a 301, 302 or 303 and the POST again
+  after a 307 or 308; its made-up stake list was taken as the validator's
+  answer, with no log line; and a redirect to the validator's own address
+  was followed twenty times before the read moved on. Not run: a doorman,
+  TLS, a real validator, the masterpod itself, a database.
+- The deploy is the user's, with their own lines for the masterpod: the
+  pull and the restart on each of prod1, prod2 and prod3, the leader last,
+  then the check line. No database line, no `npm ci`, no variable. The
+  commit has to be on GitHub's `main` first. The pull brings whatever
+  `main` holds: if prod1, prod2 and prod3 are not on e308d3e yet, "Seen in
+  chat" (section 21) comes along, and its database line runs on the leader
+  before any restart.
 
 ## 16. Appointments (2026-11-08)
 
