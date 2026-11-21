@@ -7,8 +7,8 @@
 -- EXISTS, functions and triggers use OR REPLACE, comments just overwrite.
 -- It never alters a table that already exists, though, apart from the
 -- idempotent ALTERs of the appointments block and of the recovery,
--- attestation, marketplace, case chat, seen position and first key blob
--- blocks at the end.
+-- attestation, marketplace, wallet memory, case chat, seen position and
+-- first key blob blocks at the end.
 -- After changing this file, rebuild the local database from scratch with
 --
 --   npm run db:reset
@@ -1103,7 +1103,7 @@ CREATE TABLE IF NOT EXISTS noted_transactions (
   note_blob        BYTEA       NOT NULL CHECK (octet_length(note_blob) <= 4096),
   created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-  UNIQUE (anopod_id, transaction_id)
+  UNIQUE (anopod_id, transaction_id, account_id)
 );
 CREATE INDEX IF NOT EXISTS noted_transactions_anopod_id_transacted_at_idx ON noted_transactions (anopod_id, transacted_at DESC);
 
@@ -1113,7 +1113,7 @@ CREATE OR REPLACE TRIGGER noted_transactions_set_updated_at
   WHEN (OLD.* IS DISTINCT FROM NEW.*)
   EXECUTE FUNCTION set_updated_at();
 
-COMMENT ON TABLE  noted_transactions                  IS 'One row per ledger transaction a pod noted for its tax records: the ledger''s facts in the clear and the private part (the kind, the money, the currency, the memo) under the pod''s encryption key. One note per pod and transaction. Deleted when the person removes it. Stand-alone; no foreign keys.';
+COMMENT ON TABLE  noted_transactions                  IS 'One row per note a pod made on a ledger transaction for its tax records: the ledger''s facts in the clear and the private part (the kind, the money, the currency, the memo) under the pod''s encryption key. One note per pod, transaction and account: a transfer between two of the pod''s own accounts can hold one for each of the two. Deleted when the person removes it. Stand-alone; no foreign keys.';
 COMMENT ON COLUMN noted_transactions.note_id          IS 'Random id, 32 raw bytes, minted by /add-noted-transaction.';
 COMMENT ON COLUMN noted_transactions.anopod_id        IS 'The pod that noted it.';
 COMMENT ON COLUMN noted_transactions.transaction_id   IS 'The transaction''s id on the validators, 32 raw bytes.';
@@ -1126,6 +1126,21 @@ COMMENT ON COLUMN noted_transactions.sent             IS 'True when the anos lef
 COMMENT ON COLUMN noted_transactions.note_blob        IS 'Ciphertext of the private part (iv || ciphertext || tag), at most 4096 bytes: a JSON object with the kind, the money, the currency, the memo and the tag, under the pod''s encryption key (wallet spec 7). The server cannot open it.';
 COMMENT ON COLUMN noted_transactions.created_at       IS 'When the row was inserted. Set by default, never changed.';
 COMMENT ON COLUMN noted_transactions.updated_at       IS 'When the row last changed. Maintained by the noted_transactions_set_updated_at trigger.';
+
+-- The unique rule widened to pod, transaction and account (2026-11-20, spec
+-- section 11, "A note for each account of a transfer between a pod's own
+-- accounts"), for a database that already has the table; the CREATE TABLE
+-- above carries the same rule for a new one. Before, the rule was pod and
+-- transaction: a transfer between two of a pod's own accounts, which is one
+-- transaction standing in both accounts' histories, could hold one note
+-- only. Every row written under the old rule fits the new one. Idempotent:
+-- the old rule dropped under its name IF EXISTS, and a drop-and-add of the
+-- new rule under its one name, as the appointments check.
+
+ALTER TABLE noted_transactions DROP CONSTRAINT IF EXISTS noted_transactions_anopod_id_transaction_id_key;
+ALTER TABLE noted_transactions DROP CONSTRAINT IF EXISTS noted_transactions_anopod_id_transaction_id_account_id_key;
+ALTER TABLE noted_transactions ADD CONSTRAINT noted_transactions_anopod_id_transaction_id_account_id_key
+  UNIQUE (anopod_id, transaction_id, account_id);
 
 CREATE TABLE IF NOT EXISTS wallet_settings (
   anopod_id     BYTEA       PRIMARY KEY CHECK (octet_length(anopod_id) = 32),

@@ -11,13 +11,14 @@ import { findSettings, upsertSettings } from './wallet-settings.queries.js';
  * The wallet memory feature (wallet spec 4.6 and 4.7): what a wallet
  * remembers for its pod, kept here under the pod's encryption key, which
  * this server cannot open. Two tables: noted_transactions, one row per
- * ledger transaction the person noted for their tax records, the ledger's
- * facts in the clear and the private part (the kind, the money, the
- * currency, the memo, the tag) in one blob; and wallet_settings, one row per
- * pod holding one blob of the small things the wallet remembers (the
- * Protect your passkey answer first). A caller sees and changes its own
- * rows only. Each function runs its route's checks in the spec's order and
- * returns ok(status, body) or refuse(status, reason).
+ * note the person made on a ledger transaction for their tax records (one
+ * per transaction and account), the ledger's facts in the clear and the
+ * private part (the kind, the money, the currency, the memo, the tag) in
+ * one blob; and wallet_settings, one row per pod holding one blob of the
+ * small things the wallet remembers (the Protect your passkey answer
+ * first). A caller sees and changes its own rows only. Each function runs
+ * its route's checks in the spec's order and returns ok(status, body) or
+ * refuse(status, reason).
  */
 
 const BAD_SHAPE = 'bad request shape';
@@ -73,7 +74,8 @@ function noteOf(row) {
  * otherAccountId 32 bytes when not null; position an integer of 0 or more;
  * transactedAt parses; amount digits only that fit a BIGINT; noteBlob 1 to
  * 4096 bytes; an anos_accounts row with this accountId and this pod; no note
- * of this pod for this transaction, the unique rule as the backstop.
+ * of this pod for this transaction and this account, the unique rule as the
+ * backstop.
  */
 export async function addNotedTransaction(anopod, body) {
   if (!isObject(body) || typeof body.transactionId !== 'string' || typeof body.accountId !== 'string'
@@ -97,7 +99,7 @@ export async function addNotedTransaction(anopod, body) {
 
   const account = await findAccount(accountId);
   if (account === null || !account.anopodId.equals(anopod.anopodId)) return refuse(403, 'not your account');
-  if ((await findNoteByTransaction(anopod.anopodId, transactionId)) !== null) return refuse(409, 'already noted');
+  if ((await findNoteByTransaction(anopod.anopodId, transactionId, accountId)) !== null) return refuse(409, 'already noted');
 
   const noteId = randomId();
   try {

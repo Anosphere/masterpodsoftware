@@ -444,17 +444,21 @@ limit counts a pod's rows by `created_at`: at most 20 in the last 30 days
 
 ### noted_transactions
 
-Added 2026-11-07 for the wallet (its spec, section 4.6). One row per ledger
-transaction a pod noted for its tax records: the ledger's own facts in the
-clear (the transaction, the pod's account, the other side as the wallet
-shows it, the position, the time, the amount of anos and whether they left
-the account), since the masterpod already links a pod to its accounts and
-every validator holds the chain; and the private part, the kind, the money,
-the currency, the memo and the tag, as one blob under the pod's encryption
-key, which this server cannot open. One note per pod and transaction,
-enforced by the unique rule. The ledger facts never change after the row is
-written, only the blob; the row is deleted when the person removes the
-note. Stand-alone: no foreign keys.
+Added 2026-11-07 for the wallet (its spec, section 4.6). One row per note a
+pod made on a ledger transaction for its tax records: the ledger's own
+facts in the clear (the transaction, the pod's account, the other side as
+the wallet shows it, the position, the time, the amount of anos and whether
+they left the account), since the masterpod already links a pod to its
+accounts and every validator holds the chain; and the private part, the
+kind, the money, the currency, the memo and the tag, as one blob under the
+pod's encryption key, which this server cannot open. One note per pod,
+transaction and account, enforced by the unique rule: a transfer between
+two of the pod's own accounts is one transaction that stands in both
+accounts' histories, and it can hold a note for each. Until 2026-11-20 the
+rule was one note per pod and transaction (section 11, "A note for each
+account of a transfer between a pod's own accounts"). The ledger facts
+never change after the row is written, only the blob; the row is deleted
+when the person removes the note. Stand-alone: no foreign keys.
 
 ```sql
 CREATE TABLE IF NOT EXISTS noted_transactions (
@@ -470,7 +474,7 @@ CREATE TABLE IF NOT EXISTS noted_transactions (
   note_blob        BYTEA       NOT NULL CHECK (octet_length(note_blob) <= 4096),
   created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-  UNIQUE (anopod_id, transaction_id)
+  UNIQUE (anopod_id, transaction_id, account_id)
 );
 CREATE INDEX IF NOT EXISTS noted_transactions_anopod_id_transacted_at_idx ON noted_transactions (anopod_id, transacted_at DESC);
 ```
@@ -1357,8 +1361,10 @@ invalid position`); `transactedAt` parses (`400 invalid transactedAt`);
 `amount` digits only that fit a BIGINT (`400 invalid amount`); `noteBlob` 1
 to 4096 bytes (`400 invalid noteBlob`); an `anos_accounts` row with this
 `accountId` and this pod (`403 not your account`); no note of this pod for
-this transaction (`409 already noted`), the unique rule as the backstop (a
-unique violation on the insert answers the same `409`).
+this transaction and this account (`409 already noted`; until 2026-11-20
+any note of the pod for the transaction refused it, section 11), the unique
+rule as the backstop (a unique violation on the insert answers the same
+`409`).
 
 Writes: `INSERT noted_transactions` with a fresh `note_id`.
 
@@ -1395,8 +1401,9 @@ Checks: the shape (`400 bad request shape`); `from` parses when given
 (`400 invalid from`); `to` parses when given (`400 invalid to`).
 
 Reads: the pod's rows with `transacted_at` at or after `from` and before
-`to`, newest `transacted_at` first, then the highest `position`, 1001 rows
-at most.
+`to`, newest `transacted_at` first, then the highest `position`, then, of
+the two notes a transfer between two of the pod's own accounts can hold,
+the sent one (since 2026-11-20, section 11), 1001 rows at most.
 
 Answer: `200 { notes: [ { noteId, transactionId, accountId,
 otherAccountId, position, transactedAt, amount, sent, noteBlob, createdAt,
@@ -1709,8 +1716,9 @@ instead of one group room per listing, the listing linked to the room by
 Step 1 of `~/Desktop/Z-TestNet/forclaude/wallet-notes-plan-1.md` (its
 section 1), the masterpod's part of the wallet's memory: two tables under
 the person's pod, `noted_transactions` (one note per ledger transaction,
-for the person's tax records: the ledger's facts in the clear, the private
-part as a blob this server cannot open) and `wallet_settings` (one
+since 2026-11-20 one per transaction and account, see the note of that day
+below, for the person's tax records: the ledger's facts in the clear, the
+private part as a blob this server cannot open) and `wallet_settings` (one
 encrypted object per pod, the Protect your passkey answer first), and six
 routes at level setup in a new feature folder, `src/wallet-memory/`, in the
 shape of `src/anos-accounts/`. Why: the ledger knows the anos, the time and
@@ -1823,6 +1831,87 @@ wallet spec, section 11.
   made the check throw. The script was a throwaway outside the repo.
   `/create-anopod` itself was not called, since it needs a passkey: the
   user's run-through.
+
+### A note for each account of a transfer between a pod's own accounts (2026-11-20)
+
+No plan file: found and decided in chat on 2026-11-20. The user had sent
+anos from one of their accounts to another and noted the transfer twice,
+in the first account's history as "Transferred to own account" and in the
+second's as "Transferred from own account". The wallet's Noted
+transactions page showed one row. Why: such a transfer is one transaction
+on the ledger, standing in both accounts' histories, and the rule here was
+one note per pod and transaction (decision 10 of
+`~/Desktop/Z-TestNet/forclaude/wallet-notes-plan-1.md`). So the second
+account could hold no note of its own; the wallet showed the first
+account's note there, and saving it rewrote that one note. Decision 3 of
+the same plan gives the two sides a kind each, which needs a note on each.
+The wallet's change of the same day is in the wallet spec, section 11.
+
+- The rule is one note per pod, transaction and account:
+  `UNIQUE (anopod_id, transaction_id, account_id)` on `noted_transactions`.
+- `db/schema.sql`: the rule is inline in the `CREATE TABLE`, for a fresh
+  database. For a database that already has the table, three lines stand
+  after the table's `COMMENT ON` lines: the old rule dropped under its name
+  `IF EXISTS` (`noted_transactions_anopod_id_transaction_id_key`, the name
+  PostgreSQL gave it), then a drop-and-add of the new rule under its one
+  name (`noted_transactions_anopod_id_transaction_id_account_id_key`, the
+  name PostgreSQL gives the inline rule), as the appointments check. Every
+  row written under the old rule fits the new one, so no row changes. The
+  file's header comment now names the wallet memory block among the blocks
+  with an idempotent ALTER, and the table's `COMMENT ON` line says the new
+  rule.
+- `/add-noted-transaction`: `findNoteByTransaction` takes the account as
+  its third argument and asks by pod, transaction and account, so
+  `409 already noted` now means a note of this pod for this transaction and
+  this account. The rest of the route is as it was: the account has to be
+  the pod's (`403 not your account`), and the unique rule is the backstop.
+- `/list-noted-transactions`: a third sort key, `sent DESC`. The two notes
+  of such a transfer share `transacted_at` and `position`. Without a third
+  key their order could change from one read to the next, since an edit
+  moves a row inside the table; with it the sent one comes first.
+- No new route, reason, setting or package. `/update-noted-transaction`
+  and `/remove-noted-transaction` are unchanged: they go by note id.
+- A note made before this day stays as it is, on the account it was made
+  on. A person who noted such a transfer from both sides has one note, with
+  the words saved last. With the wallet of this day they edit it in the
+  first account's history and add the second in the other's.
+- The order of a deploy: this server first (the schema line, then the
+  code), the wallet after it. Each half-way state of this server behaves as
+  before this day: the new code on the old rule answers
+  `409 already noted` for the second account through the backstop, and the
+  code of before on the new rule refuses it by its own check. A wallet of
+  this day on a server of before shows "Add a note" in the second account's
+  history and reads `409 already noted` there.
+- Comments brought in line in the same change, said to the user before the
+  first edit: the comments of `findNoteByTransaction`, `insertNote` and
+  `listNotes` in `src/wallet-memory/noted-transactions.queries.js`; the
+  header comment and the comment of `addNotedTransaction` in
+  `src/wallet-memory/wallet-memory.service.js`; the
+  `/add-noted-transaction` row of the README. In this spec: the
+  `noted_transactions` section, the sections of the two routes, and a dated
+  clause in the note of 2026-11-07 above, whose other words stay as the
+  record of their day.
+- Checked: `node --check` on the two code files. Then a throwaway outside
+  the repo, on the local `masterpod` database inside one rolled-back
+  transaction, with a stand-in in the place of `src/db/pool.js` (one
+  client, as in the checks of sections 21 and 22).
+  The committed `db/schema.sql` was built into a scratch schema with 5001
+  notes, and a second account's note was refused there by the old rule.
+  The new file was run on top twice: only the new rule was left, every row
+  was kept, the tables stayed 37, a run took 18 milliseconds, and the
+  second run changed nothing (one md5 over every constraint, column, index,
+  comment and trigger). The service functions were then called as the
+  routes call them: a second note on the same account refused, the note on
+  the other own account stored, a second one there refused, an account of
+  another pod refused, another pod's note on the same transaction stored,
+  the database refusing a double by itself, the list with the sent note
+  first and in the same order after every note was edited three times, a
+  date range, a removed note and the same note made again. The new file
+  built from nothing into a second scratch schema gave the same md5 as the
+  upgraded one. The two half-way states were run the same way, the code of
+  before from `git archive HEAD`. No server was started and no route was
+  called over HTTP: the passkey, the session and the proxy are the user's
+  run-through.
 
 
 ## 12. Recovery and moderation
