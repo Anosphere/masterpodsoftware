@@ -47,6 +47,7 @@ Then open <http://localhost:3100>. The web app that drives it is
 | `npm run make-super-seed -- <id>` | Genesis: make the pod with this hex id a super seed (see below).    |
 | `npm run appoint -- <id> <role>` | Appoint the pod with this hex id for a role: `moderator`, `attestor`, `validator` or `masterPod` (`docs/schemas.md` section 16; the last two only let the pod stake for that purpose, 16.7). |
 | `npm run revoke -- <id>` | End the pod's appointment; the row stays on record.                   |
+| `npm run small-selfies -- look` | The one-time job that makes the stored selfies small (`docs/schemas.md` section 24): `look` reads and draws every selfie and writes nothing; with `write` in its place it does the same and then writes. Its own packages are in `scripts/small-selfies/`. |
 
 ## Who may call what
 
@@ -383,6 +384,7 @@ scripts/
   make-super-seed.js genesis
   appoint.js         appoint a pod as a moderator or an attestor, or to stake for validator or masterPod (section 16)
   revoke.js          end a pod's appointment
+  small-selfies/     the one-time job that makes the stored selfies small (section 24): small-selfies.js, with a package.json and a package-lock.json of its own for sharp
 docs/
   schemas.md         the specification: tables, routes, objects, client crypto, variables
   build-plan.md      how it was built

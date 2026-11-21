@@ -48,7 +48,7 @@ const BAD_SHAPE = 'bad request shape';
 /** First and last names are 1 to 100 characters. */
 const NAME_MAX_CHARS = 100;
 
-/** A selfie's width and its height are each at most this many pixels (2026-11-12). The wallet sends one of about 1280. */
+/** A selfie's width and its height are each at most this many pixels (2026-11-12). The wallet sends a square of at most 320 since 2026-11-21, and sent one of about 1280 before. */
 const SELFIE_MAX_SIDE = 4096;
 
 /** The credential id column takes 16 to 1023 bytes. */
