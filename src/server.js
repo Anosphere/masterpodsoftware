@@ -1,3 +1,4 @@
+import { startAlertSender, stopAlertSender } from './alerts/alert-sender.js';
 import { createApp } from './app.js';
 import { env } from './config/env.js';
 import { startDaoClock, stopDaoClock } from './dao/dao-clock.js';
@@ -23,6 +24,9 @@ const server = app.listen(env.port, () => {
   // And the DAO clock (src/dao/dao-clock.js): once now, then every minute,
   // the expiry, the flip and the close of the DAO proposals (spec 15.5).
   startDaoClock();
+  // And the alert sender (src/alerts/alert-sender.js): once now, then every
+  // minute, the security alerts' emails and notifications (spec 25.6).
+  startAlertSender();
 });
 
 let shuttingDown = false;
@@ -32,6 +36,7 @@ async function shutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
   stopDaoClock();
+  stopAlertSender();
   console.log(`\n${signal} received, shutting down...`);
 
   // Safety net: never hang forever if a connection refuses to close.

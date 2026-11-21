@@ -49,6 +49,45 @@ function optionalList(name, fallback) {
 /** The five local validators of a development machine, the default VALIDATOR_URLS. */
 const LOCAL_VALIDATOR_URLS = Object.freeze([1, 2, 3, 4, 5].map((n) => `http://localhost:300${n}`));
 
+/** An optional text: the value trimmed, or null when the variable is not set or empty. */
+function optionalText(name) {
+  const value = process.env[name];
+  return value === undefined || value.trim() === '' ? null : value.trim();
+}
+
+/**
+ * The settings of the security alerts (src/alerts/, spec section 25).
+ * Each pair is all or nothing: with both lines the part is on, with
+ * neither it is off, and one line without the other stops the boot. An
+ * error names the variable and never its value.
+ */
+function readAlerts() {
+  const resendApiKey = optionalText('RESEND_API_KEY');
+  const emailFrom = optionalText('ALERT_EMAIL_FROM');
+  if ((resendApiKey === null) !== (emailFrom === null)) {
+    throw new Error('RESEND_API_KEY and ALERT_EMAIL_FROM go together: set both or neither');
+  }
+  const pushKeyText = optionalText('ALERT_PUSH_PRIVATE_KEY');
+  const pushContact = optionalText('ALERT_PUSH_CONTACT');
+  if ((pushKeyText === null) !== (pushContact === null)) {
+    throw new Error('ALERT_PUSH_PRIVATE_KEY and ALERT_PUSH_CONTACT go together: set both or neither');
+  }
+  if (pushKeyText !== null && !/^[A-Za-z0-9_-]{43}$/.test(pushKeyText)) {
+    throw new Error('ALERT_PUSH_PRIVATE_KEY must be 43 base64url characters (32 bytes)');
+  }
+  if (pushContact !== null && !/^(https:\/\/|mailto:)\S+$/.test(pushContact)) {
+    throw new Error('ALERT_PUSH_CONTACT must be an https:// address or a mailto: address');
+  }
+  return Object.freeze({
+    resendApiKey,
+    emailFrom,
+    pushPrivateKey: pushKeyText === null ? null : Buffer.from(pushKeyText, 'base64url'),
+    pushContact,
+    removeMinutes: optionalInteger('ALERT_REMOVE_MINUTES', 43_200),
+    validatorKeysFile: optionalText('VALIDATOR_KEYS_FILE') ?? 'network/validators.json',
+  });
+}
+
 export const env = Object.freeze({
   nodeEnv: process.env.NODE_ENV ?? 'development',
   port: Number(process.env.PORT) || 3100,
@@ -119,4 +158,12 @@ export const env = Object.freeze({
     pendingMinutes: optionalInteger('DAO_PENDING_MINUTES', 10_080),
     voteMinutes: optionalInteger('DAO_VOTE_MINUTES', 20_160),
   }),
+
+  // Security alerts (src/alerts/, spec section 25): the email company's
+  // key and the sender's name and address; the private half of this
+  // server's key for the phones' delivery services and the contact they
+  // are given; how long an email or a phone that was taken off still
+  // gets every alert, in minutes (a month); and the file with the
+  // validators' public keys.
+  alerts: readAlerts(),
 });

@@ -52,7 +52,12 @@ backup code, backup code rotation, several passkeys, several sessions).
 - Errors are `{ error: '<reason>' }` with `400` for a bad shape or value,
   `401` for anything wrong with the signature or the session, `403` for a
   caller who may not do this, `404` for a thing that does not exist, `409`
-  for a conflict with what is already there. Reasons are short lowercase
+  for a conflict with what is already there. Three more are in use:
+  `503` for a part of this server that is not set up or cannot reach what
+  it needs (since 2026-11-08, `validators unreachable`, section 15; and
+  section 25), and, since 2026-11-21 (section 25), `410` for a thing that
+  can no longer be used (a code that ran out or is used up) and `429` for
+  too many in a given time. Reasons are short lowercase
   phrases; the ones the phone shows to the user are quoted in section 5.
 - Who is asking always comes from the verified signature, never from the
   body. Objects carry only the other party.
@@ -66,10 +71,10 @@ Four levels. A route's level is given with the route in section 5.
 
 | Level | Meaning | Routes |
 | ----- | ------- | ------ |
-| none | Plain JSON body, no signature. | `/challenge`, `/check-username`, `/get-anopod-session-keys`, `/get-anos-account`, `/check-signing-passkey` (section 22), and `/create-anopod`, `/unlock`, which are signed by the ephemeral keys inside them |
+| none | Plain JSON body, no signature. | `/challenge`, `/check-username`, `/get-anopod-session-keys`, `/get-anos-account`, `/check-signing-passkey` (section 22), `/report-waiting-transfers` (2026-11-21, section 25), whose message is signed by a validator's own key, and `/create-anopod`, `/unlock`, which are signed by the ephemeral keys inside them |
 | session | Signed by the pod's current ephemeral keys (section 3). Vouched or not. | `/search-usernames`, `/send-vouch-request`, `/check-anopod-status`, `/list-notifications`, `/mark-notifications-read`, `/get-anopod-profile` |
 | vouched | session, and `anopods.vouched` is true. | `/list-vouch-requests`, `/approve-vouch-request`, `/decline-vouch-request`, `/complete-setup`, `/add-to-security-bucket-one`, `/add-to-security-bucket-two`, `/list-security-records` |
-| setup | vouched, and setup is complete (`anopod_encryption_key_blob_2` is set, so the pod has chat keys). | every chat and marketplace route; `/create-anos-account`, `/mark-anos-account-submitted`, `/list-anos-accounts`, `/store-first-key-blob` (section 22); the six wallet memory routes, `/add-noted-transaction` to `/set-wallet-settings` (2026-11-07); the person's two break-glass routes, `/file-break-glass-moves` and `/list-my-break-glass-moves` (2026-11-08, section 14); the six DAO routes, `/create-dao-proposal` to `/list-dao-votes` (2026-11-08, section 15); `/add-passkey` and `/list-passkeys` (section 19) |
+| setup | vouched, and setup is complete (`anopod_encryption_key_blob_2` is set, so the pod has chat keys). | every chat and marketplace route; `/create-anos-account`, `/mark-anos-account-submitted`, `/list-anos-accounts`, `/store-first-key-blob` (section 22); the six wallet memory routes, `/add-noted-transaction` to `/set-wallet-settings` (2026-11-07); the person's two break-glass routes, `/file-break-glass-moves` and `/list-my-break-glass-moves` (2026-11-08, section 14); the six DAO routes, `/create-dao-proposal` to `/list-dao-votes` (2026-11-08, section 15); `/add-passkey` and `/list-passkeys` (section 19); the eight routes of a pod's security alerts, `/list-alert-settings` to `/keep-alert-phone` (2026-11-21, section 25) |
 
 Three middlewares: `requireSession`, `requireVouched`, `requireSetup`.
 Failing them: `401` (session), `403 anopod not vouched`, `403 setup not
@@ -354,7 +359,9 @@ CREATE TABLE IF NOT EXISTS notifications (
                         'joinRequest', 'joinApproved', 'joinDeclined',
                         'tradeCaseOpened', 'disputeCaseOpened', 'caseScheduled',
                         'caseDecided', 'caseDismissed', 'recoveryCaseScheduled',
-                        'passkeyAdded')),
+                        'passkeyAdded',
+                        'transferWaiting', 'recoveryMoveWaiting', 'recoveryCaseOpened',
+                        'alertSettingsChanged')),
   reference_id        BYTEA       NOT NULL CHECK (octet_length(reference_id) = 32),
   read_at             TIMESTAMPTZ,
   created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -366,10 +373,13 @@ CREATE INDEX IF NOT EXISTS notifications_anopod_id_created_at_idx ON notificatio
 `notification_number` is the row's random id. `reference_id` says which
 thing (section 6). Read, never deleted. The first ten kinds are of
 2026-10-24. The five kinds of an attestor case came on 2026-10-26 (13.3
-and 13.7), `recoveryCaseScheduled` on 2026-11-11 (14.7 and section 18)
-and `passkeyAdded` on 2026-11-18 (section 19). For a live database the
-ALTER pair after the attestation block of `db/schema.sql` drops and adds
-`notifications_kind_check` with the same seventeen kinds.
+and 13.7), `recoveryCaseScheduled` on 2026-11-11 (14.7 and section 18),
+`passkeyAdded` on 2026-11-18 (section 19), and the four kinds of the
+security alerts, `transferWaiting`, `recoveryMoveWaiting`,
+`recoveryCaseOpened` and `alertSettingsChanged`, on 2026-11-21 (section
+25). For a live database the ALTER pair after the attestation block of
+`db/schema.sql` drops and adds `notifications_kind_check` with the same
+twenty-one kinds.
 
 ### security_images and security_info
 
@@ -652,6 +662,35 @@ the people who connect each get a private room about it, linked by
 `chat_rooms.listing_id`. The old rooms stay, with their listings' ids on
 both rows. Since 2026-11-20 the listing limit counts a pod's rows with
 `status` `open`: at most 10 at one time (section 23).
+
+### alert_emails
+
+Added 2026-11-21 for the security alerts (section 25). The emails a pod's
+alerts go to, in plain text: this server has to read an address to send
+to it. One row per pod and address, compared in lower case. A row holds
+the six-digit code until the address is confirmed, and the day it comes
+off once the person has taken it off. The table and its columns are in
+25.2.
+
+### alert_phones
+
+Added 2026-11-21 (section 25). The phones a pod's alerts go to: one row
+per browser that allowed notifications, with the delivery address, the
+public key and the secret the browser handed the wallet. The table and
+its columns are in 25.2.
+
+### alert_transfers
+
+Added 2026-11-21 (section 25). The waiting transfers the validators have
+reported: one row per report with its own facts, keyed by the hash of
+those facts. Append-only. The table and its columns are in 25.2.
+
+### alert_messages
+
+Added 2026-11-21 (section 25). One row per message to one email or one
+phone, written inside the transaction of the event it reports and sent by
+the alert sender. It holds no address, and it is kept after it is sent.
+The table and its columns are in 25.2.
 
 ## 5. Routes
 
@@ -1437,6 +1476,44 @@ Writes: `INSERT` or `UPDATE` the pod's one row, whole.
 
 Answer: `200 { updatedAt }`, ISO 8601.
 
+### POST /list-alert-settings (setup)
+
+Added 2026-11-21 with the eight routes below. The caller's security
+alerts: its emails and its phones (25.3).
+
+### POST /add-alert-email (setup)
+
+An email for the caller's alerts, sent a six-digit code (25.3).
+
+### POST /confirm-alert-email (setup)
+
+The code typed back; the email counts from here (25.3).
+
+### POST /remove-alert-email (setup)
+
+"Take off": the email comes off a month from now (25.3).
+
+### POST /keep-alert-email (setup)
+
+"Keep": an email that was set to come off stays (25.3).
+
+### POST /add-alert-phone (setup)
+
+A phone for the caller's alerts, as its browser handed it over (25.3).
+
+### POST /remove-alert-phone (setup)
+
+"Take off": the phone comes off a month from now (25.3).
+
+### POST /keep-alert-phone (setup)
+
+"Keep": a phone that was set to come off stays (25.3).
+
+### POST /report-waiting-transfers (none)
+
+For the validators: the transfers that have started to wait, in one
+message signed by the validator's own key (25.4).
+
 ## 6. Notifications
 
 | kind | to | reference_id |
@@ -1458,9 +1535,16 @@ Answer: `200 { updatedAt }`, ISO 8601.
 | `caseDismissed` | the parties of a trade or dispute case | the case id (13.7) |
 | `recoveryCaseScheduled` | the recovered pod of a break-glass case | the case id (14.7, 2026-11-11) |
 | `passkeyAdded` | the pod a passkey was added to | the `passkey_id` (section 19) |
+| `transferWaiting` | the pod that made the account a transfer is waiting to leave | the `account_id` (section 25, 2026-11-21) |
+| `recoveryMoveWaiting` | the pod that made the account a recovery's break-glass move is waiting to leave | the `account_id` (section 25) |
+| `recoveryCaseOpened` | the pod a recovery case was opened for | the recovery case's id (section 25) |
+| `alertSettingsChanged` | the pod whose list of security alerts changed | its own `anopod_id` (section 25) |
 
 Every notification is written inside the transaction of the event it
 reports. The phone polls `/list-notifications` and marks what it has shown.
+Since 2026-11-21 the last four also go out by email and to the phone, to
+every confirmed email and every phone on the pod's list of security alerts
+(section 25).
 
 ## 7. Client crypto
 
@@ -1515,6 +1599,12 @@ Keys live in RAM and die with the tab. Nothing secret is stored on the phone.
 | `DAO_PASS_PERCENT` | `50` | For must be more than this percent of the votes cast; at most 99, so a tie fails |
 | `DAO_PENDING_MINUTES` | `10080` | How long a proposal may collect support (a week) |
 | `DAO_VOTE_MINUTES` | `20160` | How long an open proposal takes votes (two weeks) |
+| `RESEND_API_KEY` | none: no email is sent | The email company's key (section 25, 2026-11-21) |
+| `ALERT_EMAIL_FROM` | none | The sender of every email: `anoPod wallet <alerts@wallet.anocloud.com>` on the servers |
+| `ALERT_PUSH_PRIVATE_KEY` | none: no notification is sent | The private half of this server's key for the phones' delivery services, 43 characters, made by `scripts/make-alert-push-key.js` |
+| `ALERT_PUSH_CONTACT` | none | The contact the delivery services are given: `https://wallet.anocloud.com` on the servers |
+| `ALERT_REMOVE_MINUTES` | `43200` | How long an email or a phone that was taken off still gets every alert (a month) |
+| `VALIDATOR_KEYS_FILE` | `network/validators.json` | The validators' public keys; a path from the repo's root, or a full path |
 
 All have defaults, so the existing `.env` keeps working. The JSON body
 limit is computed from the last two: `MAX_IMAGES_PER_REQUEST *
@@ -1522,6 +1612,12 @@ MAX_IMAGE_BYTES * 1.4 + 1 MB`.
 
 `WEB_ORIGIN` became a list and `RECOVERY_POD_URL_BASE` was added in section
 12.7 (2026-10-26).
+
+The last six are the security alerts' (section 25, 2026-11-21). The first
+four of them have no default. With both email lines set the emails are
+on, and with both phone lines set the notifications on the phone are on.
+With neither line of a pair that part is off, and one line of a pair
+without the other stops the boot (25.8).
 
 ## 9. Genesis
 
@@ -1556,7 +1652,10 @@ changes nothing and says so. There is no route for either.
 - Purging pods that never got vouched, and their usernames.
 - Removing a member from a room and rotating the room key.
 - Editing a listing, a profile or a selfie.
-- Push delivery of notifications and messages; the phone polls.
+- Push delivery of notifications and messages; the phone polls. (Since
+  2026-11-21, section 25, the four kinds of the security alerts also go
+  to the phone and by email. Every other notification and every chat
+  message is still polled.)
 - Generic encrypted object storage, anoSphere, the anos interface.
 - Anti-abuse limits on `/challenge` and `/create-anopod`.
 - Removing one passkey; a cap on a pod's passkeys; a name or a date for the
@@ -2238,7 +2337,11 @@ Writes: `INSERT INTO recovery_cases` (status `open`; the contact email and
 the contact phone, both of them), `INSERT INTO
 recovery_pods` (credential id, COSE key, ephemeral keys with
 `ephemeral_expires_at = now() + EPHEMERAL_KEY_HOURS`, the hybrid key, the
-blob), the `opened` event, the challenge consumed. A unique violation on
+blob), the `opened` event, the challenge consumed. Since 2026-11-21
+(section 25) also the alert to the pod the case is opened for, in the
+same transaction: `raiseAlert` with `recoveryCaseOpened`, which writes
+the row under the pod's bell and a message for each of its emails and
+phones, at most once in 24 hours for one pod (25.5). A unique violation on
 the partial index is `409 case already open`; on a key column `409 key
 already registered`.
 
@@ -4489,7 +4592,10 @@ address for the call, which this server would then make from inside its
 own network. When every URL failed, null. The read is public and
 unsigned: everything in it is on the public chain, and this server has no
 anos account or validator key to sign with. The doormen's certificates are
-Let's Encrypt, so the fetch verifies them as any other.
+Let's Encrypt, so the fetch verifies them as any other. (Since 2026-11-21,
+section 25, it is the one outbound call to the validators and no longer
+the only one this server makes: the alert sender calls the email company
+and the phones' delivery services, 25.6.)
 
 The snapshot, `src/dao/snapshot.js` `takeSnapshot()`: the stakes (null
 passed through); `findPodsForAccounts` (15.8) maps the accounts to pods;
@@ -6131,7 +6237,8 @@ One kind (section 6):
 
 Written by `/add-passkey` inside the transaction of the insert, as section
 6's are. The wallet's label for it links to its Passkeys page (the
-wallet's spec). With it there are seventeen kinds.
+wallet's spec). With it there are seventeen kinds. (Since 2026-11-21,
+section 25, there are twenty-one.)
 
 ### 19.5 Files
 
@@ -8158,3 +8265,1241 @@ What the plan left open and how it was decided:
   `src/config/env.js`, `.example.env`, `.gitignore` and the other
   scripts; in `package.json` everything but the one line; in the README
   everything but the row and the line.
+
+## 25. Security alerts (2026-11-21)
+
+Design settled 2026-11-20 and 2026-11-21 in two talking chats and a
+planning chat (the plan is
+`~/Desktop/Z-TestNet/forclaude/security-alerts-plan-1.md`, FINAL,
+2026-11-21). Why, in the user's words (the plan's decision 1): "The real
+use case is to prevent a thief." "We would actually want the alert to
+originate from the validators." "It would mainly be useful for guarded,
+vaulted and assissted accounts." "With spending it's too late to do
+anything." "This means a bad trade could be cancelled." A transfer out of
+a guarded, a vault or an assisted account waits on the validators before
+it is written, and the wallet lets its owner cancel it while it waits.
+Until this section the owner saw that it waits only by opening the
+wallet: a thief with a copy of the keys could send, and the wait could
+run out unseen. Now this server tells
+the pod that made the account, by email and by a notification on the
+phone, when such a transfer starts to wait, when a recovery is started
+for the pod, and when the pod's own list of alerts changes.
+
+Three repos, in the order of the deploys: this server (this section, step
+1 of the plan: a pod's list, the report from the validators and the
+sender), the wallet (its spec; step 2, the wallet as an app on the Home
+Screen, and step 3, the page "Security alerts" with the phone's part and
+the bell) and the validators (anossoftware's spec, section 34, step 4:
+each validator reports the transfers that wait). Then the record files
+(step 5). This server boots and runs without any of the new settings.
+Without the two email lines no email is sent and `/add-alert-email`
+refuses. Without the two phone lines no notification is sent and
+`/add-alert-phone` refuses. Without the validators' keys file their
+reports are refused. So this step can be deployed before any of them is
+set. No npm package: the scrambling of a notification and its signed
+header are Node's own crypto, and the two kinds of outbound call are
+`fetch`. The doormen, the keyholders, the keyholder GUI, the signing
+servers, the monitor and the wallet's proxy are not touched. Nothing above
+this section changes except the items in 25.9.
+
+### 25.1 The rules
+
+From the plan's decisions 4, 5, 13 to 16, 19, 21 and 22:
+
+- What sets an alert off (decision 5): a transfer that starts to wait
+  out of a guarded, a vault or an assisted account; a recovery's
+  break-glass move; a change of the pod's own list ("a change in
+  notifications section would also ring"). And a recovery case that is
+  opened for the pod (decision 15). Nothing at a cancel and nothing when
+  the transfer is written.
+- The month rule (decision 4). The user: "If someone changes their email
+  or whatever for notifications, they will continue to receive
+  notifications at the old numbers/ email for 1 month. That's it." The
+  new one gets them right away. So "Take off" does not take an address
+  off: it sets the day it comes off, a month ahead, and until then the
+  address gets every alert. "Keep" undoes it.
+- An email counts once the person has typed a six-digit code that was
+  sent to it, within ten minutes (decision 13). No link in the email.
+- What an alert says (decision 14). In an email the amount and the day it
+  will be written; the phone's line has the amount. The receiving account
+  is not in. No link and no web address. English or Thai: an email in the
+  language the wallet showed when the email was added, the phone's line
+  in the phone's own language.
+- A recovery case opened for a pod says: if you started it, do nothing; a
+  moderator checks every recovery on a video call before anything is
+  released; if your passkey ever stops working, here is what to tap
+  (decision 15).
+- Who can see the emails (decision 16). This server keeps each address as
+  plain text. Only the person's own logged-in wallet reads it back. No
+  route of an attestor, a moderator or a keyholder answers it. The email
+  company sees the address and the words and keeps them for a while.
+- The list (decision 19): up to 3 emails and 5 phones. Every email and
+  phone on the list gets every alert; there are no switches for single
+  kinds. The same alerts show under the bell inside the wallet, for every
+  pod, with or without an email on the list.
+- When an alert cannot be delivered (decision 21): this server keeps
+  trying for three days. A phone that can no longer be reached comes off
+  the list at once, and the emails are told. An email address that no
+  longer exists is not noticed.
+- The validators (decision 22): about five minutes after a transfer is
+  sent, every validator that holds it tells this server. This server acts
+  on the first report and ignores the rest. One validator alone could set
+  off a false alert, and it cannot move money.
+
+From the plan's decision 23, the lines that are about this server:
+
+- The key for the phones is one line of `.env`, not a key file. `.env` is
+  already the one file that is the same on the three servers and that
+  only the user writes. A script makes the line (25.8).
+- An email names the account by the start of its id: "open that account
+  (its id starts with a1b2c3d4)". A person with two guarded accounts
+  could not tell which otherwise. The phone's line does not carry it.
+- On the day the first validator takes step 4 it reports every transfer
+  that waits at that moment, also one sent days before. So each such
+  transfer gets one alert that day.
+- The amount is written with commas: "5,000 anos". The day in an email is
+  in UTC, because this server does not know a person's time zone.
+- The phone's notification has the title "Security alert" and one
+  sentence. This server sends the facts; the sentence is made on the
+  phone, so that it is in the phone's language.
+- A phone that was just turned on gets one notification at once
+  (`phoneOn`), so a person sees that it works.
+- The code: 5 wrong tries use a code up; a new code can be asked for
+  after 60 seconds; a pod is sent 5 codes in 24 hours at most; an address
+  that is not confirmed within a day is dropped.
+- Three more counts hold a flood back. A pod's list takes 20 changes in
+  24 hours; "Keep" is not counted, so that nobody can be kept from saving
+  an address. A recovery case that is opened makes an alert once in 24
+  hours for one pod, however many cases are opened for it: anybody can
+  open one. A validator's reports write 1,000 transfers in 24 hours at
+  most.
+- One report is enough to set an alert off: the first validator's. The
+  others that report the same transfer with the same account, amount,
+  kind and day add nothing; it stays one alert. Only a report that says
+  something else about the same transfer is not taken as a repeat. It is
+  a report of its own and makes an alert of its own. So one validator
+  cannot keep a true report from counting by sending a false one first.
+- A phone is taken only when the key it hands over is a real key.
+  Anything else would make the sender stumble each time it met that
+  phone.
+- An email that was never confirmed is taken off at once, since it got no
+  alert. It counts toward the three while it is there. Emails and phones
+  that are coming off count toward the three and the five.
+- A change of the list asks for no passkey tap. Taking an address off
+  does nothing for a month and is told to that address the same day;
+  adding one takes nothing away from the owner.
+- Nothing deletes the list at a recovery. After a false recovery the true
+  owner's email keeps getting every alert for a month after it was taken
+  off.
+- A phone is taken only when its delivery address is on one of four
+  delivery services: Apple's (`push.apple.com`), Google's
+  (`fcm.googleapis.com`), Mozilla's (`push.services.mozilla.com`) and
+  Microsoft's (`notify.windows.com`). Without the list a person who is
+  logged in could make this server send requests to any address, also one
+  inside our own network. Apple's and Microsoft's names are from their
+  own pages; Google's and Mozilla's are from the planning chat's
+  knowledge and are checked at the first real phone (the plan's 3.9).
+- No route answers a phone's delivery address: whoever knows it could
+  send to the phone. The wallet's page finds "this phone" in the list by
+  the SHA-256 of the address.
+- The list names a phone by its kind: `iphone`, `ipad`, `android`,
+  `computer`, `other`. The wallet reads the kind when the alerts are
+  turned on.
+- Tries after a failure: after 1, 2, 4, 8, 16 and 32 minutes, then every
+  60 minutes. A notification waits up to 7 days at the delivery service
+  for a phone that is switched off.
+- A message leaves at once after the event, not at the next minute; the
+  minute's run is for the tries and for what comes off after its month.
+- An email is plain text: no picture, no formatting, no link.
+- A sent message stays in its table as the record that it went out. It
+  holds no email address: the address is read from the list when the
+  message is sent.
+- Under the bell: three kinds for the three events, and one kind,
+  `alertSettingsChanged`, for every change of the list.
+- Names in code use "alert": the tables `alert_...`, the routes with
+  `alert` in them.
+- The Thai sentences are written by the build, in the words of the
+  wallet's `th.ts`, and are unread by a Thai speaker when they go out.
+
+### 25.2 The four tables
+
+At the end of `db/schema.sql`, one block. Each table has its `COMMENT ON`
+lines there. No foreign keys.
+
+```sql
+CREATE TABLE IF NOT EXISTS alert_emails (
+  email_id        BYTEA       PRIMARY KEY CHECK (octet_length(email_id) = 32),
+  anopod_id       BYTEA       NOT NULL CHECK (octet_length(anopod_id) = 32),
+  email           TEXT        NOT NULL CHECK (char_length(email) BETWEEN 3 AND 254 AND position('@' IN email) > 1),
+  language        TEXT        NOT NULL CHECK (language IN ('en', 'th')),
+  code            TEXT        CHECK (code ~ '^[0-9]{6}$'),
+  code_expires_at TIMESTAMPTZ,
+  code_tries      INTEGER     NOT NULL DEFAULT 0 CHECK (code_tries >= 0),
+  verified_at     TIMESTAMPTZ,
+  removes_at      TIMESTAMPTZ,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS alert_emails_anopod_id_email_key ON alert_emails (anopod_id, lower(email));
+```
+
+The emails a pod's alerts go to. `email` is the address as typed, trimmed:
+3 to 254 characters with an `@` that is not first, in plain text. One row
+per pod and address, compared in lower case; two pods may hold the same
+address. `language` is `en` or `th`, the language the wallet showed when
+the address was added (or when its last code was asked for); every email
+to the address is written in it. `code` is the six-digit code, until it is
+typed back or replaced; `code_expires_at` is ten minutes after the code
+was made; `code_tries` counts the wrong codes typed against it, and at
+five the code is used up. `verified_at` is null until the code was typed
+back: alerts go only to a confirmed address. `removes_at` is null, or the
+moment the row is deleted: set by `/remove-alert-email` a month ahead,
+cleared by `/keep-alert-email`. The row belongs to the pod, not to an
+account, and nothing deletes it but its own removal. `updated_at` is kept
+by the `alert_emails_set_updated_at` trigger.
+
+```sql
+CREATE TABLE IF NOT EXISTS alert_phones (
+  phone_id    BYTEA       PRIMARY KEY CHECK (octet_length(phone_id) = 32),
+  anopod_id   BYTEA       NOT NULL CHECK (octet_length(anopod_id) = 32),
+  endpoint    TEXT        NOT NULL CHECK (char_length(endpoint) BETWEEN 20 AND 1024),
+  p256dh      BYTEA       NOT NULL CHECK (octet_length(p256dh) = 65),
+  auth        BYTEA       NOT NULL CHECK (octet_length(auth) = 16),
+  label       TEXT        NOT NULL CHECK (label IN ('iphone', 'ipad', 'android', 'computer', 'other')),
+  removes_at  TIMESTAMPTZ,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT alert_phones_anopod_id_endpoint_key UNIQUE (anopod_id, endpoint)
+);
+CREATE INDEX IF NOT EXISTS alert_phones_endpoint_idx ON alert_phones (endpoint);
+```
+
+The phones a pod's alerts go to: one row per browser that allowed
+notifications, with what the browser handed the wallet. `endpoint` is the
+delivery address the browser's delivery service gave, an https URL on one
+of the four services. `p256dh` is the browser's public key for this
+subscription, 65 raw bytes: a message is locked to it. `auth` is the
+browser's secret, 16 raw bytes. `label` is the kind of device, only for
+the list on the wallet's page. `removes_at` as for an email. Two pods used
+on one phone hold a row each with the same `endpoint`; the index on
+`endpoint` serves the delete of every row of a phone that is gone.
+`updated_at` is kept by the `alert_phones_set_updated_at` trigger.
+
+```sql
+CREATE TABLE IF NOT EXISTS alert_transfers (
+  report_id        BYTEA       PRIMARY KEY CHECK (octet_length(report_id) = 32),
+  transaction_id   BYTEA       NOT NULL CHECK (octet_length(transaction_id) = 32),
+  account_id       BYTEA       NOT NULL CHECK (octet_length(account_id) = 32),
+  anopod_id        BYTEA       CHECK (octet_length(anopod_id) = 32),
+  transaction_type TEXT        NOT NULL CHECK (transaction_type IN ('guardedAnosTransfer', 'vaultAnosTransfer', 'assistedAnosTransfer', 'breakGlassTransfer')),
+  amount           TEXT        NOT NULL CHECK (amount ~ '^[1-9][0-9]{0,38}$'),
+  writes_at        TIMESTAMPTZ,
+  validator_id     INTEGER     NOT NULL CHECK (validator_id > 0),
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS alert_transfers_transaction_id_idx ON alert_transfers (transaction_id);
+CREATE INDEX IF NOT EXISTS alert_transfers_validator_id_created_at_idx ON alert_transfers (validator_id, created_at);
+```
+
+The waiting transfers the validators have reported: one row per report
+with its own facts. `report_id` is the SHA-256 of the report's facts in
+canonical form (the transfer's id, the account, the kind, the amount, the
+moment). Validators that report one transfer with the same facts make one
+row, written by the first of them; a report that names another account,
+amount, kind or moment for the same transfer is a row of its own.
+`anopod_id` is the pod that made the sending account, from
+`anos_accounts`; null when no pod made it, and then nobody is alerted.
+`amount` is in millionths of an anos, a decimal string, as the validator
+reported it. `writes_at` is the moment the transfer may be written; null
+for a transfer that waits for two attestors alone. `validator_id` is the
+validator whose report wrote the row; the second index serves the count
+of a validator's rows in 24 hours. Append-only: the
+`alert_transfers_append_only` trigger refuses UPDATE and DELETE.
+`created_at` only.
+
+```sql
+CREATE TABLE IF NOT EXISTS alert_messages (
+  message_id   BYTEA       PRIMARY KEY CHECK (octet_length(message_id) = 32),
+  anopod_id    BYTEA       NOT NULL CHECK (octet_length(anopod_id) = 32),
+  kind         TEXT        NOT NULL CHECK (kind IN (
+                 'emailCode', 'transferWaiting', 'recoveryMoveWaiting', 'recoveryCaseOpened',
+                 'emailAdded', 'emailRemoving', 'emailKept',
+                 'phoneAdded', 'phoneRemoving', 'phoneKept', 'phoneUnreachable', 'phoneOn')),
+  email_id     BYTEA       CHECK (octet_length(email_id) = 32),
+  phone_id     BYTEA       CHECK (octet_length(phone_id) = 32),
+  details      JSONB       NOT NULL DEFAULT '{}'::jsonb,
+  tries        INTEGER     NOT NULL DEFAULT 0 CHECK (tries >= 0),
+  next_try_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  sent_at      TIMESTAMPTZ,
+  gave_up_at   TIMESTAMPTZ,
+  last_error   TEXT,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT alert_messages_one_destination CHECK ((email_id IS NULL) <> (phone_id IS NULL))
+);
+CREATE INDEX IF NOT EXISTS alert_messages_due_idx ON alert_messages (next_try_at) WHERE sent_at IS NULL AND gave_up_at IS NULL;
+CREATE INDEX IF NOT EXISTS alert_messages_anopod_id_created_at_idx ON alert_messages (anopod_id, created_at DESC);
+```
+
+One row per message to one email or one phone, written inside the
+transaction of the event it reports and sent by the alert sender (25.6).
+A row names an email or a phone, never both and never neither. `details`
+is what the kind carries (25.5). `tries` counts the sends that failed;
+`next_try_at` is when the sender takes the row next: now at first, later
+after each failure. `sent_at` is when the email company or the phone's
+delivery service took the message. `gave_up_at` is when the sender
+stopped trying: after three days of failures, or when the address or the
+phone is gone. `last_error` is the last failure in a few words, with no
+address in it. The row holds no address: the address is read from
+`alert_emails` or `alert_phones` when the message is sent. Kept after it
+is sent. `message_id` is also part of the key the email company is given
+so that one try is never sent twice (25.6). `updated_at` is kept by the
+`alert_messages_set_updated_at` trigger.
+
+The four notification kinds that come with the tables are in the
+`notifications` check: inline in its `CREATE TABLE`, and in the one ALTER
+pair after the attestation block. They did not go into a second
+drop-and-add at the end of the file. The whole file is applied again at
+every deploy; a second block would work the first time, and at the next
+deploy the older block, with its old list, would be refused by the first
+row of a new kind.
+
+### 25.3 The eight routes of a pod's list
+
+All at level setup, in `src/alerts/alerts.service.js`. The numbers are
+constants at the top of that file, not env variables, as the listing
+limit is not: `EMAIL_LIMIT = 3`, `PHONE_LIMIT = 5`, `CODE_TRIES = 5`,
+`CODE_WAIT_SECONDS = 60`, `CODES_A_DAY = 5`, `CHANGES_A_DAY = 20`,
+`PUSH_HOSTS` (the four delivery services) and `PHONE_LABELS` (the five
+kinds of device).
+
+#### POST /list-alert-settings (setup)
+
+Body: `{}`. No check.
+
+Answer: `200`
+
+```json
+{
+  "emails": [ { "emailId": "<hex 32>", "email": "nok@gmail.com", "language": "en", "confirmed": true, "createdAt": "<ISO 8601>", "removesAt": null } ],
+  "phones": [ { "phoneId": "<hex 32>", "endpointHash": "<hex 32>", "label": "iphone", "createdAt": "<ISO 8601>", "removesAt": null } ],
+  "emailOn": true,
+  "pushPublicKey": "<87 characters>",
+  "emailLimit": 3, "phoneLimit": 5, "removeMinutes": 43200
+}
+```
+
+Both lists oldest first. `confirmed` is true once the code was typed.
+`removesAt` is null or the moment the row comes off. `endpointHash` is the
+SHA-256 of the phone's delivery address; the address itself is never
+answered, and neither is a code. `emailOn` is false when the two email
+lines are not set. `pushPublicKey` is the public half of this server's
+key for the delivery services as base64url, or null when the two phone
+lines are not set.
+
+#### POST /add-alert-email (setup)
+
+Body: `{ email, language }`.
+
+Checks, in order: the shape, an object with `email` and `language`
+strings (`400 bad request shape`); email is on (`503 email alerts not set
+up`); `email`, trimmed, is 3 to 254 characters, matches
+`^[^\s@]+@[^\s@]+$` and holds no control character (`400 invalid
+email`); `language` is `en` or `th` (`400 invalid language`). Then, in one transaction with the pod's row
+locked (`lockPod`, 17.2): the pod has no confirmed row for this address,
+compared in lower case (`409 email already listed`); when it has no row
+for it at all, it has fewer than 3 rows (`403 email limit reached`); it
+was sent fewer than 5 codes in the last 24 hours (`429 too many codes
+today`); the latest of them is 60 seconds old or more (`429 wait before a
+new code`).
+
+Writes: for a new address `INSERT alert_emails` with a fresh `email_id`.
+Then the code: six digits from `randomInt(0, 1_000_000)` of `node:crypto`,
+padded with zeros on the left, good for ten minutes, with `code_tries`
+0 and the body's language. Then one `alert_messages` row of the kind
+`emailCode` to that address. An address that is on the list and not
+confirmed yet gets a new code the same way; its old code is replaced.
+
+Answer: `201 { emailId, email, confirmed: false }` for a new row, `200`
+with the same body for a new code; `email` is the address as the row
+holds it.
+
+#### POST /confirm-alert-email (setup)
+
+Body: `{ emailId, code }`.
+
+Checks, in order: the shape, two strings (`400 bad request shape`);
+`emailId` decodes to 32 bytes (`400 invalid emailId`); `code` matches
+`^[0-9]{6}$` (`400 invalid code`). Then, in one transaction with the
+email's row locked: the row is there and is the caller's (`404 unknown
+email`); it is not confirmed yet (`409 email already confirmed`); it has
+a code and `code_expires_at` has not passed (`410 code expired`);
+`code_tries` is under 5 (`410 code used up`); the code is the row's,
+compared with `timingSafeEqual` (`401 wrong code`: the wrong try is
+counted first, and the transaction commits, so the count stays); the pod
+made fewer than 20 changes of its list in the last 24 hours (`429 too
+many changes today`; the code stays good until its ten minutes are over).
+
+Writes: `verified_at` now, the code cleared; then `raiseAlert` (25.5)
+with `emailAdded`, which tells every other address of the list.
+
+Answer: `200 { emailId, confirmed: true }`.
+
+#### POST /remove-alert-email (setup)
+
+Body: `{ emailId }`. "Take off."
+
+Checks: the shape (`400 bad request shape`); the id (`400 invalid
+emailId`). Then, in one transaction with the email's row locked: the row
+is there and is the caller's (`404 unknown email`).
+
+Writes and answers, by the row's state. Not confirmed: the row is
+deleted and nobody is told; `200 { emailId, removed: true, removesAt:
+null }`. Confirmed and already set to come off: nothing is written; `200
+{ emailId, removed: false, removesAt }` with the standing moment.
+Confirmed: 20 changes or more in the last 24 hours refuse it (`429 too
+many changes today`); otherwise `removes_at` is set
+`ALERT_REMOVE_MINUTES` ahead and `raiseAlert` with `emailRemoving` tells
+the whole list, the address that comes off too; `200 { emailId, removed:
+false, removesAt }`.
+
+#### POST /keep-alert-email (setup)
+
+Body: `{ emailId }`. "Keep."
+
+Checks: as the first three of `/remove-alert-email`.
+
+Writes: when `removes_at` is set, it is cleared and `raiseAlert` with
+`emailKept` tells the whole list. When it is null nothing is written.
+"Keep" is not counted against the 20 changes: it can only undo a "Take
+off", and a person must always be able to save an address.
+
+Answer: `200 { emailId, removesAt: null }` both times.
+
+#### POST /add-alert-phone (setup)
+
+Body: `{ endpoint, p256dh, auth, label }`: what the browser handed the
+wallet when the person allowed notifications, and the kind of device.
+
+Checks, in order: the shape, four strings (`400 bad request shape`);
+phone alerts are on (`503 phone alerts not set up`); `endpoint` is 20 to
+1024 characters of plain ASCII with no blank and no control character,
+and parses as a URL whose protocol is `https:` and which has no user
+name, no password and no port (`400 invalid endpoint`); its
+host is one of the four delivery services or ends with a dot and one of
+them (`400 push service not supported`; the handler's log line names the
+host and nothing else of the address); `p256dh` decodes to 65 bytes that
+are a point on the P-256 curve (`400 invalid p256dh`); `auth` decodes to
+16 bytes (`400 invalid auth`); `label` is one of the five (`400 invalid
+label`). Then, in one transaction with the pod's row locked: the pod has
+no row with this `endpoint` yet (when it has one, nothing is written and
+the answer is `200 { phoneId, removesAt }` of that row); it has fewer
+than 5 rows (`403 phone limit reached`); it made fewer than 20 changes of
+its list in the last 24 hours (`429 too many changes today`).
+
+Writes: `INSERT alert_phones` with a fresh `phone_id`; `raiseAlert` with
+`phoneAdded`, which tells every other address of the list; and one
+`alert_messages` row of the kind `phoneOn` to the new phone.
+
+Answer: `201 { phoneId, removesAt: null }`.
+
+#### POST /remove-alert-phone (setup)
+
+Body: `{ phoneId }`. As `/remove-alert-email`, without the unconfirmed
+case: `400 bad request shape`, `400 invalid phoneId`, `404 unknown
+phone`, `429 too many changes today`; `raiseAlert` with `phoneRemoving`.
+
+Answer: `200 { phoneId, removesAt }`, the new moment or the standing one.
+
+#### POST /keep-alert-phone (setup)
+
+Body: `{ phoneId }`. As `/keep-alert-email`: `400 bad request shape`,
+`400 invalid phoneId`, `404 unknown phone`; `raiseAlert` with `phoneKept`
+when the phone was set to come off; not counted against the 20 changes.
+
+Answer: `200 { phoneId, removesAt: null }`.
+
+### 25.4 POST /report-waiting-transfers (none)
+
+In `src/alerts/validator-reports.js`. For the validators: each one tells
+this server of the transfers that have started to wait, as its job sends
+them (anossoftware's spec, section 34). The body is a message signed like
+a message to another validator:
+
+```json
+{
+  "payload": {
+    "validatorId": 4,
+    "transfers": [
+      {
+        "transactionId":   "<hex 32>",
+        "accountId":       "<hex 32, the sending account>",
+        "transactionType": "guardedAnosTransfer",
+        "amount":          "<millionths of an anos, a decimal string>",
+        "writesAt":        "2026-11-27T07:12:00.000Z"
+      }
+    ]
+  },
+  "signature": { "key": "<hex 64, P-256 r||s over the canonical bytes of payload>" }
+}
+```
+
+`transfers` is a list of 1 to 100 entries. `transactionType` is one of
+`guardedAnosTransfer`, `vaultAnosTransfer`, `assistedAnosTransfer` and
+`breakGlassTransfer`. `writesAt` is null for a transfer that waits for
+two attestors alone.
+
+Checks, in order:
+
+1. The validators' keys are loaded (25.8). `503 validator keys not
+   loaded`.
+2. The shape: `payload` and `signature` objects; `validatorId` a positive
+   whole number; `transfers` a list of 1 to 100 objects; `signature.key`
+   a string. `400 bad request shape`.
+3. `validatorId` is in the keys. `401 unknown validator`.
+4. The signature verifies over the UTF-8 bytes of `canonicalize(payload)`
+   against that validator's key. `401 bad signature`. A `canonicalize`
+   that throws answers the same: it throws on a string that is not well
+   formed, and the route is open to anybody.
+5. Every transfer: `transactionId` and `accountId` decode to 32 bytes;
+   `transactionType` is one of the four; `amount` matches
+   `^[1-9][0-9]{0,38}$`; `writesAt` is null or a string that `Date.parse`
+   reads. `400 invalid transfer`. One bad entry refuses the whole
+   message: the entries are made by our own code.
+6. This validator's reports have written fewer than `REPORTS_A_DAY`,
+   1,000, rows in the last 24 hours. `429 too many reports today`.
+
+Writes, in one transaction, for each transfer in the order of the list:
+the pod that made the account and the account's type are read from
+`anos_accounts`, or nothing; `INSERT alert_transfers ... ON CONFLICT
+(report_id) DO NOTHING`, with the pod's id or null and with the report's
+id, the `canonicalHash` of `{ transactionId, accountId, transactionType,
+amount, writesAt }`, the two ids as lowercase hex and `writesAt` as an
+ISO string or null. When no row was written, the same facts were reported
+before, and nothing more happens for this entry. When a row was written
+and the account has a pod: `raiseAlert` (25.5) with `recoveryMoveWaiting`
+for a `breakGlassTransfer` and `transferWaiting` for the three others,
+with the account's type as this server's own table has it.
+
+Answer: `200 { taken }`, how many rows were written. The log line of a
+good report: `validator <id> reported <n> waiting transfers, <taken>
+new`.
+
+Nothing is used up and no time is checked: the same message sent again
+finds its rows and writes nothing. A validator takes any answer but `200`
+as "not taken" and sends the same transfers again a minute later.
+
+### 25.5 raiseAlert
+
+`raiseAlert(client, { anopodId, kind, details, reference, exceptEmailId
+= null, exceptPhoneId = null })`, in `src/alerts/alert-events.js`. It runs
+on the client of the transaction of the event it reports, like `notify`,
+and writes:
+
+1. The bell's row, `notify(client, anopodId, <the bell's kind>,
+   reference)`: `transferWaiting`, `recoveryMoveWaiting` and
+   `recoveryCaseOpened` under their own names; each of the seven kinds of
+   a change of the list under `alertSettingsChanged`. `reference` is 32
+   bytes: the account's id for the two transfer kinds, the case's id for
+   `recoveryCaseOpened`, the pod's own id for a change of the list.
+2. One row of `alert_messages` for each confirmed email and each phone of
+   the pod, the ones that are coming off too, without `exceptEmailId` and
+   `exceptPhoneId`, each with a fresh id, the kind and `details`.
+
+It returns the number of messages written. The caller calls
+`kickAlertSender()` (25.6) after its transaction has committed.
+
+`details`, by kind. Ids are hex, moments are ISO strings:
+
+| kind | details | who is left out |
+| ---- | ------- | --------------- |
+| `transferWaiting`, `recoveryMoveWaiting` | `{ accountId, accountType, amount, writesAt }`; `writesAt` is null for a transfer that waits for attestors alone | nobody |
+| `recoveryCaseOpened` | `{}` | nobody |
+| `emailAdded` | `{ emailId }` | the email that was added |
+| `emailRemoving` | `{ emailId, removesAt }` | nobody: the address that comes off is told too |
+| `emailKept` | `{ emailId }` | nobody |
+| `phoneAdded` | `{ phoneId, label }` | the phone that was added |
+| `phoneRemoving` | `{ phoneId, label, removesAt }` | nobody |
+| `phoneKept` | `{ phoneId, label }` | nobody |
+| `phoneUnreachable` | `{ label }` | nobody: the phone's row is gone |
+
+Two kinds do not go through `raiseAlert`, because they go to one address
+and not under the bell: `emailCode`, one message to the email that is
+being added, and `phoneOn`, one message to the phone that was just added.
+Both have `{}` as details.
+
+`recoveryCaseOpened` is raised at most once in 24 hours for one pod.
+Before it writes, `raiseAlert` counts the pod's `recoveryCaseOpened`
+notifications of the last 24 hours; with one or more it writes nothing
+and returns 0. Anybody can open a recovery case for a pod whose id they
+know, as often as they like (`/challenge` and `/open-recovery-case` are at
+level none, and the one-open-case rule is per lookup id). Without this
+count an outsider could make this server write to a pod's whole list
+without end.
+
+Who calls it: `/confirm-alert-email`, `/remove-alert-email`,
+`/keep-alert-email`, `/add-alert-phone`, `/remove-alert-phone` and
+`/keep-alert-phone` (25.3); `/report-waiting-transfers` (25.4); the
+sender, for a phone that is gone (25.6); and `openRecoveryCase`
+(`src/recovery/recovery.service.js`, 12.4.2), inside its transaction,
+after the `opened` event:
+
+```js
+await raiseAlert(client, { anopodId, kind: 'recoveryCaseOpened', details: {}, reference: caseId });
+```
+
+The finish of a recovery deletes the pod's added passkeys (19.3) and
+leaves its alert rows alone.
+
+### 25.6 The sender
+
+`src/alerts/alert-sender.js`, in the shape of the DAO clock (15.5):
+`startAlertSender()` (one run now, then one every minute; the timer does
+not keep the process alive), `stopAlertSender()`, and `kickAlertSender()`,
+which starts a run now and returns at once. `src/server.js` starts it
+after the DAO clock and stops it in its shutdown. One run at a time in a
+process: a run that is asked for while one is under way runs right after
+it. A run that throws logs the error and the next one runs. Three
+masterpods run it at once, on prod1, prod2 and prod3; the rows a run
+holds are skipped by the others.
+
+A run:
+
+1. What is due to come off, comes off: `DELETE FROM alert_emails WHERE
+   removes_at <= now()`, the same for `alert_phones`, and `DELETE FROM
+   alert_emails WHERE verified_at IS NULL AND created_at < now() -
+   interval '1 day'`. One log line when anything went: `alerts: <n> emails
+   and <m> phones came off`.
+2. The sending, at most ten rounds. A round is one transaction. It takes
+   up to 20 messages that are due and holds them:
+
+   ```sql
+   SELECT message_id, anopod_id, kind, email_id, phone_id, details, tries, created_at
+   FROM alert_messages
+   WHERE sent_at IS NULL AND gave_up_at IS NULL AND next_try_at <= now()
+     AND ($2 OR email_id IS NULL) AND ($3 OR phone_id IS NULL)
+   ORDER BY next_try_at, message_id
+   LIMIT $1
+   FOR UPDATE SKIP LOCKED
+   ```
+
+   `$2` is whether email is on and `$3` whether the phones are, so a
+   message for a part that is off is left in the table. Then the requests
+   are made, the ones to phones all at once and the ones to the email
+   company one after another, because it limits the requests of one
+   second (one it refuses for that is tried again like any other
+   failure). Then each outcome is written. A round that took fewer than
+   20 messages and raised no alert is the last.
+
+Each message is built and sent on its own. Whatever throws for one
+message, while its words are made, its body is scrambled or its request
+is sent, is that message's failure and no other's: given up with `could
+not be built` when it threw before the request, counted as a failure when
+the request threw. A round never ends because of one message, so one bad
+row cannot hold the others back.
+
+A message to an email. The row of `alert_emails` is gone: given up,
+`address gone`. An `emailCode` whose row has no code any more: given up,
+`code no longer needed`. Otherwise the words are made in the row's
+language (25.7) and the email is handed to the email company
+(`src/alerts/email.js`): `POST https://api.resend.com/emails`, a timeout
+of 10 seconds, a redirect not followed, with the headers
+
+```
+Authorization: Bearer <RESEND_API_KEY>
+Content-Type: application/json
+User-Agent: masterpodsoftware
+Idempotency-Key: <the message id as hex>-<tries>
+```
+
+and the body `{ from: <ALERT_EMAIL_FROM>, to: [<the address>], subject,
+text }`. A status from 200 to 299 is `sent`. Anything else is a failure,
+told as `status <n>` and the answer's `name` when it has one, or as the
+fetch's own error. The email company refuses a request with no
+`User-Agent` header. The key holds the try's number: a try whose outcome
+was never written, because the server stopped between the send and the
+write, is not sent a second time when its row is taken again, and a try
+after a failure is a new request.
+
+A message to a phone. The row of `alert_phones` is gone: given up, `phone
+gone`. Otherwise the body is `encryptPush(<the UTF-8 bytes of the facts
+as JSON>, p256dh, auth)` (`src/alerts/push.js`: RFC 8291 with the content
+coding `aes128gcm` of RFC 8188, so that only that phone's browser can
+open it) and the request is a `POST` to the row's `endpoint`, a timeout
+of 10 seconds, a redirect not followed, with the headers
+
+```
+TTL: 604800
+Urgency: high
+Content-Encoding: aes128gcm
+Content-Type: application/octet-stream
+Authorization: vapid t=<token>, k=<this server's public key>
+```
+
+The token (RFC 8292) is signed with this server's key for the phones.
+Its audience is the origin of the phone's delivery address, its contact
+is `ALERT_PUSH_CONTACT`, and it ends 12 hours after it was made. One
+token is kept per audience and used for 6 hours, then made anew: Apple
+asks that a token is not made more often than once an hour. The outcome:
+
+- A status from 200 to 299: `sent`.
+- 404 or 410: the phone is gone. Every `alert_phones` row with that
+  `endpoint` is deleted, whichever pod's; for each row that went,
+  `raiseAlert` for its pod with `phoneUnreachable`; the message is given
+  up, `phone unreachable`. The messages that `raiseAlert` wrote are taken
+  by the next round of the same run.
+- Anything else, also no answer: a failure, `status <n>` or the fetch's
+  error.
+
+A failure counts one try and sets the next one:
+
+```sql
+UPDATE alert_messages
+SET tries = tries + 1,
+    last_error = $2,
+    next_try_at = now() + make_interval(mins => LEAST(power(2, LEAST(tries, 6)), 60)::int),
+    gave_up_at = CASE WHEN created_at < now() - interval '3 days' THEN now() END
+WHERE message_id = $1
+```
+
+So the tries come after 1, 2, 4, 8, 16 and 32 minutes, then every 60, and
+a message that is more than three days old when it fails is given up.
+
+The log lines, one per message, with no email address and no delivery
+address in them:
+
+```
+alert sent: <kind> by email, pod <first 8 hex>
+alert sent: <kind> to a phone, pod <first 8 hex>
+alert not sent: <kind> by email, pod <first 8 hex>: <the error>
+alert not sent: <kind> to a phone, pod <first 8 hex>: <the error>
+alert phone unreachable: pod <first 8 hex>, <label>
+```
+
+And one line at boot, from `startAlertSender()`: `alerts: email on, phones
+on, 25 validator keys`, with `off` and `no validator keys` where they
+apply.
+
+### 25.7 The words
+
+An email's subject and text are in `src/alerts/alert-words.js`, in English
+and in Thai. `emailOf(kind, language, facts)` answers `{ subject, text }`;
+`facts` are what the sender read: `amount`, `accountType`, `accountId`,
+`writesAt`, `removesAt`, `email`, `label`, `code`. A phone is sent facts,
+not sentences: `phoneFactsOf(kind, facts)` answers `{ kind }` and, by
+kind, `accountType` and `amount`; or `email`; or `label`; and `removesAt`
+with the two removing kinds. Nothing else: no account id, no pod id, and
+no day of a transfer. The phone's sentence is made on the phone, in the
+phone's own language, by the wallet's `public/alerts-worker.js` (the
+wallet's spec).
+
+The English is the plan's "What a person sees", letter for letter. Every
+alert ends with the same two paragraphs: "We never put a link in an
+email. Open the wallet the way you always do." and "This email was sent
+by the anoPod wallet. Nobody reads replies to it." The email with the
+code ends with the second alone. The Thai is written by the build in the
+words of the wallet's Thai dictionary (`web_app/src/app/i18n/th.ts`).
+What an email quotes from the wallet's screens is taken from the two
+dictionaries as they stand there: "Cancel transfer" (`cancelTransfer`),
+"Recover account" (`recoverAccount`), "Security alerts"
+(`accountAlerts.title`), "Keep" (`accountAlerts.keep`) and "Account"
+(`nav.account`). The kinds of account are the wallet's words for them:
+in English "guarded account", "vault account", "assisted account" and
+"spending account", in lower case; in Thai the phrases of `accountKinds`.
+
+The rules of the words:
+
+- An amount: millionths as a decimal string, to anos, with commas in the
+  whole part and the fraction's zeros dropped: `5000000000` is `5,000`,
+  `1500000` is `1.5`. On the digits, with `BigInt`, never through a
+  float.
+- The start of an account's id: its first 8 hex characters.
+- A day and time in an email: `27 November 2026 at 07:12 UTC`, with
+  `Intl.DateTimeFormat('en-GB', { timeZone: 'UTC', day: 'numeric', month:
+  'long', year: 'numeric' })` and the hour and minute in the 24-hour
+  form; for Thai the tag `th-TH-u-ca-gregory`, the wallet's. A day alone,
+  for a removal: `21 December 2026`.
+- "in 7 days": the hours from now to `writesAt`, rounded up. 48 or more:
+  "in N days", N the hours divided by 24 and rounded. 2 to 47: "in N
+  hours". Under 2: "within the hour".
+- "10 minutes" in the sentence about the cancel is a constant of the
+  file, `CANCEL_AFTER_MINUTES = 10`. It copies `LOCK_OFFSET_MINUTES` of
+  `anossoftware/network/testnet.env`: when that changes, this changes.
+- An email or a phone whose row is gone when the message is sent reads
+  "an address that is no longer on the list" and "a device".
+- Every kind has words for every case, so that no report can make
+  `emailOf` throw. A transfer out of an assisted account reads as the
+  assisted email. A transfer out of any other account reads as the
+  guarded email with that account's kind in its words; when it has no
+  `writesAt`, its second sentence is "It is waiting on the validators." A
+  recovery's move reads with the day when it has a `writesAt` and without
+  it when it has none, whatever the account's kind.
+
+### 25.8 The settings
+
+Six optional variables (`src/config/env.js`, `env.alerts`; section 8).
+Each pair is all or nothing: with both lines the part is on, with neither
+it is off, and one line without the other stops the boot. An error names
+the variable and never its value.
+
+| variable | default | what it is |
+| --- | --- | --- |
+| `RESEND_API_KEY` | none: no email is sent | the email company's key |
+| `ALERT_EMAIL_FROM` | none | the sender of every email: `anoPod wallet <alerts@wallet.anocloud.com>` on the servers |
+| `ALERT_PUSH_PRIVATE_KEY` | none: no notification is sent | the private half of this server's key for the phones' delivery services, 43 characters, made by `scripts/make-alert-push-key.js` |
+| `ALERT_PUSH_CONTACT` | none | the contact the delivery services are given, an `https://` or a `mailto:` address: `https://wallet.anocloud.com` on the servers |
+| `ALERT_REMOVE_MINUTES` | `43200` | how long an email or a phone that was taken off still gets every alert |
+| `VALIDATOR_KEYS_FILE` | `network/validators.json` | the validators' public keys; a path from the repo's root, or a full path |
+
+`.example.env` has the six at its end, each as a comment line, so that a
+copy of the file starts a server with the alerts off.
+
+The validators' keys. `network/validators.json` is a committed file: a
+JSON list with one entry for each of the 25 entries of
+`anossoftware/network/testnet.registry.json`, in the same order, each `{
+"id": <the entry's id>, "publicKey": "<the entry's publicKey>" }`, one
+entry per line. Nothing else of the registry is in it: no url and no
+`active`. A validator's key changes only with the registry. When a
+registry entry is added or its key changes, this file gets the same
+change, and this server is deployed. `src/alerts/validator-keys.js` reads
+the file once, when it is imported, and exports `validatorKeys`: a `Map`
+from id to the key's 33 bytes, or `null` when the file does not exist. A
+file that is there and does not parse, an entry whose id is not a
+positive whole number or whose key does not decode to 33 bytes, or an id
+that stands twice, stops the boot, with the file's path and the entry's
+place in the error.
+
+The key for the phones:
+
+```bash
+npm run make-alert-push-key -- <file>
+```
+
+`scripts/make-alert-push-key.js` makes a P-256 key pair and writes ONE
+line, `ALERT_PUSH_PRIVATE_KEY=<the private half, 32 bytes as base64url>`,
+to `<file>`, for its owner alone (mode 0600); a file that exists is never
+overwritten. It prints the file's path and the public half as base64url,
+nothing else, and never the private half. With no `<file>` it prints the
+usage line and exits 2. It reads no env variable, opens no database and
+needs no `node_modules`. The line goes to the end of `.env`, the same on
+every server. That file is the one copy of the key outside the servers:
+with a new key every phone has to be turned on again.
+
+### 25.9 Files
+
+New:
+
+- `src/alerts/alerts.router.js`: the nine routes, eight behind
+  `requireSetup` and `/report-waiting-transfers` with no check in front.
+- `src/alerts/alerts.handlers.js`: one handler per route.
+- `src/alerts/alerts.service.js`: the eight routes of a pod's list (25.3).
+- `src/alerts/validator-reports.js`: `/report-waiting-transfers` (25.4).
+- `src/alerts/validator-keys.js`: the validators' public keys (25.8).
+- `src/alerts/alerts.queries.js`: every SQL statement of the feature.
+- `src/alerts/alert-events.js`: `raiseAlert` (25.5).
+- `src/alerts/alert-words.js`: the emails' subjects and texts, and the
+  facts a phone is sent (25.7).
+- `src/alerts/email.js`: the call to the email company (25.6).
+- `src/alerts/push.js`: the scrambling of a notification, the signed
+  header, and the check that a phone's key is a key (25.6).
+- `src/alerts/alert-sender.js`: the sender (25.6).
+- `network/validators.json`: the validators' ids and public keys (25.8).
+- `scripts/make-alert-push-key.js`: the key for the phones (25.8).
+
+Changed:
+
+- `db/schema.sql`: the four kinds in the two lists of
+  `notifications.kind` and in the comments of `notifications.kind` and
+  `notifications.reference_id`, the comment of the ALTER pair, and the
+  block of four tables at the end (25.2).
+- `src/config/env.js`: `optionalText`, `readAlerts` and `env.alerts`.
+  `.example.env`: the six lines.
+- `src/recovery/recovery.service.js`: `openRecoveryCase` raises the alert
+  inside its transaction and kicks the sender after it; two comments.
+- `src/app.js`: the alerts router, mounted after the passkeys router.
+  `src/server.js`: the sender started after the DAO clock and stopped
+  after it.
+- `package.json`: the script line `make-alert-push-key`.
+  `package-lock.json` does not change.
+- `src/notifications/notifications.queries.js`: the comment of `notify`,
+  twenty-one kinds. `src/anos-accounts/anos-accounts.queries.js`: the
+  comment of `lockPod`, which now names its third and fourth user. No
+  line of code in either.
+- Here: section 2 (two rows of the table), section 4 (four entries, and
+  `### notifications`), section 5 (nine entries), section 6 (four rows
+  and a sentence), section 8 (six rows and a paragraph), section 10 (a
+  dated clause) and this section. `README.md`: the Scripts list, the
+  table "Who may call what", the Endpoints table, the Database tables
+  list, the Configuration table, the Layout and the Deferred list.
+- On the user's word of 2026-11-21 (25.11), four more places here:
+  section 1 (the statuses of an error), 12.4.2 (the writes of
+  `/open-recovery-case`), 15.6 and 19.4 (a dated clause each). And in
+  `README.md` the sentence on errors under "Who may call what", beside
+  one row of the Database tables list and one line of the Layout.
+
+### 25.10 What is left as it is
+
+What stays: the wallet's two cancel buttons and the validators' cancels;
+the bell's poll every 5 seconds; every step of a recovery; the
+validators' one other call to this server, `/get-anos-account`; the
+doormen's files; the wallet's proxy.
+
+Out of this plan:
+
+- Text messages. The wallet's page says "Coming soon."
+- A button for an owner who can still log in, "This recovery is not
+  mine"; a cancel of a recovery's move from the wallet.
+- Noticing an email address that no longer exists. The email company can
+  tell us; nothing listens yet.
+- Switches for single kinds of alert; a second person who is told; an
+  alert again while a transfer still waits; an alert at a cancel.
+- The passkey's answer for a change of the list.
+- The words of a privacy policy.
+
+The known limits, as the plan's section 7 has them:
+
+1. One validator alone can set off false alerts, up to 1,000 in 24
+   hours, about any account and with amounts it made up, also a false one
+   beside a true one. It cannot keep a true report from counting, it
+   cannot move money, and an alert carries no link.
+2. Whoever is logged in to a person's wallet sees the list with its email
+   addresses, can add an email or a phone of their own, which then gets
+   the alerts too, and can ask to take one off, up to 20 changes in 24
+   hours. They cannot make an address stop getting alerts before the
+   month is over, and every address on the list is told of each change
+   the same day.
+3. Someone who has broken into the wallet's own servers can end a phone's
+   notifications on a phone that opens the wallet after that. The emails
+   are not touched by it: this server sends them.
+4. A person can switch the wallet's notifications off in the phone's
+   settings, or take the wallet off the Home Screen. This server learns
+   of it only when it next sends to that phone. Then the phone comes off
+   the list and the emails are told.
+5. An email that never arrives, or lands in a spam folder, is not
+   noticed. A notification that the delivery service took and the phone
+   never showed is not noticed either. A phone that is switched off for
+   more than 7 days misses what was sent meanwhile.
+6. An alert about a transfer leaves five to six minutes after the
+   transfer was sent, and later when no validator reaches this server. A
+   transfer that is written or cancelled before any validator reached
+   this server is never reported.
+7. Alerts about transfers begin when the first validator has taken step
+   4. Until all 25 have it, a transfer is reported by those that have.
+8. One alert per transfer. Nothing is said again while it waits, at its
+   cancel or when it is written.
+9. An account that no pod made, such as the first two of the ledger, has
+   nobody to tell.
+10. A phone that was lost or sold still gets every alert for a month
+    after "Take off". An alert shows an amount and a kind of account, and
+    for a change of the list an email address.
+11. Two pods that are used on one phone both send their alerts to it, and
+    an alert does not say whose it is.
+12. A wallet that stays open on the Home Screen keeps the build it was
+    opened with until it is closed, as a tab does today.
+13. On an iPhone the phone part needs the wallet on the Home Screen, and
+    a browser inside another app cannot do it. An email needs neither.
+14. The email company sees every address and the words of every alert,
+    and keeps them 30 days. This server's database holds the addresses as
+    plain text, and so does every copy that is made of it.
+15. The Thai sentences are unread by a Thai speaker when they go out.
+16. Sent messages and reported transfers stay in their tables for good.
+    They are small, and nothing reads them back to a person.
+17. The email names an account by the first 8 characters of its id, and
+    the day in UTC.
+18. Anybody who knows a pod's id can open a recovery case for it (12.9,
+    "Limits on opening cases"). The person is then told that a recovery
+    was started, once in 24 hours at most, though nobody means to recover
+    anything.
+
+### 25.11 Notes from the build
+
+#### Build 1, the masterpod (2026-11-21)
+
+Built from `~/Desktop/Z-TestNet/forclaude/security-alerts-plan-1.md`
+section 1, on main at a4965b5, the working tree clean. No new npm package
+and no test file in the repo. Nothing was applied to any database, no
+server was started, and no email and no notification left the build's
+Mac. What the plan left open and how it was decided:
+
+- The number and the date. This section is 25, the number the plan
+  names, and it was free on the build day. BUILD-DATE is 2026-11-21.
+- The parts that are the plan's letter for letter. `src/alerts/push.js`
+  is the planning chat's tried file byte for byte (`diff`). The block of
+  four tables is the plan's, with the date in its first line; `diff`
+  against the tried file shows the two empty lines in front and nothing
+  else. `optionalText`, `readAlerts` and the lines in `env` are the
+  plan's. The two helpers stand right above `export const env`.
+- `db/schema.sql`. The four kinds went into the `CREATE TABLE` and into
+  the one ALTER pair, each as two more lines of the list. The comment of
+  `notifications.kind` gained ", or, for a security alert (spec section
+  25), transferWaiting, recoveryMoveWaiting, recoveryCaseOpened or
+  alertSettingsChanged". The comment of `notifications.reference_id`
+  gained the plan's words behind ", or, for a security alert (spec
+  section 25),". The file's opening comment, which lists the blocks with
+  an ALTER on an older table, is as it was: the new block has none.
+- `network/validators.json` was written by a script of the moment from
+  `git show 8d1c5cd:network/testnet.registry.json` in `anossoftware` and
+  compared afterwards: 25 entries, the same ids in the same order, the
+  same keys, and `id` and `publicKey` alone.
+- `validator-keys.js`. A file that is there and cannot be read (any error
+  but "no such file") stops the boot like one that does not parse. A
+  path that does not start with `/` is joined to the repo's root.
+- `alerts.queries.js`. Two column lists for each of the two list tables:
+  the one the plan gives for `listEmails` and `listPhones`, and one with
+  the pod (and, for an email, the code) for the reads of one row. So the
+  list route never reads a code. The two counts of the limits are
+  `countEmails` and `countPhones`. `removeDue` answers how many emails
+  and phones went, the two deletes of emails added together.
+- The emails' text. One paragraph is one line, with an empty line
+  between two paragraphs: a mail program wraps the lines itself, also on
+  a phone. `emailOf` throws on a kind that has no email (`phoneOn` goes
+  to a phone alone) and on facts that are not what the kind carries (an
+  amount that is no decimal string, an account id that is no string, a
+  moment that is no date, a code that is not six digits). Such a message
+  is given up as `could not be built`. No report of a validator can make
+  it throw: a report's amount and day are checked, and the account's
+  kind is this server's own.
+- "30 days" in the email about an added address is a literal of the
+  words, as the plan has it, and is `ALERT_REMOVE_MINUTES` at its
+  default. With another value in `.env` that one sentence still says 30
+  days. The day in the email about an address that comes off is always
+  the real one.
+- The Thai words the build chose for what the wallet does not have yet:
+  "การแจ้งเตือนความปลอดภัย" for "Security alerts" and "เก็บไว้" for
+  "Keep". The wallet's step 3 writes the same two into `th.ts` as
+  `accountAlerts.title` and `accountAlerts.keep`: an email quotes them.
+  The device words in Thai are "iPhone", "iPad", "โทรศัพท์ Android",
+  "คอมพิวเตอร์" and "อุปกรณ์เครื่องหนึ่ง". In Thai "บัญชี" stands in
+  quotes like the page's name, since Thai has no capital letter to mark
+  a button by.
+- `alerts.service.js`. A text's length is counted as the database counts
+  it (a character outside the basic plane is one), after a first look
+  that turns away a text of more than twice the limit. The answer of a
+  new code names the address as the row holds it, also when it was typed
+  in other capitals this time. A phone's delivery address is stored as
+  it was sent, so that the hash the wallet makes of it is the hash this
+  server answers. A refusal `push service not supported` carries the
+  host beside its reason, and the handler logs `alert phone refused,
+  delivery service not on the list: <host>`.
+- The count of a day's changes is the count of the bell's rows of the
+  kind `alertSettingsChanged`, as the plan's statement has it. So a
+  "Keep", and a phone that came off because it could not be reached,
+  add to the count, though neither is ever refused by it.
+- Two counts are read without a lock on the pod's row: the count of
+  `recoveryCaseOpened` in `raiseAlert`, and the count of changes in the
+  four routes that lock an email's or a phone's row. Requests of one pod
+  that arrive at the very same moment can each pass on the same count.
+  The count closes behind them: the next request sees their rows. For
+  the changes that is a handful at most, one for each row of the list.
+  For the recovery alert it was tried (below): eight cases opened for
+  one pod at one moment wrote eight alerts, and a ninth a moment later
+  wrote none. So "once in 24 hours" holds between cases that follow each
+  other, and not between cases opened at the very same moment. With the
+  pod's row locked in front of that count (`lockPod`, one line, tried in
+  a scratch copy alone) the eight wrote one alert, and all eight cases
+  still opened. That lock was put to the user and is NOT built. The
+  user, 2026-11-21: "But why would a person every have more than one
+  recovery case? They shouldn't even be able to open more than one case.
+  If they can, that's a separate bug." They can: the rule is one open
+  case for a lookup id (12.4.2, check 7), not for a pod, and this server
+  takes any lookup id, so a caller who makes up a lookup id each time
+  opens case after case on one pod. A person who uses the wallet has one
+  lookup id and so one open case. That is the gap of 12.9, "Limits on
+  opening cases", and of the after-production item "recovery rules left
+  loose"; the count of 24 hours is a stopgap for it and stays as the
+  plan has it.
+- `validator-reports.js`. The count of a validator's rows is read before
+  the message's rows are written, as the plan's order has it. So the
+  message that crosses the 1,000 is still taken whole. Messages of one
+  validator that arrive at the very same moment each read the count
+  before any of them has written, so the ceiling is 999 rows and 100
+  more for each message in flight at that moment.
+- `email.js`. The answer's `name` is cut at 60 characters before it goes
+  into `last_error`.
+- `alert-sender.js`. It exports `runAlertSender()`, a run that can be
+  waited for, as the DAO clock exports `tick`; `kickAlertSender()` is the
+  same run, not waited for. It also exports `pushKey`, this server's key
+  for the phones, which the list route answers the public half of.
+  Thirty-two bytes that are no private key of the curve stop the boot
+  with `ALERT_PUSH_PRIVATE_KEY is not a private key of the P-256 curve`.
+  A round has three parts in a row: each message is made ready (the
+  reads are the transaction's), then the requests are made, then each
+  outcome is written. A round that raised an alert for a phone that is
+  gone is followed by another round, so that the emails about it leave
+  in the same run. `stopAlertSender()` also keeps a new round and a kick
+  from starting, so that a shutdown is not held up by a run. With email
+  and phones both off a run does its first step alone. A token is
+  dropped from the kept ones when it is past its 6 hours and another is
+  made.
+- A message for a part that is off stays in the table and is due. It
+  goes out when that part is on again, or is given up at the first
+  failure after three days. No such message can be written while a part
+  was never on: a list is empty until its part is on. It matters only
+  when a line is taken out of `.env` after people have used it.
+- No new route and no timer opens a transaction as its first database
+  step. A run of the sender begins with the three plain deletes, and
+  `/report-waiting-transfers` reads the validator's count with a plain
+  query before its transaction; the eight list routes stand behind the
+  session check. So none of them can end the process while the database
+  turns callers away (the after-production item "the masterpod ends when
+  its database connection is cut during a write"). A round does keep its
+  transaction open while its requests are made: a second or so as a
+  rule, and up to 200 seconds when the email company answers none of 20
+  emails, ten seconds for each. A connection that is cut in that time
+  ends the process, as it does today for any transaction of this server.
+  systemd starts it again and the round's messages are taken again; the
+  emails are not sent twice (the key of 25.6), and a phone may get one
+  notification twice. While a round waits like that, a new alert on the
+  same server waits with it, or is taken within the minute by the run of
+  another server; and a restart of that server ends by the ten-second
+  net of `src/server.js`.
+- `make-alert-push-key.js`. The private half is written as 32 bytes: a
+  number that begins with a zero byte comes back shorter from Node, and
+  the setting takes exactly 43 characters. It prints `written: <path>`
+  and `public key: <87 characters>`. A file that exists already, or one
+  that cannot be written, is exit 1 with one line.
+- `openRecoveryCase`. The alert is raised after the `opened` event and
+  the sender is kicked after the transaction, when the case was written.
+  The comment of `recoverWithBackupCode` gained the sentence that the
+  finish leaves the alert rows alone.
+- Here and in the README. In section 4 the four entries are short and
+  point to 25.2, where the tables stand with their columns; in section 5
+  the nine entries point to 25.3 and 25.4, as the plan says. Section 8
+  gained a paragraph under its table beside the six rows, since four of
+  the six have no default.
+- Checks (the plan's 1.15), all on Node 24.22.0 and this Mac's
+  PostgreSQL 17.11. `node --check` on the eighteen new and changed code
+  files: clean. The load with no server, `src/app.js` imported and
+  `createApp()` called with made-up `PGDATABASE`, `PGUSER` and
+  `PGPASSWORD`: 108 routes, where a copy of a4965b5 has 99; with none of
+  the six variables (email off, phones off, 25 validator keys); with all
+  six made up (both on); with one line of a pair alone, each pair once,
+  which stops with the error of 25.8; and with 32 zero bytes as the key,
+  which stops too. The schema, in one transaction that was rolled back,
+  with the planning chat's trial file: the file of a4965b5 into a scratch
+  schema, a row of an old notification kind, the new file on top twice,
+  and a fresh schema from the new file alone. 37 tables became 41, the
+  old row was still there, and one md5 over every column, constraint,
+  index, trigger and comment was the same for the three shapes; the five
+  refusals the tables are meant to give came. `push.js` against the
+  example of RFC 8291 section 5, with the planning chat's 20 checks: the
+  body equals the standard's byte for byte.
+- The real modules over a scratch schema, in a throwaway script outside
+  the repo: a stand-in for `src/db/pool.js` (one connection, one
+  transaction, rolled back at the end, every BEGIN and COMMIT of the
+  code a savepoint), `fetch` replaced, a key for the phones made by the
+  repo's own script and two validator keys of the run, in files only
+  their owner can read. Each route was called as Express calls its
+  handler, with the pod on the request. 219 checks with the settings on
+  and 11 with none, none bad. Among them: every English email equal to
+  the plan's own text, letter for letter, read out of the plan file;
+  every refusal of the eight routes once; the email request's headers
+  and body; the request to a delivery service, whose body was opened
+  with the phone's own key by code written apart from `push.js`, and
+  whose token verifies under the key it carries; a report signed with a
+  key of the run and sent twice, also by a second validator, which gave
+  one alert; a report with another amount for the same transfer, which
+  gave a second row and a second alert; a transfer of an account no pod
+  made, which gave a row and no alert; answers of 201, 503, 422, 404 and
+  410 and no answer at all, after a 410 both pods' rows of one phone
+  gone and their emails told; the waits of 1, 2, 4, 8, 16, 32, 60 and 60
+  minutes; 45 messages in one run; a message whose words cannot be made,
+  a phone whose stored key is no key and a kind with no email, each
+  given up while the good message of the same round went out; the 21st
+  change of a day refused and a "Keep" after it not; a body whose string
+  is not well formed answered `401 bad signature`; 1,000 rows of one
+  validator, then `429`.
+- One thing beyond 1.15, in the same script: `openRecoveryCase` was
+  called for real, with a passkey registration, a challenge and both
+  signatures made for the run. The case opens and the pod's email is
+  told; a second case for the same pod on the same day opens and writes
+  no second alert; a day later a case makes an alert again; a pod with
+  nothing on its list gets the bell's row. And the new code on the
+  tables of a4965b5: the alert of a recovery case is refused by the old
+  check on `notifications.kind`, so a case could not be opened. That is
+  why the schema goes first at the deploy (the plan's 6.2).
+- A second thing beyond 1.15: what Node's own `fetch` puts on the wire.
+  A listener on 127.0.0.1 alone, on a port of the moment, stood in for
+  the email company and for a delivery service, and `fetch` was wrapped
+  so that every request went to it and nowhere else. 13 checks, none
+  bad: an email's four headers and its body arrive as 25.6 has them,
+  Thai letters included; a refusal reads `status 422 validation_error`,
+  one that is no JSON `status 403`; a redirect is not followed; a
+  notification's five headers arrive, and its body, as it arrived, opens
+  with the phone's own key to the facts; a request that gets no answer
+  is given up after ten seconds as `The operation was aborted due to
+  timeout`, and the message waits for its next try.
+- A third thing beyond 1.15: requests at the very same moment, and two
+  senders at once. The scratch schema above has one connection, so this
+  ran on a PostgreSQL of the moment in the build's scratch folder, on
+  127.0.0.1 alone, with the real `src/db/pool.js`, real connections and
+  real commits, and `fetch` replaced. For one pod at one moment: 30 new
+  phones, 5 went in and 25 were refused at the limit; one new email
+  asked 20 times, one row and one code; 10 wrong codes, five counted and
+  then `410 code used up`; the right code 6 times, confirmed once; "Take
+  off" 12 times, one change and one day in every answer; one transfer in
+  25 reports of two validators, every answer `200`, one row and one
+  alert. Two processes ran the sender at the same moment over 60
+  messages that were due: 60 requests in all, every message sent once.
+  And the recovery alert, as said above: eight cases at one moment,
+  eight alerts.
+- A second reader. A separate agent, told only to find faults, read the
+  change against the plan's section 1. It found no place where the code
+  departs from 1.6 to 1.13, nothing that can stop the sender, no request
+  to an address of a caller's choosing, and no address, code or key in a
+  log line or an answer. What it found beside, each run afterwards where
+  it could be:
+  - A logged-in caller can make two routes answer `500` where a `400`
+    is meant. An email address with a zero byte in it passes the plan's
+    pattern, and the database takes no zero byte in a text. A delivery
+    address with a zero byte fails the same way, and one of about a
+    thousand letters outside ASCII that do not compress makes the row of
+    the table's unique index too large. Each is rolled back, writes
+    nothing and reaches the caller alone. Put to the user with two
+    checks that the plan does not have, and BUILT on the user's word of
+    2026-11-21 ("That sounds good."): in `alerts.service.js` an email
+    with a control character in it is `400 invalid email`
+    (`CONTROL_PATTERN`), and a delivery address that is not plain ASCII
+    with no blank is `400 invalid endpoint` (`ENDPOINT_PATTERN`). Both
+    stand inside the third check of their route (25.3). The three
+    requests were run again over the scratch schema and answer so; a
+    delivery address of a thousand letters and digits is still taken.
+  - A signed report whose day is before 4713 BC passes `Date.parse` and
+    is refused by the database: a `500` where `400 invalid transfer` is
+    meant, and nothing is written. Only a validator with a real key can
+    send it. Left.
+  - Two messages that name the same two new transfers in opposite order,
+    at the very same moment, can wait for each other. The database ends
+    one of them (a `500`); the other commits, so the alert goes out, and
+    the first one's next try a minute later answers `200`. Not run.
+  - A code can leave after it is dead. An `emailCode` is given up only
+    when its row has no code. After four failed tries the fifth comes 15
+    minutes after the first, past the code's ten minutes; the email
+    still says ten minutes, and the wallet then answers `410 code
+    expired`. As the plan has it.
+  - One Thai sentence used one word for the list and for an entry of it
+    and could be read as "the list that was taken off". Reworded: "an
+    email or a phone that is taken off".
+- Not tried by the build: an email through the email company, a
+  notification through a delivery service, and a request signed by a
+  session's keys over HTTP.
+- Places the plan does not name that this step left out of date. They
+  were left as they were, listed and asked about, and brought in line on
+  the user's word of 2026-11-21 ("Okay, we can fix those sentences"). In
+  `README.md`: the row `notifications` of the Database tables list now
+  says twenty-one kinds; the line of `dao/` in the Layout says "the one
+  outbound call to the validators"; the sentence on errors under "Who
+  may call what" names `410`, `429` and `503`. Here: section 1 gained
+  the three statuses, with the day each came (`503` is of 2026-11-08,
+  section 15); the "Writes" of `/open-recovery-case` in 12.4.2 gained
+  the alert; 15.6 and 19.4 each gained a clause in brackets that begins
+  "Since 2026-11-21", with their words of before staying. Three more
+  mentions of "seventeen kinds" stay as they are: they stand in 19.5 and
+  19.6 and say what that build changed and what its check saw.
+- Two more places of that kind, seen while those were fixed. Left as
+  they are and asked about: the sentence "Everything a pod keeps private
+  reaches the server as ciphertext", in the opening of `README.md` and
+  in section 1 here, though the emails of a pod's alerts are kept as
+  plain text (decision 16); and "Notifications for case events" among
+  what is not built, in 12.9 here and under "Deferred, by decision" in
+  `README.md`, though the opening of a case is now told to the pod.

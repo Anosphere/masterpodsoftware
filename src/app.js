@@ -1,5 +1,6 @@
 import cors from 'cors';
 import express from 'express';
+import { alertsRouter } from './alerts/alerts.router.js';
 import { anopodsRouter } from './anopods/anopods.router.js';
 import { anosAccountsRouter } from './anos-accounts/anos-accounts.router.js';
 import { attestingRouter } from './attesting/attesting.router.js';
@@ -48,6 +49,7 @@ export function createApp() {
   app.use(notificationsRouter); // owns /list-notifications and /mark-notifications-read
   app.use(anopodsRouter); // owns /create-anopod, /unlock, /check-username, /check-anopod-status, /get-anopod-profile, /get-anopod-session-keys, /complete-setup
   app.use(passkeysRouter); // owns /add-passkey, /list-passkeys and /check-signing-passkey
+  app.use(alertsRouter); // owns the eight routes of a pod's security alerts, /list-alert-settings to /keep-alert-phone, and /report-waiting-transfers
   app.use(vouchingRouter); // owns /search-usernames, /send-vouch-request, /list-vouch-requests, /approve-vouch-request, /decline-vouch-request
   app.use(securityRouter); // owns /add-to-security-bucket-one, /add-to-security-bucket-two, /list-security-records
   app.use(chatRouter); // owns the fourteen chat routes, /create-chat-room to /get-chat-public-keys

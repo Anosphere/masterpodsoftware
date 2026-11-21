@@ -48,6 +48,7 @@ Then open <http://localhost:3100>. The web app that drives it is
 | `npm run appoint -- <id> <role>` | Appoint the pod with this hex id for a role: `moderator`, `attestor`, `validator` or `masterPod` (`docs/schemas.md` section 16; the last two only let the pod stake for that purpose, 16.7). |
 | `npm run revoke -- <id>` | End the pod's appointment; the row stays on record.                   |
 | `npm run small-selfies -- look` | The one-time job that makes the stored selfies small (`docs/schemas.md` section 24): `look` reads and draws every selfie and writes nothing; with `write` in its place it does the same and then writes. Its own packages are in `scripts/small-selfies/`. |
+| `npm run make-alert-push-key -- <file>` | Makes this server's key for the phones' delivery services (`docs/schemas.md` section 25): writes ONE line, `ALERT_PUSH_PRIVATE_KEY=...`, to `<file>`, which only its owner can read and which is never overwritten, and prints the public half. The line goes to the end of `.env`. |
 
 ## Who may call what
 
@@ -55,11 +56,11 @@ Every route is a `POST` with a JSON body. Four pod levels and three more:
 
 | Level    | Meaning                                                                                  |
 | -------- | ---------------------------------------------------------------------------------------- |
-| none     | Plain JSON body, no signature: `/challenge`, `/check-username`, `/get-anopod-session-keys`, `/get-anos-account`, `/check-signing-passkey`, the keyholders' `/receive-recovery-share/:caseId`; `/create-anopod`, `/unlock`, `/open-recovery-case` and `/unlock-recovery-pod` are signed by the ephemeral keys inside them, `/recover-with-backup-code` by the backup code keys inside it. |
+| none     | Plain JSON body, no signature: `/challenge`, `/check-username`, `/get-anopod-session-keys`, `/get-anos-account`, `/check-signing-passkey`, the keyholders' `/receive-recovery-share/:caseId`, the validators' `/report-waiting-transfers`, whose message is signed by a validator's own key; `/create-anopod`, `/unlock`, `/open-recovery-case` and `/unlock-recovery-pod` are signed by the ephemeral keys inside them, `/recover-with-backup-code` by the backup code keys inside it. |
 
 | session  | Signed by the pod's current ephemeral keys (the envelope below). Vouched or not.          |
 | vouched  | session, and `anopods.vouched` is true.                                                  |
-| setup    | vouched, and setup is complete (the pod has chat keys): every chat and marketplace route, the four anos account routes, the six wallet memory routes, `/rotate-backup-code` and `/store-break-glass-blob` after a recovery, the person's four attestation routes `/list-my-cases`, `/get-my-case`, `/share-lookup-id`, `/add-dispute-evidence`, the person's two break-glass routes `/file-break-glass-moves`, `/list-my-break-glass-moves`, and the two passkey routes `/add-passkey`, `/list-passkeys`. |
+| setup    | vouched, and setup is complete (the pod has chat keys): every chat and marketplace route, the four anos account routes, the six wallet memory routes, `/rotate-backup-code` and `/store-break-glass-blob` after a recovery, the person's four attestation routes `/list-my-cases`, `/get-my-case`, `/share-lookup-id`, `/add-dispute-evidence`, the person's two break-glass routes `/file-break-glass-moves`, `/list-my-break-glass-moves`, the two passkey routes `/add-passkey`, `/list-passkeys`, and the eight routes of a pod's security alerts, `/list-alert-settings` to `/keep-alert-phone`. |
 | recovery | Signed by a recovery pod's current ephemeral keys: the same envelope with `caseId` in place of `anopodId` (`src/auth/require-recovery-session.js`); `/get-recovery-pod`, `/complete-recovery-case`. |
 
 | moderator | session, and the pod holds a live appointment for the role (`appointments`, `docs/schemas.md` section 16, written by `npm run appoint`; `src/auth/require-moderator.js`; the stake is the keyholders' check); the six moderation routes. |
@@ -69,7 +70,9 @@ Failing a level: `401` for anything wrong with the signature or the session,
 `403 anopod not vouched`, `403 setup not complete`, `403 not a moderator`, `403 not an attestor`. Other errors are
 `{ error: '<reason>' }` with `400` for a bad shape or value, `403` for a
 caller who may not do this, `404` for a thing that does not exist, `409` for
-a conflict with what is already there.
+a conflict with what is already there, `410` for a thing that can no longer
+be used (a code that ran out), `429` for too many in a given time, and `503`
+for a part of the server that is not set up or cannot reach what it needs.
 
 ### The request envelope
 
@@ -205,6 +208,15 @@ are base64 / base64url as the browser produces them.
 | `/list-dao-proposals`           | setup   | The pending, open or decided proposals, newest first, paged, a date range on each, with the live sums, the caller's own part and the dials (`settings`); expired ones are never listed |
 | `/get-dao-proposal`             | setup   | One proposal with its body, in the list's form; an expired one too, so an old link resolves |
 | `/list-dao-votes`               | setup   | The supports or the votes of a proposal, newest first, paged: each voter's pod, username, vote, weight and time; every vote is public |
+| `/list-alert-settings`          | setup   | The caller's security alerts (2026-11-21, section 25): its emails and its phones, oldest first, a phone named by the hash of its delivery address; whether email is on, and this server's public key for the phones |
+| `/add-alert-email`              | setup   | An email for the caller's alerts, sent a six-digit code; a new code for one that is not confirmed yet; `403` at 3 emails, `429` at 5 codes in 24 hours or within 60 seconds of the last, `503` while email is off |
+| `/confirm-alert-email`          | setup   | The code typed back: the email counts from here, and the rest of the list is told; `401` on a wrong code, `410` on one that ran out or is used up |
+| `/remove-alert-email`           | setup   | "Take off": a confirmed email is set to come off a month from now and gets every alert until then; the whole list is told; one that was never confirmed goes at once |
+| `/keep-alert-email`             | setup   | "Keep": an email that was set to come off stays; the whole list is told; never refused by the count of changes |
+| `/add-alert-phone`              | setup   | A phone for the caller's alerts: the delivery address, the public key and the secret its browser handed over, and the kind of device; only on Apple's, Google's, Mozilla's or Microsoft's delivery service; the rest of the list is told and the phone gets a first notification; `403` at 5 phones, `503` while the phones are off |
+| `/remove-alert-phone`           | setup   | "Take off": the phone is set to come off a month from now; the whole list is told |
+| `/keep-alert-phone`             | setup   | "Keep": a phone that was set to come off stays; the whole list is told |
+| `/report-waiting-transfers`     | none    | For the validators: the transfers that have started to wait out of a guarded, a vault or an assisted account, and a recovery's moves, in one message signed by the validator's own key; the first report of a transfer tells the pod that made the account, by email, on the phone and under the bell |
 
 The objects each route takes and answers are in `docs/schemas.md` section 5;
 the notification kinds in section 6; what the phone computes (PRF-derived
@@ -255,7 +267,7 @@ keep the references straight. Every table and column has a `COMMENT ON`
 | `vouches`                 | Approved vouches, never changed                                        |
 | `seeds`, `super_seeds`    | The pods that may vouch                                                |
 | `appointments`            | The pods that are moderators or attestors, and the pods that may stake for validator or masterPod: one row per appointment, revoked rows kept |
-| `notifications`           | What the phone polls; read, never deleted; seventeen kinds, the newest `passkeyAdded` (2026-11-18) |
+| `notifications`           | What the phone polls; read, never deleted; twenty-one kinds, the newest the four of the security alerts (2026-11-21) |
 | `security_images`         | Encrypted images of both buckets, each with the id of its bucket key; append-only |
 | `security_info`           | Encrypted texts of bucket two, each with the id of its bucket key; append-only |
 | `chat_rooms`              | Private, public and old marketplace rooms; `listing_id` when a room is about a listing, `case_id` and `case_kind` when it is about an attestor case |
@@ -283,6 +295,10 @@ keep the references straight. Every table and column has a `COMMENT ON`
 | `dao_proposals`           | One row per DAO proposal: the text, the proposer, the status, the current snapshot's total, the support needed, the stage times, the result; never deleted |
 | `dao_votes`               | One row per pod per stage of a proposal: a support while pending, a vote for or against while open, each with the pod's weight at the time; append-only, public |
 | `dao_snapshot_weights`    | A proposal's current snapshot, one row per pod with DAO votes; replaced when the proposal goes open, deleted when it finishes |
+| `alert_emails`            | The emails a pod's security alerts go to (section 25), in plain text: the address, its language, the six-digit code until it is confirmed, the day it comes off once it was taken off |
+| `alert_phones`            | The phones a pod's security alerts go to: one row per browser that allowed notifications, with its delivery address, public key and secret, and the kind of device |
+| `alert_transfers`         | The waiting transfers the validators have reported: one row per report with its own facts, keyed by the hash of those facts; append-only |
+| `alert_messages`          | One row per message to one email or one phone, written with the event it reports and sent by the alert sender; holds no address; kept after it is sent |
 
 ## Configuration
 
@@ -313,6 +329,12 @@ at boot. Everything after `PGPASSWORD` has a default.
 | `DAO_PASS_PERCENT`         | `50`                    | For must be more than this percent of the votes cast; at most 99, so a tie fails |
 | `DAO_PENDING_MINUTES`      | `10080`                 | How long a proposal may collect support (a week)                 |
 | `DAO_VOTE_MINUTES`         | `20160`                 | How long an open proposal takes votes (two weeks)                |
+| `RESEND_API_KEY`           | none: no email is sent  | The email company's key (security alerts, `docs/schemas.md` section 25); set together with `ALERT_EMAIL_FROM` or not at all |
+| `ALERT_EMAIL_FROM`         | none                    | The sender of every email: `anoPod wallet <alerts@wallet.anocloud.com>` on the servers |
+| `ALERT_PUSH_PRIVATE_KEY`   | none: no notification is sent | The private half of this server's key for the phones' delivery services, 43 characters, made by `npm run make-alert-push-key`; set together with `ALERT_PUSH_CONTACT` or not at all |
+| `ALERT_PUSH_CONTACT`       | none                    | The contact the delivery services are given: `https://wallet.anocloud.com` on the servers |
+| `ALERT_REMOVE_MINUTES`     | `43200`                 | How long an email or a phone that was taken off still gets every alert (a month) |
+| `VALIDATOR_KEYS_FILE`      | `network/validators.json` | The validators' public keys, for their reports of waiting transfers; a path from the repo's root, or a full path |
 
 The JSON body limit is computed from the last two:
 `MAX_IMAGES_PER_REQUEST * MAX_IMAGE_BYTES * 1.4 + 1 MB`.
@@ -360,6 +382,7 @@ src/
   auth/              /challenge; requireSession, requireVouched, requireSetup, requireModerator, requireAttestor, requireRecoverySession; challenges, nonces, the signed envelope, WebAuthn
   anopods/           /create-anopod, /unlock, /check-username, /check-anopod-status, /get-anopod-profile, /complete-setup
   passkeys/          /add-passkey, /list-passkeys (section 19), /check-signing-passkey (section 22); the added_passkeys table's queries
+  alerts/            the security alerts (section 25): the eight routes of a pod's list, /list-alert-settings to /keep-alert-phone, and the validators' /report-waiting-transfers; the four alert tables' queries; alert-events.js, raiseAlert() for the bell's row and the messages; alert-words.js, the emails in English and Thai; email.js, the call to the email company; push.js, the scrambling of a notification for one phone; alert-sender.js, the sending and what comes off after its month, every minute; validator-keys.js, the validators' public keys
   vouching/          /search-usernames, /send-vouch-request, /list-vouch-requests, /approve-vouch-request, /decline-vouch-request
   appointments/      the appointments table's queries (section 16): who holds a live appointment as a moderator or an attestor, or as a pod that may stake for validator or masterPod; written only by scripts/appoint.js and scripts/revoke.js
   notifications/     /list-notifications, /mark-notifications-read; notify() for every feature
@@ -371,12 +394,14 @@ src/
   recovery/          /open-recovery-case, /unlock-recovery-pod, /get-recovery-pod, the six moderator routes, /receive-recovery-share/:caseId, /recover-with-backup-code, /complete-recovery-case, /rotate-backup-code, /store-break-glass-blob; the four recovery tables' queries
   attesting/         the fourteen attestor routes, /list-attestors to /dismiss-attestor-case, and the person's /list-my-cases, /get-my-case, /share-lookup-id, /add-dispute-evidence; the five attestation tables' queries; account-signatures.js, the validators' any-two-pairs rule
   break-glass/       the nine break-glass routes, the person's /file-break-glass-moves and /list-my-break-glass-moves and the attestors' /list-break-glass-cases to /dismiss-break-glass-case; the two break-glass tables' queries
-  dao/               the six DAO voting routes, /create-dao-proposal to /list-dao-votes; the three DAO tables' queries; validators.client.js, the one outbound call (the DAO stake read); snapshot.js, one weight per pod; dao-clock.js, the expiry, the flip and the close every minute
+  dao/               the six DAO voting routes, /create-dao-proposal to /list-dao-votes; the three DAO tables' queries; validators.client.js, the one outbound call to the validators (the DAO stake read); snapshot.js, one weight per pod; dao-clock.js, the expiry, the flip and the close every minute
 
   health/            GET /health: status, uptime, database round trip
   middleware/        404 and the central error handler
 db/
   schema.sql         the whole schema, built from nothing
+network/
+  validators.json    the id and the public key of each validator, from the validators' registry: who may report a waiting transfer (section 25)
 scripts/
   setup-db.sh        role, database, schema (idempotent)
   reset-db.sh        drop and set up again
@@ -385,6 +410,7 @@ scripts/
   appoint.js         appoint a pod as a moderator or an attestor, or to stake for validator or masterPod (section 16)
   revoke.js          end a pod's appointment
   small-selfies/     the one-time job that makes the stored selfies small (section 24): small-selfies.js, with a package.json and a package-lock.json of its own for sharp
+  make-alert-push-key.js  makes this server's key for the phones' delivery services (section 25)
 docs/
   schemas.md         the specification: tables, routes, objects, client crypto, variables
   build-plan.md      how it was built
@@ -420,7 +446,10 @@ returning `ok(status, body)` or `refuse(status, reason)`) and its queries
 - Purging pods that never got vouched, and their usernames.
 - Removing a member from a room and rotating the room key.
 - Editing a listing, a profile or a selfie.
-- Push delivery of notifications and messages; the phone polls.
+- Push delivery of notifications and messages; the phone polls. (Since
+  2026-11-21, `docs/schemas.md` section 25, the four kinds of the
+  security alerts also go to the phone and by email. Every other
+  notification and every chat message is still polled.)
 - Generic encrypted object storage, anoSphere, the anos interface.
 - Anti-abuse limits on `/challenge` and `/create-anopod`.
 - Removing one passkey; a cap on a pod's passkeys; a name or a date for the

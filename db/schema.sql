@@ -368,7 +368,9 @@ CREATE TABLE IF NOT EXISTS notifications (
                         'joinRequest', 'joinApproved', 'joinDeclined',
                         'tradeCaseOpened', 'disputeCaseOpened', 'caseScheduled',
                         'caseDecided', 'caseDismissed', 'recoveryCaseScheduled',
-                        'passkeyAdded')),
+                        'passkeyAdded',
+                        'transferWaiting', 'recoveryMoveWaiting', 'recoveryCaseOpened',
+                        'alertSettingsChanged')),
   reference_id        BYTEA       NOT NULL CHECK (octet_length(reference_id) = 32),
   read_at             TIMESTAMPTZ,
   created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -385,8 +387,8 @@ CREATE OR REPLACE TRIGGER notifications_set_updated_at
 COMMENT ON TABLE  notifications                     IS 'One row per event a pod should hear about, written inside the transaction of the event it reports. Read, never deleted.';
 COMMENT ON COLUMN notifications.notification_number IS 'Random id, 32 raw bytes.';
 COMMENT ON COLUMN notifications.anopod_id           IS 'The pod notified.';
-COMMENT ON COLUMN notifications.kind                IS 'What happened: vouchRequest, vouchApproved, vouchDeclined, vouched, chatInvite, inviteAccepted, inviteDeclined, joinRequest, joinApproved, joinDeclined, or, for an attestor case (spec 13.7), tradeCaseOpened, disputeCaseOpened, caseScheduled, caseDecided or caseDismissed, or, for a break-glass case (spec 14.7), recoveryCaseScheduled, or passkeyAdded (spec section 19).';
-COMMENT ON COLUMN notifications.reference_id        IS 'The thing the kind is about: a vouch_id_number, the pod''s own anopod_id (vouched), an invite_id, a chat_room_id, a join_request_id, or the case id of an assisted_trades, escrow_disputes or break_glass_cases row, or the passkey_id of an added_passkeys row.';
+COMMENT ON COLUMN notifications.kind                IS 'What happened: vouchRequest, vouchApproved, vouchDeclined, vouched, chatInvite, inviteAccepted, inviteDeclined, joinRequest, joinApproved, joinDeclined, or, for an attestor case (spec 13.7), tradeCaseOpened, disputeCaseOpened, caseScheduled, caseDecided or caseDismissed, or, for a break-glass case (spec 14.7), recoveryCaseScheduled, or passkeyAdded (spec section 19), or, for a security alert (spec section 25), transferWaiting, recoveryMoveWaiting, recoveryCaseOpened or alertSettingsChanged.';
+COMMENT ON COLUMN notifications.reference_id        IS 'The thing the kind is about: a vouch_id_number, the pod''s own anopod_id (vouched), an invite_id, a chat_room_id, a join_request_id, or the case id of an assisted_trades, escrow_disputes or break_glass_cases row, or the passkey_id of an added_passkeys row, or, for a security alert (spec section 25), an account id (transferWaiting, recoveryMoveWaiting), a recovery case id (recoveryCaseOpened), or the pod''s own anopod_id (alertSettingsChanged).';
 COMMENT ON COLUMN notifications.read_at             IS 'When the phone marked it read; null while unread.';
 COMMENT ON COLUMN notifications.created_at          IS 'When the row was inserted. Set by default, never changed.';
 COMMENT ON COLUMN notifications.updated_at          IS 'When the row last changed. Maintained by the notifications_set_updated_at trigger.';
@@ -1045,7 +1047,9 @@ COMMENT ON COLUMN attestor_events.created_at IS 'When the row was inserted: the 
 
 -- The notifications check widened to the five case kinds of spec 13.7
 -- and, on 2026-11-11, to recoveryCaseScheduled (spec 14.7) and, on
--- 2026-11-18, to passkeyAdded (spec section 19). Idempotent: a
+-- 2026-11-18, to passkeyAdded (spec section 19) and, on 2026-11-21, to
+-- transferWaiting, recoveryMoveWaiting, recoveryCaseOpened and
+-- alertSettingsChanged (spec section 25). Idempotent: a
 -- drop-and-add of the check under its one name, as the challenges check
 -- above.
 
@@ -1056,7 +1060,9 @@ ALTER TABLE notifications ADD CONSTRAINT notifications_kind_check
                   'joinRequest', 'joinApproved', 'joinDeclined',
                   'tradeCaseOpened', 'disputeCaseOpened', 'caseScheduled',
                   'caseDecided', 'caseDismissed', 'recoveryCaseScheduled',
-                  'passkeyAdded'));
+                  'passkeyAdded',
+                  'transferWaiting', 'recoveryMoveWaiting', 'recoveryCaseOpened',
+                  'alertSettingsChanged'));
 
 
 -- The marketplace block (2026-11-06): chat_rooms.listing_id, the listing a
@@ -1418,3 +1424,150 @@ COMMENT ON COLUMN chat_room_members.seen_position IS 'The highest message positi
 ALTER TABLE anos_accounts ADD COLUMN IF NOT EXISTS first_key_blob BYTEA CHECK (octet_length(first_key_blob) BETWEEN 1 AND 1024);
 
 COMMENT ON COLUMN anos_accounts.first_key_blob IS 'Pair one''s private halves alone (key1 scalar || postQuantumKey1 seed) wrapped under the pod''s key blob key, 92 bytes (spec section 22). The server cannot open it. Once it is set, /list-anos-accounts hands it to the wallet as keyBlob in place of key_blob. Null until the wallet stored it, with the account (/create-anos-account) or later (/store-first-key-blob). Written once, never changed.';
+
+
+-- The security alerts block (2026-11-21, spec section 25): four new tables.
+-- alert_emails and alert_phones are where a pod's alerts go. alert_transfers
+-- is what the validators have reported, one row per report with its own
+-- facts, so that 25 like reports of one transfer make one alert and a report
+-- with other facts still counts. alert_messages is one row
+-- per message to one email or one phone, sent by the alert sender
+-- (src/alerts/). The four notification kinds that come with them are in the
+-- notifications check, above. Idempotent: IF NOT EXISTS and OR REPLACE.
+
+CREATE TABLE IF NOT EXISTS alert_emails (
+  email_id        BYTEA       PRIMARY KEY CHECK (octet_length(email_id) = 32),
+  anopod_id       BYTEA       NOT NULL CHECK (octet_length(anopod_id) = 32),
+  email           TEXT        NOT NULL CHECK (char_length(email) BETWEEN 3 AND 254 AND position('@' IN email) > 1),
+  language        TEXT        NOT NULL CHECK (language IN ('en', 'th')),
+  code            TEXT        CHECK (code ~ '^[0-9]{6}$'),
+  code_expires_at TIMESTAMPTZ,
+  code_tries      INTEGER     NOT NULL DEFAULT 0 CHECK (code_tries >= 0),
+  verified_at     TIMESTAMPTZ,
+  removes_at      TIMESTAMPTZ,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS alert_emails_anopod_id_email_key ON alert_emails (anopod_id, lower(email));
+
+CREATE OR REPLACE TRIGGER alert_emails_set_updated_at
+  BEFORE UPDATE ON alert_emails
+  FOR EACH ROW
+  WHEN (OLD.* IS DISTINCT FROM NEW.*)
+  EXECUTE FUNCTION set_updated_at();
+
+COMMENT ON TABLE  alert_emails                 IS 'The emails a pod''s security alerts go to (spec section 25), in plain text: the server has to read an address to send to it. A row belongs to the pod, not to an account, and nothing deletes it but its own removal.';
+COMMENT ON COLUMN alert_emails.email_id        IS 'Random id, 32 raw bytes.';
+COMMENT ON COLUMN alert_emails.anopod_id       IS 'The pod whose alerts go here.';
+COMMENT ON COLUMN alert_emails.email           IS 'The address as typed, trimmed: 3 to 254 characters with an @ that is not first. One row per pod and address, compared in lower case.';
+COMMENT ON COLUMN alert_emails.language        IS 'en or th: the language the wallet showed when the address was added. Every email to this address is written in it.';
+COMMENT ON COLUMN alert_emails.code            IS 'The six-digit code sent to the address, until it is typed back or replaced. Null once the address is confirmed.';
+COMMENT ON COLUMN alert_emails.code_expires_at IS 'Until when the code may be typed back: ten minutes after it was made.';
+COMMENT ON COLUMN alert_emails.code_tries      IS 'How many wrong codes were typed against the current code; at five the code is used up.';
+COMMENT ON COLUMN alert_emails.verified_at     IS 'When the code was typed back; null until then. Alerts go only to a confirmed address.';
+COMMENT ON COLUMN alert_emails.removes_at      IS 'When the row is deleted: set by /remove-alert-email to a month ahead, cleared by /keep-alert-email. Until then the address gets every alert.';
+COMMENT ON COLUMN alert_emails.created_at      IS 'When the row was inserted. Set by default, never changed.';
+COMMENT ON COLUMN alert_emails.updated_at      IS 'When the row last changed. Maintained by the alert_emails_set_updated_at trigger.';
+
+CREATE TABLE IF NOT EXISTS alert_phones (
+  phone_id    BYTEA       PRIMARY KEY CHECK (octet_length(phone_id) = 32),
+  anopod_id   BYTEA       NOT NULL CHECK (octet_length(anopod_id) = 32),
+  endpoint    TEXT        NOT NULL CHECK (char_length(endpoint) BETWEEN 20 AND 1024),
+  p256dh      BYTEA       NOT NULL CHECK (octet_length(p256dh) = 65),
+  auth        BYTEA       NOT NULL CHECK (octet_length(auth) = 16),
+  label       TEXT        NOT NULL CHECK (label IN ('iphone', 'ipad', 'android', 'computer', 'other')),
+  removes_at  TIMESTAMPTZ,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT alert_phones_anopod_id_endpoint_key UNIQUE (anopod_id, endpoint)
+);
+CREATE INDEX IF NOT EXISTS alert_phones_endpoint_idx ON alert_phones (endpoint);
+
+CREATE OR REPLACE TRIGGER alert_phones_set_updated_at
+  BEFORE UPDATE ON alert_phones
+  FOR EACH ROW
+  WHEN (OLD.* IS DISTINCT FROM NEW.*)
+  EXECUTE FUNCTION set_updated_at();
+
+COMMENT ON TABLE  alert_phones            IS 'The phones a pod''s security alerts go to (spec section 25): one row per browser that allowed notifications, with what the browser handed the wallet. Two pods used on one phone hold a row each with the same endpoint.';
+COMMENT ON COLUMN alert_phones.phone_id   IS 'Random id, 32 raw bytes.';
+COMMENT ON COLUMN alert_phones.anopod_id  IS 'The pod whose alerts go here.';
+COMMENT ON COLUMN alert_phones.endpoint   IS 'The delivery address the browser''s delivery service gave: an https URL on one of the known services. Whoever knows it can send to the phone, so no route answers it.';
+COMMENT ON COLUMN alert_phones.p256dh     IS 'The browser''s public key for this subscription, 65 raw bytes: a message is locked to it.';
+COMMENT ON COLUMN alert_phones.auth       IS 'The browser''s secret for this subscription, 16 raw bytes.';
+COMMENT ON COLUMN alert_phones.label      IS 'What kind of device, as the wallet read it when the alerts were turned on: iphone, ipad, android, computer or other. Only for the list on the wallet''s page.';
+COMMENT ON COLUMN alert_phones.removes_at IS 'When the row is deleted: set by /remove-alert-phone to a month ahead, cleared by /keep-alert-phone. Until then the phone gets every alert.';
+COMMENT ON COLUMN alert_phones.created_at IS 'When the row was inserted. Set by default, never changed.';
+COMMENT ON COLUMN alert_phones.updated_at IS 'When the row last changed. Maintained by the alert_phones_set_updated_at trigger.';
+
+CREATE TABLE IF NOT EXISTS alert_transfers (
+  report_id        BYTEA       PRIMARY KEY CHECK (octet_length(report_id) = 32),
+  transaction_id   BYTEA       NOT NULL CHECK (octet_length(transaction_id) = 32),
+  account_id       BYTEA       NOT NULL CHECK (octet_length(account_id) = 32),
+  anopod_id        BYTEA       CHECK (octet_length(anopod_id) = 32),
+  transaction_type TEXT        NOT NULL CHECK (transaction_type IN ('guardedAnosTransfer', 'vaultAnosTransfer', 'assistedAnosTransfer', 'breakGlassTransfer')),
+  amount           TEXT        NOT NULL CHECK (amount ~ '^[1-9][0-9]{0,38}$'),
+  writes_at        TIMESTAMPTZ,
+  validator_id     INTEGER     NOT NULL CHECK (validator_id > 0),
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS alert_transfers_transaction_id_idx ON alert_transfers (transaction_id);
+CREATE INDEX IF NOT EXISTS alert_transfers_validator_id_created_at_idx ON alert_transfers (validator_id, created_at);
+
+CREATE OR REPLACE TRIGGER alert_transfers_append_only
+  BEFORE UPDATE OR DELETE ON alert_transfers
+  FOR EACH ROW EXECUTE FUNCTION refuse_change();
+
+COMMENT ON TABLE  alert_transfers                  IS 'The waiting transfers the validators have reported (spec section 25): one row per report with its own facts. Validators that report one transfer with the same facts make one row, written by the first of them; a report that names another account, amount, kind or moment for the same transfer is a row of its own, so that no validator can keep a true report from counting. Append-only.';
+COMMENT ON COLUMN alert_transfers.report_id        IS 'The SHA-256 of the report''s facts in canonical form (the transfer''s id, the account, the kind, the amount, the moment), 32 raw bytes.';
+COMMENT ON COLUMN alert_transfers.transaction_id   IS 'The transfer''s id on the validators, 32 raw bytes.';
+COMMENT ON COLUMN alert_transfers.account_id       IS 'The sending account.';
+COMMENT ON COLUMN alert_transfers.anopod_id        IS 'The pod that made the sending account, from anos_accounts; null when no pod made it, and then nobody is alerted.';
+COMMENT ON COLUMN alert_transfers.transaction_type IS 'guardedAnosTransfer, vaultAnosTransfer, assistedAnosTransfer or breakGlassTransfer, as the validator reported it.';
+COMMENT ON COLUMN alert_transfers.amount           IS 'Millionths of an anos, a decimal string, as the validator reported it.';
+COMMENT ON COLUMN alert_transfers.writes_at        IS 'The moment the transfer may be written, as the validator reported it; null for a transfer that waits for two attestors alone.';
+COMMENT ON COLUMN alert_transfers.validator_id     IS 'The validator whose report wrote the row. A validator may write 1,000 rows in 24 hours.';
+COMMENT ON COLUMN alert_transfers.created_at       IS 'When the row was inserted. Set by default, never changed.';
+
+CREATE TABLE IF NOT EXISTS alert_messages (
+  message_id   BYTEA       PRIMARY KEY CHECK (octet_length(message_id) = 32),
+  anopod_id    BYTEA       NOT NULL CHECK (octet_length(anopod_id) = 32),
+  kind         TEXT        NOT NULL CHECK (kind IN (
+                 'emailCode', 'transferWaiting', 'recoveryMoveWaiting', 'recoveryCaseOpened',
+                 'emailAdded', 'emailRemoving', 'emailKept',
+                 'phoneAdded', 'phoneRemoving', 'phoneKept', 'phoneUnreachable', 'phoneOn')),
+  email_id     BYTEA       CHECK (octet_length(email_id) = 32),
+  phone_id     BYTEA       CHECK (octet_length(phone_id) = 32),
+  details      JSONB       NOT NULL DEFAULT '{}'::jsonb,
+  tries        INTEGER     NOT NULL DEFAULT 0 CHECK (tries >= 0),
+  next_try_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  sent_at      TIMESTAMPTZ,
+  gave_up_at   TIMESTAMPTZ,
+  last_error   TEXT,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT alert_messages_one_destination CHECK ((email_id IS NULL) <> (phone_id IS NULL))
+);
+CREATE INDEX IF NOT EXISTS alert_messages_due_idx ON alert_messages (next_try_at) WHERE sent_at IS NULL AND gave_up_at IS NULL;
+CREATE INDEX IF NOT EXISTS alert_messages_anopod_id_created_at_idx ON alert_messages (anopod_id, created_at DESC);
+
+CREATE OR REPLACE TRIGGER alert_messages_set_updated_at
+  BEFORE UPDATE ON alert_messages
+  FOR EACH ROW
+  WHEN (OLD.* IS DISTINCT FROM NEW.*)
+  EXECUTE FUNCTION set_updated_at();
+
+COMMENT ON TABLE  alert_messages             IS 'One row per message to one email or one phone (spec section 25), written inside the transaction of the event it reports and sent by the alert sender. Kept after it is sent. It holds no address: the address is read from alert_emails or alert_phones when the message is sent.';
+COMMENT ON COLUMN alert_messages.message_id  IS 'Random id, 32 raw bytes. Also the key the email company is given so that one message is never sent twice.';
+COMMENT ON COLUMN alert_messages.anopod_id   IS 'The pod the message is for.';
+COMMENT ON COLUMN alert_messages.kind        IS 'What the message says: emailCode, transferWaiting, recoveryMoveWaiting, recoveryCaseOpened, emailAdded, emailRemoving, emailKept, phoneAdded, phoneRemoving, phoneKept, phoneUnreachable or phoneOn.';
+COMMENT ON COLUMN alert_messages.email_id    IS 'The alert_emails row the message goes to; null when it goes to a phone.';
+COMMENT ON COLUMN alert_messages.phone_id    IS 'The alert_phones row the message goes to; null when it goes to an email.';
+COMMENT ON COLUMN alert_messages.details     IS 'What the kind carries: { accountId, accountType, amount, writesAt } for the two transfer kinds; { emailId } or { phoneId, label } for a change of the settings, naming the email or the phone that changed, with removesAt for the two removing kinds; { label } for a phone that is gone; {} otherwise.';
+COMMENT ON COLUMN alert_messages.tries       IS 'How many times a send failed.';
+COMMENT ON COLUMN alert_messages.next_try_at IS 'When the sender takes the row next: now at first, later after each failure.';
+COMMENT ON COLUMN alert_messages.sent_at     IS 'When the email company or the phone''s delivery service took the message; null until then.';
+COMMENT ON COLUMN alert_messages.gave_up_at  IS 'When the sender stopped trying: after three days of failures, or when the address or the phone is gone; null otherwise.';
+COMMENT ON COLUMN alert_messages.last_error  IS 'The last failure, in a few words, with no address in it.';
+COMMENT ON COLUMN alert_messages.created_at  IS 'When the row was inserted. Set by default, never changed.';
+COMMENT ON COLUMN alert_messages.updated_at  IS 'When the row last changed. Maintained by the alert_messages_set_updated_at trigger.';

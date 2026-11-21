@@ -54,7 +54,9 @@ export async function findAccountOf(accountId, db = pool) {
  * counts, so two creations of one pod sent at the same moment wait for each
  * other and cannot both pass on the same count (spec section 17).
  * /create-listing locks it too, before it counts the pod's open listings
- * (2026-11-20, spec section 23).
+ * (2026-11-20, spec section 23). So do /add-alert-email and
+ * /add-alert-phone, before they count the emails and the phones of the
+ * pod's security alerts (2026-11-21, spec section 25).
  */
 export async function lockPod(client, anopodId) {
   await client.query('SELECT 1 FROM anopods WHERE anopod_id = $1 FOR UPDATE', [anopodId]);
