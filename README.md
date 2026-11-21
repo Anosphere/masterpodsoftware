@@ -149,7 +149,7 @@ are base64 / base64url as the browser produces them.
 | `/mark-anos-account-submitted`  | setup   | Records that a validator answered the account's creation; the caller's accounts only     |
 | `/list-anos-accounts`           | setup   | The caller's anos accounts, oldest first, each with one blob: its first key blob once it has one, the blob with both pairs until then (`firstKeyOnly` says which; section 22), with the creation, `submittedAt` and `breakGlassBlob` (null until a recovery stored it); `409 reload the wallet` for a page that cannot open a first key blob |
 | `/store-first-key-blob`         | setup   | The first key blob of one of the caller's accounts, pair one alone; written once, `409` on a repeat |
-| `/add-noted-transaction`        | setup   | Records a note on a ledger transaction of the caller's, for their tax records: the ledger's facts in the clear, the private part as a blob under the pod's encryption key; one note per transaction, `409` on a second |
+| `/add-noted-transaction`        | setup   | Records a note on a ledger transaction of the caller's, for their tax records: the ledger's facts in the clear, the private part as a blob under the pod's encryption key; one note per transaction and account, `409` on a second |
 | `/update-noted-transaction`     | setup   | Replaces a note's blob; the ledger's facts never change; the caller's notes only |
 | `/remove-noted-transaction`     | setup   | Deletes a note; the caller's notes only                                                  |
 | `/list-noted-transactions`      | setup   | The caller's notes in a date range, newest first, the newest 1,000 with `more` when there are older ones |

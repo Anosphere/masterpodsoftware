@@ -34,9 +34,9 @@ export async function findNote(noteId, anopodId, db = pool) {
   return rows.length === 0 ? null : noteRow(rows[0]);
 }
 
-/** The pod's row for this transaction, or null. */
-export async function findNoteByTransaction(anopodId, transactionId, db = pool) {
-  const { rows } = await db.query(`SELECT ${COLUMNS} FROM noted_transactions WHERE anopod_id = $1 AND transaction_id = $2`, [anopodId, transactionId]);
+/** The pod's row for this transaction and this account, or null. */
+export async function findNoteByTransaction(anopodId, transactionId, accountId, db = pool) {
+  const { rows } = await db.query(`SELECT ${COLUMNS} FROM noted_transactions WHERE anopod_id = $1 AND transaction_id = $2 AND account_id = $3`, [anopodId, transactionId, accountId]);
   return rows.length === 0 ? null : noteRow(rows[0]);
 }
 
@@ -45,7 +45,8 @@ export async function findNoteByTransaction(anopodId, transactionId, db = pool) 
  * otherAccountId, position, transactedAt, amount, sent, noteBlob };
  * transactedAt an ISO string pg casts to the column, amount a decimal
  * string cast to BIGINT. A second note of the pod on the same transaction
- * throws a unique violation (db/transaction.js isUniqueViolation).
+ * for the same account throws a unique violation (db/transaction.js
+ * isUniqueViolation).
  */
 export async function insertNote({ noteId, anopodId, transactionId, accountId, otherAccountId, position, transactedAt, amount, sent, noteBlob }) {
   await query(
@@ -77,8 +78,10 @@ export async function deleteNote(noteId, anopodId) {
 /**
  * The pod's notes with transacted_at at or after `from` and before `to`
  * (ISO strings, either null for no bound), newest transacted_at first and
- * the highest position first within a moment, `limit` rows at most. The
- * bounds are typed in the SQL, as the listings query types its filters.
+ * the highest position first within a moment, `limit` rows at most. The two
+ * notes of a transfer between two of the pod's own accounts share both, so
+ * the sent one comes first. The bounds are typed in the SQL, as the
+ * listings query types its filters.
  */
 export async function listNotes(anopodId, from, to, limit) {
   const { rows } = await query(
@@ -86,7 +89,7 @@ export async function listNotes(anopodId, from, to, limit) {
      WHERE anopod_id = $1
        AND ($2::timestamptz IS NULL OR transacted_at >= $2)
        AND ($3::timestamptz IS NULL OR transacted_at < $3)
-     ORDER BY transacted_at DESC, position DESC
+     ORDER BY transacted_at DESC, position DESC, sent DESC
      LIMIT $4`,
     [anopodId, from, to, limit],
   );
