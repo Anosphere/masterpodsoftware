@@ -53,6 +53,8 @@ export async function findAccountOf(accountId, db = pool) {
  * `client` (SELECT ... FOR UPDATE). /create-anos-account locks it before it
  * counts, so two creations of one pod sent at the same moment wait for each
  * other and cannot both pass on the same count (spec section 17).
+ * /create-listing locks it too, before it counts the pod's open listings
+ * (2026-11-20, spec section 23).
  */
 export async function lockPod(client, anopodId) {
   await client.query('SELECT 1 FROM anopods WHERE anopod_id = $1 FOR UPDATE', [anopodId]);

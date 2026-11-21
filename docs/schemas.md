@@ -650,7 +650,8 @@ alpha-2. Until 2026-11-06 each listing owned one marketplace room,
 `chat_room_id`; since then `chat_room_id` is null on every new listing and
 the people who connect each get a private room about it, linked by
 `chat_rooms.listing_id`. The old rooms stay, with their listings' ids on
-both rows.
+both rows. Since 2026-11-20 the listing limit counts a pod's rows with
+`status` `open`: at most 10 at one time (section 23).
 
 ## 5. Routes
 
@@ -1205,6 +1206,13 @@ a decimal string, above zero, at most 8 decimals. `hpkeKey`, the owner's
 wrapped copy of a room key, is optional since 2026-11-06 and ignored when
 present (a string, else `400 bad request shape`), so an older client still
 gets its listing.
+
+Checks: the fields above first, each with its `400`, so a bad price is
+still told as a bad price; last, the listing limit: the caller has fewer
+than 10 rows in `listings` with `status` `open` (`403 listing limit
+reached`). The limit was added 2026-11-20 (section 23): the count and the
+insert are one transaction with the caller's row in `anopods` locked, so
+requests sent at the same moment cannot all pass on the same count.
 
 Writes: `listings` only, with `chat_room_id` null. Until 2026-11-06 a
 listing got a marketplace room with it (`chat_rooms` type `marketplace`,
@@ -7613,3 +7621,226 @@ the commit. None of this is in the plan.
   of the deploy carries the whole hash, so it was written with this one.
   One commit carries the build and this: twelve files, the eleven of the
   build and `src/auth/webauthn.js`.
+
+## 23. The listing limit (2026-11-20)
+
+Design settled 2026-11-20 in a planning chat (the plan is
+`~/Desktop/Z-TestNet/forclaude/listing-limit-plan-1.md`, FINAL,
+2026-11-20). Why: nothing limited how many listings one pod opens. The
+user, 2026-11-20: "it hasn't happened yet, but I'm sure some one is going
+to spam and make like 30 marketplace listings. We should limit how many
+total can be open at 1 time." `/create-listing` is the only code that
+makes a listing, and nothing opens a closed listing again. So the number
+of a pod's open listings goes up through this one route, and the limit
+sits on it and nowhere else. The same plan has a second half, which is
+the wallet's alone: the marketplace's first page stops at 200 listings
+with no way to see the rest. The user: "Is there like a scroll more if
+200 is not enough for some one? Or like a fetch more or something." That
+page gets a Show more button, and this server does not change for it:
+`/list-listings` has always taken `offset`. Two repos in order: this
+server (this section, step 1 of the plan: one check in one route) and the
+wallet (its spec, step 2: the refusal said in one sentence, and Show
+more), then the record files (step 3). Either order of the two deploys is
+safe; the usual order is kept, this server first (the plan's section 4).
+With this server alone deployed the limit holds, and a wallet of before
+shows the refusal as it came, "HTTP 403: listing limit reached", in red
+on its New listing page. There is no schema step, no env variable, no npm
+package and no new route. The validators, the doormen, the keyholders,
+the signing servers and the wallet's proxy are not touched. Nothing above
+this section changes except the items in 23.4.
+
+### 23.1 The rule
+
+- A pod may have at most 10 listings open at one time (the plan's
+  decisions 1 and 2). The user: "write the plan with 10".
+- Selling and buying listings count together (decision 5).
+- A closed listing does not count (decision 3). The user asked: "If the
+  listing is closed, that doesn't count towards the 10 right?" It does
+  not. Closing a listing frees a place at once.
+- A pod that already has more than 10 open listings on the day the limit
+  goes live keeps every one of them (decision 11). It cannot create
+  another until it has fewer than 10. The deploy closes nothing.
+
+### 23.2 The check
+
+`createListing` (`src/marketplace/marketplace.service.js`) runs it last.
+The checks of the five fields stay in front of it, so a bad price is
+still told as a bad price (`400 invalid price`), also to a pod at the
+limit. The number is one constant at the top of the file, `LISTING_LIMIT
+= 10`. It is not an env variable: the user owns `.env`, and a change of
+the number is one line and a restart either way.
+
+The insert runs inside `withTransaction` (`src/db/transaction.js`), on
+the one client. First `lockPod(client, anopodId)` holds the pod's own row
+in `anopods` for the rest of the transaction. It is the account limit's
+function (17.2), imported from
+`src/anos-accounts/anos-accounts.queries.js`:
+
+```sql
+SELECT 1 FROM anopods WHERE anopod_id = $1 FOR UPDATE
+```
+
+Then `countOpenListings(client, anopodId)`, new in
+`src/marketplace/listings.queries.js`, answers the number of the pod's
+open listings:
+
+```sql
+SELECT count(*)::int AS count FROM listings
+WHERE anopod_id = $1 AND status = 'open'
+```
+
+When the count is `LISTING_LIMIT` or more, the transaction ends with no
+insert and the answer is `403 listing limit reached`. Otherwise
+`insertListing` writes the row on the same client and the answer is `201
+{ listingId, chatRoomId: null }`, as before.
+
+Why the lock: without it, requests of one pod sent at the same moment
+would each count the same rows and all pass, so a script that sends
+thirty at once could open thirty listings. With the pod's row locked they
+wait for each other: the second counts only after the first has ended,
+and its count sees the first one's row. `/create-anos-account` locks the
+same row for its own count, so a listing and a new account of one pod
+sent at the same moment wait for each other too, for the length of one
+small transaction. `/close-listing` takes no lock: it only lowers the
+count. The refusal is a `403`, as the account limit's is (17.2).
+
+The database does not change. `listings` has one index, on `(status,
+created_at DESC)`, and none on `anopod_id`. The count looks through the
+open rows, which are few. An index on `anopod_id` is a schema step, left
+until the table is large.
+
+### 23.3 What is left as it is
+
+- The wallet shows no counter and no hint ahead of time. A person only
+  hears of the limit when it refuses them, in one sentence on the New
+  listing page: "You have reached the limit of open listings. Close one
+  of your listings to create a new one." It names no number, so it stays
+  true when the constant changes. The sentence is the wallet's step 2.
+- The limit is on listings that are open at one moment. A person can
+  close a listing and post it again, and it then stands at the top of
+  Newest again.
+- Nothing closes a listing but its owner. A listing whose trade is done
+  counts until its owner closes it.
+
+### 23.4 Files
+
+- `src/marketplace/listings.queries.js`: `countOpenListings`, new, after
+  `closeListing`.
+- `src/marketplace/marketplace.service.js`: the imports of `lockPod` and
+  `countOpenListings`, the constant `LISTING_LIMIT`, and in
+  `createListing` the transaction with the lock, the count and the
+  insert; the function's comment gains the limit as the last check.
+- `src/anos-accounts/anos-accounts.queries.js`: the comment of `lockPod`,
+  which now names its second user. No line of code.
+- Here: section 4 (`### listings`, one sentence), section 5 (`### POST
+  /create-listing (setup)`, the last check and its refusal) and this
+  section. `README.md`: the route row of `/create-listing`.
+
+Nothing else in existing code changes: `/close-listing`, `/list-listings`
+and `/get-listing`, the router, `src/chat/`, `db/schema.sql` and
+`.example.env` are as they were. No env variable, no npm package, no new
+route.
+
+### 23.5 Notes from the build
+
+#### Build 1, the masterpod (2026-11-20)
+
+Built from `~/Desktop/Z-TestNet/forclaude/listing-limit-plan-1.md` section
+1, on main at 3ddd08e, the working tree clean. No new npm package, no
+test script and no rig (none was asked for). Nothing was applied to any
+database: there is no schema step. What the plan left open and how it was
+decided:
+
+- The number and the date. This section is 23, the next free number on
+  the build day. BUILD-DATE is 2026-11-20, the day of the build and of
+  the plan's FINAL.
+- The code. `countOpenListings`, the two imports, the constant and the
+  new lines of `createListing` are the plan's, letter for letter, with 23
+  where the plan's comments say N. `createListing` has no `try` around
+  its transaction, as before: the listing id is 32 random bytes that
+  this server makes, so there is no repeat to answer.
+- The comments. The doc comment of `createListing` gained the limit at
+  its end, in the words of the plan's 1.2 and in the form of the comment
+  of `createAnosAccount`: it begins "Last, the listing limit (2026-11-20,
+  spec section 23)" and ends "The insert runs in that transaction." The
+  comment of `lockPod` gained one sentence at its end: "/create-listing
+  locks it too, before it counts the pod's open listings (2026-11-20,
+  spec section 23)." Its words of before stay.
+- `lockPod` answers nothing, and `createListing` does not ask whether a
+  row was locked, as `createAnosAccount` does not (17.5): the route's
+  level (`requireSetup`) read the pod's row a moment before.
+- The transaction answers `true` when the row went in and `false` at the
+  limit, and the `403` is made right after it. At the limit the
+  transaction ends by `COMMIT` with nothing written (`withTransaction`
+  rolls back only on a throw), which frees the lock just the same.
+- `lockPod` stays where it is, in the queries file of the anos accounts,
+  and the marketplace's service imports it from there, as the plan says.
+  It is the first import line, the place the file's order by path gives
+  it. A service that reads another folder's queries file is not new:
+  `anos-accounts.service.js` reads the appointments' own.
+- The constant sits after `MAX_LIMIT`, under its own comment, and is not
+  exported: nothing else reads it. `countOpenListings` sits between
+  `closeListing` and `listListings`.
+- Here and in the README. In section 4 the sentence went on the end of
+  the paragraph under the SQL block. In section 5 the entry of
+  `/create-listing` had no "Checks" paragraph. The new one stands between
+  the body and "Writes", where the other routes have theirs. It names the
+  checks of the fields only as "the fields above": the plan asks for the
+  last check and its refusal, so the words of the older refusals are not
+  written out there. The README row gained its words at its end, after a
+  semicolon.
+- Checks (1.5). `node --check` on the three changed source files
+  (`src/marketplace/listings.queries.js`,
+  `src/marketplace/marketplace.service.js`,
+  `src/anos-accounts/anos-accounts.queries.js`), clean, on Node 24.22.0.
+  Then one load of the app with no server, run from the build chat's
+  scratch folder as one `node -e` line, with no file kept: `src/app.js`
+  imported and `createApp()` called, with made-up `PGDATABASE`, `PGUSER`
+  and `PGPASSWORD` and `PGHOST=/nonexistent`. It counted 99 routes, the
+  count of section 22's build, since the step adds none; four of them are
+  the marketplace's. It ended with exit 0. The step adds an import across
+  folders, and a wrong one would have failed the load. Nothing listened
+  and no database was reached. Then the two statements by psql against
+  this Mac's PostgreSQL (17.11), on its `masterpod` database, as the
+  superuser `codex`, in one transaction that was rolled back: `CREATE
+  SCHEMA scratch_listing_limit AUTHORIZATION masterpodsoftware`, `SET
+  LOCAL ROLE masterpodsoftware`, the search path set to the scratch
+  schema, and `db/schema.sql` read into it, which made 37 tables. Into
+  its `listings` went 10 open rows, five selling and five buying, and one
+  closed row, all for one throwaway pod id. The query of
+  `countOpenListings` read 10 for that id, and 0 for a second throwaway
+  id with no rows. The query of `lockPod` ran for the throwaway id and
+  answered no row, since the scratch `anopods` was empty. With a pod's
+  row it is the statement `/create-anos-account` has run since
+  2026-11-10. The parameters went untyped (`\bind`), as `pg` sends them.
+  After the rollback the database was as before: its 36 tables (an older
+  build), no listings and no scratch schema.
+- One comparison beyond 1.5, with nothing kept. The planning chat had put
+  this code into a throwaway copy of 3ddd08e and called the real
+  `createListing`, `close` and `list` against a scratch schema: 18
+  results, none bad, among them ten creations answered `201`, the
+  eleventh `403 listing limit reached`, and a close that freed a place
+  (the plan's section 6). That copy was still in its scratch folder. A
+  `diff` of the three source files against it: `listings.queries.js` is
+  the same byte for byte, and the two others differ in comment lines
+  only, three in all (the date where the copy has the word BUILD-DATE,
+  and the words of the sentence on `lockPod`). No other file of `src` or
+  `db` differs from that copy. So those 18 results were made by the lines
+  of code this build has.
+- Not tried by the build. No server was booted, no request was signed and
+  no route was called over HTTP: the `403` over HTTP takes eleven
+  listings from one pod to see, and that run-through is the user's (the
+  plan's section 4). Two creations at the very same moment were not
+  raced, by the planning chat or by the build: the lock is the account
+  limit's, in use since 2026-11-10.
+- Places the plan does not name that this step left out of date: none
+  found. Looked through: every place here, in `README.md` and in `src`
+  that names `/create-listing`, `createListing`, `lockPod`, a limit or a
+  refusal of the marketplace.
+- Not touched: `marketplace.router.js`, `marketplace.handlers.js`,
+  `/close-listing`, `/list-listings` and `/get-listing`,
+  `anos-accounts.service.js`, `src/chat/`, every other feature folder,
+  `db/schema.sql`, `package.json`, `.example.env`, the scripts; in the
+  README everything but the one route row. In
+  `src/anos-accounts/anos-accounts.queries.js` one comment changed and no
+  line of code.
