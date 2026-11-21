@@ -141,7 +141,7 @@ are base64 / base64url as the browser produces them.
 | `/send-message`                 | setup   | Stores a ciphertext message, members only                                                |
 | `/mark-messages-seen`           | setup   | Records how far the caller has read in a room, members only                              |
 | `/get-chat-public-keys`         | setup   | The chat public keys of up to 50 pods that completed setup                               |
-| `/create-listing`               | setup   | A listing of anos for a fiat currency; since 2026-11-06 without a room of its own, people connect with a private room each |
+| `/create-listing`               | setup   | A listing of anos for a fiat currency; since 2026-11-06 without a room of its own, people connect with a private room each; `403` at the limit of 10 open listings per pod |
 | `/close-listing`                | setup   | Closes the owner's listing; an old listing's room stays, new join requests and new rooms about it are refused |
 | `/list-listings`                | setup   | Listings filtered by side, currency, country and status (`any` allowed), the caller's own with `mine`, sorted and paged |
 | `/get-listing`                  | setup   | One listing by id, open or closed, in the list's form                                    |

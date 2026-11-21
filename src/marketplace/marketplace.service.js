@@ -1,3 +1,4 @@
+import { lockPod } from '../anos-accounts/anos-accounts.queries.js';
 import { withTransaction } from '../db/transaction.js';
 import { decodeId, randomId, toHex } from '../util/ids.js';
 import { isObject } from '../util/is-object.js';
@@ -6,6 +7,7 @@ import {
   DIRECTIONS,
   SORT_KEYS,
   closeListing,
+  countOpenListings,
   findListing,
   findListingItem,
   insertListing,
@@ -40,6 +42,12 @@ const PRICE_PATTERN = /^(0|[1-9][0-9]{0,15})(\.[0-9]{1,8})?$/;
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
 
+/**
+ * The listing limit (spec section 23): a pod may have at most LISTING_LIMIT
+ * listings open at one time, selling and buying together.
+ */
+const LISTING_LIMIT = 10;
+
 /** True for a quantity string the column accepts. */
 function isQuantity(value) {
   return typeof value === 'string' && QUANTITY_PATTERN.test(value) && BigInt(value) <= MAX_BIGINT;
@@ -65,7 +73,11 @@ function integerOption(value, fallback, min, max) {
 /**
  * POST /create-listing. Body { side, quantity, currency, country, price }.
  * The listing only, with no room (2026-11-06); `hpkeKey`, which an older
- * client still sends, is optional and ignored when it is a string.
+ * client still sends, is optional and ignored when it is a string. Last,
+ * the listing limit (2026-11-20, spec section 23): in one transaction,
+ * with the pod's row locked, the pod's open listings are counted, and at
+ * LISTING_LIMIT or more nothing is inserted and the answer is 403 listing
+ * limit reached. The insert runs in that transaction.
  */
 export async function createListing(anopod, body) {
   if (!isObject(body)) return refuse(400, BAD_SHAPE);
@@ -83,8 +95,10 @@ export async function createListing(anopod, body) {
   if (!isPrice(price)) return refuse(400, 'invalid price');
 
   const listingId = randomId();
-  await withTransaction((client) =>
-    insertListing(client, {
+  const written = await withTransaction(async (client) => {
+    await lockPod(client, anopod.anopodId);
+    if ((await countOpenListings(client, anopod.anopodId)) >= LISTING_LIMIT) return false;
+    await insertListing(client, {
       listingId,
       chatRoomId: null,
       anopodId: anopod.anopodId,
@@ -93,8 +107,10 @@ export async function createListing(anopod, body) {
       currency,
       country,
       price,
-    }),
-  );
+    });
+    return true;
+  });
+  if (!written) return refuse(403, 'listing limit reached');
   return ok(201, { listingId: toHex(listingId), chatRoomId: null });
 }
 

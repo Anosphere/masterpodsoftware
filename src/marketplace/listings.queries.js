@@ -76,6 +76,19 @@ export async function closeListing(client, listingId) {
 }
 
 /**
+ * How many open listings this pod has, on `client`: the number the listing
+ * limit reads (spec section 23). Selling and buying count together; a
+ * closed listing does not count.
+ */
+export async function countOpenListings(client, anopodId) {
+  const { rows } = await client.query(
+    `SELECT count(*)::int AS count FROM listings WHERE anopod_id = $1 AND status = 'open'`,
+    [anopodId],
+  );
+  return rows[0].count;
+}
+
+/**
  * The listings matching the filters, sorted and paged, each in wire form
  * with the owner's profile. `filters` is { status, side, currency, country,
  * anopodId } (status, side, currency and country null for "any"; anopodId
