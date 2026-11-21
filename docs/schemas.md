@@ -1812,8 +1812,9 @@ wallet spec, section 11.
   code), a `VP8L` chunk or a `VP8X` chunk, each with the size in its own
   place.
 - The label has to be the true one: a PNG sent as `image/jpeg` is refused.
-  The wallet sends a JPEG it has drawn itself, named `image/jpeg`, about
-  1280 pixels on its longer side.
+  The wallet sends a JPEG it has drawn itself, named `image/jpeg`, since
+  2026-11-21 the middle of the picture as a square of at most 320 pixels,
+  and before that about 1280 pixels on its longer side.
 - Security images are not looked into: they are ciphertext. The 4096 is a
   constant, not a setting.
 - Not stopped by this: a true picture built to break the program that
@@ -7844,3 +7845,316 @@ decided:
   README everything but the one route row. In
   `src/anos-accounts/anos-accounts.queries.js` one comment changed and no
   line of code.
+
+## 24. The stored selfies made small (2026-11-21)
+
+Design settled 2026-11-21 in a planning chat (the plan is
+`~/Desktop/Z-TestNet/forclaude/stored-selfies-plan-1.md`, FINAL,
+2026-11-21). Why: the user, 2026-11-20: "I just noticed that the selfie
+pictures are all in the hundreds of kilobytes ... Seeing as they're
+always displayed in small circles anyways, they don't need to be loading
+in big pictures." Since 2026-11-21 the wallet sends a new selfie as the
+middle of the picture, a square of at most 320 pixels (the wallet's spec,
+section 11, the note of that day). That reaches only pods made after the
+wallet's deploy. The selfies stored before it stay as they are: on
+2026-11-21 production held 539 of them, all `image/jpeg`, 116 MB in all,
+226,591 bytes on average, and every page that draws a face loads one.
+This section is the one-time job that draws them again, small. It is a
+script, `scripts/small-selfies/small-selfies.js`, that the operator
+starts by hand on the database server that takes the writes. There is no
+route for it, no table and no line of `db/schema.sql`, no env variable,
+and no change to this server's own packages. The running server does not
+change: under `src` one comment was brought in line, and no line of code.
+The masterpod is not stopped for the job. The wallet, the validators, the
+doormen, the keyholders and the signing servers are not touched. Nothing
+above this section changes except the items in 24.4.
+
+### 24.1 The rule
+
+- One stored picture per pod, as before. No second, smaller copy (the
+  plan's decision 1).
+- Only a selfie wider or higher than 320 pixels is touched (decision 5).
+  It becomes the middle of its picture as a square, as a JPEG named
+  `image/jpeg`: 320 by 320 pixels, or as many pixels as its shorter side
+  has when that is fewer (400 by 300 becomes 300 by 300). A picture is
+  never made larger than it is (decision 2).
+- A selfie of 320 pixels or less on both sides is left exactly as it is.
+- A PNG or WebP larger than 320 is drawn the same way and becomes a JPEG,
+  white under a see-through part.
+- A picture that cannot be read is left exactly as it is and named in the
+  report, and the job does the others.
+- All the pictures are replaced in one go, all or none (decision 4). The
+  table is copied aside first, in the same transaction (decisions 3 and
+  14).
+
+### 24.2 The drawing and the comparing
+
+The pictures are drawn by the npm library `sharp` 0.35.5 (libvips
+8.18.7), with one thread and no cache (decision 13).
+
+The drawing (decision 20). The turn mark of a picture (EXIF orientation)
+is applied, as the wallet does it. The middle square is cut and made
+smaller in one `resize` with `fit: 'cover'`, which filters as the
+wallet's halvings do, with `fastShrinkOnLoad` off. The JPEG is written at
+quality 80, colour at half size both ways (4:2:0), not progressive: the
+tables Chrome writes at 0.8, so a redrawn selfie weighs what the wallet
+in Chrome sends, about 15 KB (decision 6). Nothing else of the old file
+is kept: no EXIF and no colour profile (`sharp` turns the colours into
+sRGB).
+
+The comparing (decision 12). Before a small picture is kept, the job
+compares it with the pod's own original. The original's middle square,
+cut out exactly, and the small picture are each brought to 32 by 32 grey
+points, and the mean difference of the two sets of points may be at most
+4 (of 255). A small picture against its own original comes out near 1. A
+picture turned on its side, mirrored or cut from the wrong place comes
+out at 57 and more (the plan's section 5). The masterpod's own reader,
+`imageSize` (`src/util/images.js`), must also read the small picture as a
+JPEG of the expected side. A picture that fails either check is left
+exactly as it is and named in the report, like one that cannot be read.
+This stands in for a person's look at every face.
+
+### 24.3 The two runs, the copy and the way back
+
+On the database server that takes the writes, as the masterpod user in
+the checkout, after `npm ci --ignore-scripts --no-audit --no-fund` in
+`scripts/small-selfies/` has fetched `sharp`:
+
+```bash
+npm run small-selfies -- look
+npm run small-selfies -- write
+```
+
+`look` reads every selfie, one at a time, draws it, compares it, prints
+the report and writes nothing. `write` does the same and then writes, in
+one transaction: the whole table is copied aside as
+`public_selfies_before_small` (`CREATE TABLE ... AS SELECT * FROM
+public_selfies`); each row to be made small is replaced by an `UPDATE`
+that changes the row only while it still holds the bytes that were read
+(`WHERE anopod_id = $2 AND sha256(image) = $3`, and one row must have
+changed); the rows that differ from the copy are counted and must be as
+many as were to be made small; then `COMMIT`. An error on the way ends in
+`ROLLBACK` and the line `Nothing was kept.`, so the copy and the small
+pictures appear together or not at all. `write` refuses to start while
+the copy of an earlier run is still there. With nothing to make small it
+prints `Nothing to make small.` and makes no copy. Anything but `look` or
+`write` prints the usage line and exits 2.
+
+The report, here with the figures of this Mac's test database:
+
+```
+small selfies: look (nothing is written)
+selfies read: 10
+  to be made small: 10
+  left as they are, already 320 pixels or less: 0
+  left as they are, cannot be read: 0
+  left as they are, the small picture did not match: 0
+weight now: 1,781,286 bytes (1.7 MB), after: 155,605 bytes (0.1 MB)
+the heaviest small picture: 16,777 bytes
+```
+
+Under it stands one line for each row that cannot be read or did not
+match: the username, the first eight characters of the id in hex, and the
+reason. "After" is the small bytes of the rows to be made small plus the
+stored bytes of the rows left as they are. A `write` run then prints
+`copy kept as public_selfies_before_small: <n> rows`, `made small: <n>`
+and `committed`.
+
+The way back and the end of the copy are plain `psql` lines on that
+server, not runs of the script, and they need no `sharp` (decision 15).
+Every picture put back, in one go:
+
+```text
+sudo -u postgres psql -X -v ON_ERROR_STOP=1 -1 -P pager=off -d masterpod -c "update public_selfies s set content_type = b.content_type, image = b.image from public_selfies_before_small b where b.anopod_id = s.anopod_id and (s.image <> b.image or s.content_type <> b.content_type)" -c "select count(*) as selfies, count(b.anopod_id) as in_the_copy, count(*) filter (where s.image = b.image and s.content_type = b.content_type) as same_as_the_copy, pg_size_pretty(sum(octet_length(s.image))) as weight_in_all from public_selfies s left join public_selfies_before_small b using (anopod_id)"
+```
+
+It prints `UPDATE` with the number that was made small, then one row in
+which `same_as_the_copy` equals `in_the_copy`. A second run prints
+`UPDATE 0`. The copy stays until it is removed, and a new `write` run
+needs it gone. The copy removed, once the faces have been seen to be
+right (decision 8); this is the one step that cannot be undone:
+
+```text
+sudo -u postgres psql -X -v ON_ERROR_STOP=1 -P pager=off -d masterpod -c "drop table public_selfies_before_small" -c "select count(*) as tables from pg_tables where schemaname = 'public'"
+```
+
+It prints `DROP TABLE` and the number of tables in `public`, 37 on
+production. While the copy is there that number is 38, and the copy takes
+the disk space the selfies took before, on each database server.
+
+### 24.4 Files, and what is left as it is
+
+- `scripts/small-selfies/small-selfies.js`, new: the script.
+- `scripts/small-selfies/package.json` and
+  `scripts/small-selfies/package-lock.json`, new: the script's own
+  packages, `sharp` 0.35.5 and nothing else (decision 10). npm fills that
+  folder's own `node_modules`, which `.gitignore` already covers and
+  which is removed from the server once the job is done (decision 17).
+  This server's own `dependencies` and its `package-lock.json` are
+  unchanged. The running server never loads `sharp`, and it still never
+  opens a picture: `src/util/images.js` reads a header and nothing else.
+- `package.json`: the line `small-selfies` in `scripts`, after `revoke`.
+- `src/anopods/anopods.service.js`: the comment of `SELFIE_MAX_SIDE`,
+  which said what the wallet sent before 2026-11-21. No line of code.
+- Here: this section, and one sentence of section 11 ("Pictures: no PDFs
+  as evidence, and the selfie check (2026-11-12)") that said the same.
+  `README.md`: one row under "Scripts" and one line under "Layout".
+
+Left as it is:
+
+- `updated_at` of a redrawn row shows when it was redrawn: the table's
+  trigger sets it. After a put-back it shows the time of the put-back.
+  Nothing reads it.
+- The comment on `public_selfies.image` in `db/schema.sql` still says
+  "The image bytes as uploaded". It is left: `db/schema.sql` is not
+  touched by this build.
+- The redraw of every new selfie on the server is still on the list for
+  after production ("selfies redrawn on the server"). Someone who skips
+  the wallet and posts to this server directly can still store a large
+  selfie. The job can be run again at any time: it touches only what is
+  larger than 320 pixels on a side.
+- The recovery selfie and the ID photos are other pictures, locked, and
+  are not touched.
+- The script and its two package files stay in the repo, as
+  `scripts/make-super-seed.js` does.
+
+### 24.5 Notes from the build
+
+#### Build 1, the script (2026-11-21)
+
+Built from `~/Desktop/Z-TestNet/forclaude/stored-selfies-plan-1.md`
+section 1, on main at 78aedc4, the working tree clean. Nothing ran
+against production or any server of the network, and no `.env` was read.
+What the plan left open and how it was decided:
+
+- The number and the date. This section is 24, as the plan names it.
+  BUILD-DATE is 2026-11-21, the day of the build and of the plan's FINAL.
+- The lock file was made by npm with the plan's line, while the folder
+  had no `node_modules`. It holds 32 packages, each with an `integrity`
+  line, none with `hasInstallScript`, all from `registry.npmjs.org`,
+  among them `@img/sharp-linux-x64` 0.35.5 and
+  `@img/sharp-libvips-linux-x64` 1.3.4 (os linux, cpu x64, libc glibc).
+  It is byte for byte the lock file the planning chat had made in its
+  scratch folder.
+- The code. The four functions of the plan's 1.2 (`drawSmall`,
+  `marksOfOriginal`, `marksOfSmall`, `apart`) are in the file letter for
+  letter, and the SQL statements are the plan's. Around them the build
+  wrote `drawAndCompare` (what becomes of one selfie), `readAndDraw` (the
+  read of every row), `report`, `copyAndReplace` (the transaction) and
+  `copyIsThere`.
+- The line of a named row is `<username> (<first eight of the id>):
+  cannot be read: <the first line of sharp's message>`, or `<username>
+  (<first eight of the id>): did not match:` followed by `the small
+  picture is not <n> by <n> pixels` or by `<figure> apart from the
+  original, the limit is 4`. A selfie with no row in `anopods` is named
+  `no anopod row`.
+- With nothing to be made small, the report's last line reads `the
+  heaviest small picture: 0 bytes`.
+- The report goes to standard output. The usage line, the refusal while
+  the copy is there, and an error with its closing line go to standard
+  error, as the other scripts print theirs.
+- An error before the write's transaction, in either run (the database
+  cannot be reached or read), prints the error's message and `Nothing was
+  written.`, exit 1. The plan names only errors after `BEGIN`.
+- Found in the build, in a scratch schema: when the connection was lost
+  in the middle of the write, the process ended with Node's "Unhandled
+  'error' event" and never printed `Nothing was kept.` The pool takes its
+  error listener off a client it hands out, and `pg` emits `error` on the
+  client besides failing the query. So `copyAndReplace` puts an empty
+  `error` listener on its client, and a `ROLLBACK` that fails is passed
+  over: on a lost connection PostgreSQL ends the open transaction itself.
+  With these two a lost connection ends as the plan's 1.2 and 2.5 say:
+  the error's message, `Nothing was kept.`, exit 1, and nothing is kept.
+- A limit, left as the plan has it. An error at the `COMMIT` itself also
+  prints `Nothing was kept.` If the connection is lost in that very
+  moment, the script cannot know whether PostgreSQL kept the transaction.
+  The count line of the plan's 2.6 says which it is, and a new `write`
+  run refuses while the copy is there, so nothing is lost either way.
+- Seen in passing, not changed. This server's own `withTransaction`
+  (`src/db/transaction.js`) and the scripts `appoint.js`, `revoke.js` and
+  `make-super-seed.js` take a client out of the pool the same way, with
+  no `error` listener. Tried with a throwaway file on this Mac: when the
+  connection is cut while a transaction of `withTransaction` is open, the
+  process ends with the same "Unhandled 'error' event". For the running
+  server that is the end of the process, and systemd starts it again. Put
+  to the user as a fix or a line on the after-production list; nothing
+  was changed for it.
+- Checks (1.5), on Node 24.22.0, npm 11.19.1 and this Mac's PostgreSQL
+  17.11. `node --check` on the script, clean. `npm ci --ignore-scripts
+  --no-audit --no-fund` in the folder: `added 6 packages`, 19 MB, `sharp`
+  0.35.5 with libvips 8.18.7; `git status --short` listed the three new
+  files and no `node_modules`. Then the whole job for real on this Mac's
+  test database `masterpod` (10 selfies of 1280 by 720, 1,781,286 bytes,
+  36 tables). The script was started from the repo's folder with the
+  settings on the line itself (`PGHOST=/tmp PGDATABASE=masterpod
+  PGUSER=codex PGPASSWORD=x PGOPTIONS='-c role=masterpodsoftware'`). The
+  lines of the plan's 2.6 and 3 were taken out of the plan file by a
+  script, with `psql -X -h /tmp` in place of `sudo -u postgres psql -X`.
+  In the plan's order: a list of the ten rows (id, type, SHA-256 of the
+  picture, `created_at`); `look`: 10 read, 10 to be made small, 0 in the
+  three other counts, weight now 1,781,286 bytes, after 155,605, the
+  heaviest 16,777; `write`: the same report, a copy of 10 rows, 10 made
+  small, committed; the count line: 10 selfies, 152 kB, heaviest 16777, 0
+  over 40 KB, 10 made small, 10 in the copy, 1740 kB the copy, with 37
+  tables and the copy owned by `masterpodsoftware`; `write` again: the
+  refusal, exit 1; the put-back line: `UPDATE 10`, 10 the same as the
+  copy, the ten rows equal to the list, and every byte of every picture
+  equal to a dump taken before the write; the put-back line again:
+  `UPDATE 0`; `look` again: 10 to be made small; the remove line: `DROP
+  TABLE`, 36. These are the figures the plan expects, each one. The test
+  database ended with every picture as it started, 36 tables and no copy.
+  `updated_at` of the ten rows shows the trial's time, as the plan says.
+  The trial ran twice with the same output: once before the fix of the
+  lost connection and two comment edits, and once on the file as it is.
+- Beyond 1.5, with nothing kept. The parts of the script that ten good
+  selfies cannot reach were run for real in a scratch schema of the same
+  database, owned by `masterpodsoftware`, with a copy of the selfie table
+  and its trigger and seventeen made-up rows, the search path set in
+  `PGOPTIONS`. `public` was only read. Of 27 rows, 22 were made small, 3
+  were left as already small (200 by 150, 320 by 240, 320 by 320) and 2
+  were named as cannot be read (words in place of a picture: `Input
+  buffer contains unsupported image format`; a JPEG cut off at two
+  thirds: `VipsJpeg: premature end of JPEG image`). 321 by 321 became 320
+  by 320, 400 by 300 became 300 by 300, 1280 by 200 became 200 by 200. An
+  upright 720 by 1280, a phone's 3024 by 4032 and a 4096 by 4096 became
+  320 by 320. A PNG and a WebP became JPEGs, a see-through PNG got white
+  under it, a JPEG with the turn mark 6 came out turned with no mark, and
+  a selfie with no `anopods` row was drawn. Every small file was a
+  baseline JPEG, 4:2:0, with no EXIF and no colour profile, and
+  `updated_at` moved on the changed rows only. The put-back line gave
+  `UPDATE 22` and every row as before, the types of the PNG and WebP rows
+  among them. Then four made-up faults in the middle of the write, each
+  by a trigger on the scratch table: an `UPDATE` that changes no row
+  (`<username> (<id>): the stored selfie is no longer the one that was
+  read`), one that leaves the old picture in (`21 selfies differ from the
+  copy, where 22 were to be made small`), an error of the database, and
+  the connection cut by `pg_terminate_backend` while an `UPDATE` ran.
+  Each ended with its message, `Nothing was kept.` and exit 1, with no
+  copy and every row as before. Also: a row deleted between the list of
+  ids and its own read was skipped; a `write` run with nothing to make
+  small printed `Nothing to make small.` and made no copy; a database
+  that cannot be reached gave its message and `Nothing was written.`; and
+  a scratch copy of the script with the limit lowered to 1.3 named three
+  rows as did not match (two test selfies at 1.33 and 1.32, the 4096 by
+  4096 noise at 1.65). The scratch schema was dropped, and no file of
+  these checks is in the repo.
+- Not tried by the build. Nothing on a server and nothing on Linux:
+  `sharp` there is the same library in another build, and the look run of
+  the plan's 2.4 is its first run there. `npm run small-selfies` itself
+  was not started on this Mac, since it reads `.env`; `npm run` with no
+  name lists the new entry. No change of leader and no PgBouncer were in
+  the trial: the cut connection was a direct one to this Mac's
+  PostgreSQL.
+- Places the plan does not name that this step left out of date, left as
+  they are and put to the user. In the wallet's spec, the note of
+  2026-11-21 says the two masterpod sentences are "Still as they are";
+  they are brought in line here. The records folder's two lists of this
+  server's commands (`rules/configuration.md` and `rules/log_lines.md`)
+  do not name the new script, as they do not name `appoint` and `revoke`.
+  Older than this step: the after-production details file of the selfies
+  quotes two line numbers of this file that were already off.
+- Not touched: every file under `src` but the one comment,
+  `db/schema.sql`, this server's own `package-lock.json`,
+  `src/config/env.js`, `.example.env`, `.gitignore` and the other
+  scripts; in `package.json` everything but the one line; in the README
+  everything but the row and the line.

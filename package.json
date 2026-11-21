@@ -12,7 +12,8 @@
     "db:reset": "sh scripts/reset-db.sh",
     "make-super-seed": "node --env-file=.env scripts/make-super-seed.js",
     "appoint": "node --env-file=.env scripts/appoint.js",
-    "revoke": "node --env-file=.env scripts/revoke.js"
+    "revoke": "node --env-file=.env scripts/revoke.js",
+    "small-selfies": "node --env-file=.env scripts/small-selfies/small-selfies.js"
   },
   "engines": {
     "node": ">=22"
