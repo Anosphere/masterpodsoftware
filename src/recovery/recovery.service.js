@@ -1,3 +1,5 @@
+import { raiseAlert } from '../alerts/alert-events.js';
+import { kickAlertSender } from '../alerts/alert-sender.js';
 import { adoptRecoveryPasskey, findById as findAnopod, replaceBackupCode } from '../anopods/anopods.queries.js';
 import { profileWithSelfie } from '../anopods/anopods.service.js';
 import { countAccountsOf, findAccount, setBreakGlassBlob } from '../anos-accounts/anos-accounts.queries.js';
@@ -124,7 +126,9 @@ function isContactPhone(value) {
  * POST /open-recovery-case. The seven checks of spec 12.4.2 and an eighth
  * (spec 19.3: the credential id is no added passkey's), then one
  * transaction: the challenge consumed, the case, its recovery pod and the
- * opened event. The person gives a contact email and a contact phone, both
+ * opened event and, since 2026-11-21 (spec section 25), the alert to the
+ * pod's own emails and phones. The person gives a contact email and a
+ * contact phone, both
  * (2026-11-12; from 2026-11-11 until then at least one of the two was
  * enough): a moderator texts first, and the email is there when a text is
  * not possible.
@@ -211,6 +215,7 @@ export async function openRecoveryCase(body) {
         hybridKeyBlob,
       });
       await insertEvent(client, caseId, 'opened', null, {});
+      await raiseAlert(client, { anopodId, kind: 'recoveryCaseOpened', details: {}, reference: caseId });
       return true;
     });
     if (!written) return refuse(401, 'unknown or expired challenge');
@@ -220,6 +225,7 @@ export async function openRecoveryCase(body) {
     }
     throw err;
   }
+  kickAlertSender();
 
   return ok(201, { caseId: toHex(caseId), status: 'open', ephemeralExpiresAt: ephemeralExpiresAt.toISOString() });
 }
@@ -695,7 +701,8 @@ export async function receiveRecoveryShare(caseIdHex, body) {
  * one transaction with the case locked: the challenge consumed, the
  * recovery passkey copied onto the pod with newBlob1 and the live session
  * ended (the lost device's keys die now), the pod's added passkeys deleted,
- * the recovered event.
+ * the recovered event. The finish of a recovery deletes the pod's added
+ * passkeys and leaves its alert rows alone (spec section 25).
  */
 export async function recoverWithBackupCode(body) {
   // 1. Shape.
