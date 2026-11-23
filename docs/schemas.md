@@ -557,6 +557,10 @@ case, never both. For a live database the case chat block at the end of
 idempotent; the comments of the two columns are in that block only. There
 is no index on `case_id`: nothing reads a room by its case.
 
+The index on `(type, created_at DESC)` no longer gives the order of
+`/list-public-chat-rooms` since 2026-11-22: the list sorts by the number
+of members (section 26).
+
 ### chat_room_members, chat_hpke
 
 ```sql
@@ -1184,10 +1188,17 @@ carries none.
 
 ### POST /list-public-chat-rooms (setup)
 
-Body: `{ limit, offset }`, optional, defaults 50 (max 200) and 0.
+Body: `{ limit, offset, search }`, all optional; `limit` defaults to 50
+(max 200) and `offset` to 0. `search` (2026-11-22, section 26) is a word
+of at most 100 characters (`400 invalid search` for a longer one or for a
+value that is not a string): the answer then holds only the rooms whose
+name holds the word anywhere, capital and small letters alike. The spaces
+around the word are taken off, and an empty word means no search.
 
 Answer: `200 { rooms: [ { chatRoomId, name, creator: profile, memberCount,
-createdAt } ] }`, type `public` only, newest first.
+createdAt } ] }`, type `public` only. Since 2026-11-22 (section 26) the
+rooms with the most members come first, then the newest; until then the
+list was newest first.
 
 ### POST /list-messages (setup)
 
@@ -9503,3 +9514,241 @@ Mac. What the plan left open and how it was decided:
   plain text (decision 16); and "Notifications for case events" among
   what is not built, in 12.9 here and under "Deferred, by decision" in
   `README.md`, though the opening of a case is now told to the pod.
+
+## 26. Public rooms: a search, and the biggest first (2026-11-22)
+
+Design settled 2026-11-22 in a talking chat and its planning (the plan is
+`~/Desktop/Z-TestNet/forclaude/public-rooms-plan-1.md`, FINAL,
+2026-11-22). Why: `/list-public-chat-rooms` answered the public rooms
+newest first and took no search word, and the wallet's tab "Find public
+rooms" showed the 50 newest rooms and no others. The user, 2026-11-22:
+"1. Public rooms are searchable. 2. Upload an image for the public room.
+3. Should we make it so that public rooms have to have unique names.
+Somehow facebook doesn't have a problem with this. I'm on the fence. One
+issue is that like 20 people have already made a room called anoTH. So
+now people are asking for public group names to be unique." The talk's
+answer, which the user took: names stay free; a search, the biggest rooms
+first and a picture tell rooms of one name apart, and a hint shows the
+rooms that exist before another is made. The plan has five steps. The
+search and the order are two repos in order: this server (this section,
+step 1 of the plan: one read changes) and the wallet (its spec, step 2:
+the tabs of New chat in a new order, a search box and Show more on Find
+public rooms, and the hint under the name box of New public room). The
+picture is steps 3 and 4 (this server, then the wallet), and the record
+files are step 5. This server goes first (the plan's section 6): a wallet
+of step 2 against a server of before narrows nothing, because that server
+does not read the word. With this server alone deployed, a wallet of
+before shows the 50 biggest rooms where it showed the 50 newest, and
+nothing else changes for it. There is no schema step, no env variable, no
+npm package and no new route. The validators, the doormen, the
+keyholders, the signing servers and the wallet's proxy are not touched.
+Nothing above this section changes except the items in 26.4.
+
+### 26.1 The rule
+
+- A public room's name stays free: two rooms may carry one name (the
+  plan's decision 3). The user's "1. Yes" to the talk's first question.
+  Nothing makes a name unique, before this section or after it.
+- With no search word the rooms with the most members come first, not
+  the newest (decision 5). The user's "3. Yes."
+- The search is this server's (decision 8). `/list-public-chat-rooms`
+  takes one more optional field, `search`. A room fits when its name
+  holds the search word anywhere, capital and small letters alike. That
+  also suits Thai, which is written without spaces between words. `%`
+  and `_` mean themselves. The word is at most 100 characters, the
+  length of a name; the spaces around it are taken off, and an empty
+  word means no search.
+- The order is: the most members first, then the newest, then the room's
+  id (decision 9). It is the same with and without a search word.
+
+### 26.2 The read
+
+`listPublicRooms` (`src/chat/chat.service.js`) checks the body in this
+order: it is an object (`400 bad request shape`), `limit` (`400 invalid
+limit`), `offset` (`400 invalid offset`) and last, new, `search` (`400
+invalid search`). The checks of before stay in front, so a bad limit is
+still told as a bad limit, also beside a bad search word. `limit` and
+`offset` are as they were: 50 by default and at most 200, and 0.
+
+`searchOption`, new in that file, reads the word:
+
+- no `search`, or null: no search;
+- a value that is not a string: `400 invalid search`;
+- the spaces around the word are taken off (`trim`);
+- more than 100 characters after that (`NAME_MAX_CHARS`, the length of a
+  name): `400 invalid search`. Characters are counted as
+  `/create-chat-room` counts a name's, so 100 Thai letters fit;
+- an empty word, or one of spaces alone: no search.
+
+Then the one statement of `listPublicRooms` (`src/chat/chat.queries.js`).
+It takes the word as its third parameter, null for no search:
+
+```sql
+SELECT r.chat_room_id, r.name, r.created_at,
+       (SELECT count(*)::int FROM chat_room_members m WHERE m.chat_room_id = r.chat_room_id) AS member_count,
+       ${PROFILE_COLUMNS}
+FROM chat_rooms r
+JOIN anopods a ON a.anopod_id = r.creator_anopod_id
+WHERE r.type = 'public'
+  AND ($3::text IS NULL OR strpos(lower(r.name), lower($3::text)) > 0)
+ORDER BY member_count DESC, r.created_at DESC, r.chat_room_id
+LIMIT $1 OFFSET $2
+```
+
+`${PROFILE_COLUMNS}` is the creator's profile, as before. Two things are
+new against the statement of before: the line that begins `AND`, and
+`member_count DESC` in front of the two sort keys of before. The answer
+has the shape of before, `200 { rooms: [ { chatRoomId, name, creator:
+profile, memberCount, createdAt } ] }`, and with no room that fits it is
+`200 { rooms: [] }`.
+
+Why the names are compared as text: `strpos` asks whether the name holds
+the word, letter for letter, after `lower` has made both small. The word
+is never read as a pattern. With `LIKE` or `ILIKE` a `%` or a `_` in the
+typed word would stand for other letters, so "100%" would also find a
+room called "1000 anos", unless the word were escaped first. Here nothing
+needs escaping, and `%` and `_` mean themselves. The word travels as a
+parameter, never inside the statement's text, and `$3::text` gives that
+parameter its type.
+
+### 26.3 What is left as it is
+
+- Look-alike names stay possible. The rooms called anoTH, about twenty
+  by the user's count, all stay; the biggest now stands first.
+- A room whose only member is its creator stays in the list for good, at
+  its end.
+- The search compares letters as they were typed. "anoth" finds "anoTH".
+  Thai typed in another order of marks, or a letter with an accent typed
+  without it, is not found.
+- The number of members is counted for every public room at every read.
+  That is quick for hundreds or a few thousand rooms. No index is added,
+  and the index of `chat_rooms` on `(type, created_at DESC)` no longer
+  gives the list's order (section 4).
+- The order moves when a room gains or loses a member between two reads.
+  The wallet's Show more (the plan's step 2) leaves out a room that is
+  already shown; it can miss a room that moved up past the last row
+  shown. The next first read shows it.
+
+### 26.4 Files
+
+- `src/chat/chat.queries.js`: `listPublicRooms` takes `search` as its
+  third parameter, null by default, keeps the rooms whose name holds it
+  and sorts by the number of members first; its comment says so.
+- `src/chat/chat.service.js`: `searchOption`, new, after `integerOption`;
+  in `listPublicRooms` the check of `search` after the check of `offset`,
+  its refusal, and the word handed on to the query; the function's
+  comment names the new field and the new order.
+- Here: section 4 (`### chat_rooms`, one sentence), section 5 (`### POST
+  /list-public-chat-rooms (setup)`, the body's `search` with its refusal,
+  and the order) and this section. `README.md`: the route row of
+  `/list-public-chat-rooms`.
+
+Nothing else in existing code changes: the router, the handlers,
+`/create-chat-room` and every other chat route, `db/schema.sql` and
+`.example.env` are as they were. No env variable, no npm package, no new
+route.
+
+### 26.5 Notes from the build
+
+#### Build 1, the masterpod (2026-11-22)
+
+Built from `~/Desktop/Z-TestNet/forclaude/public-rooms-plan-1.md` section
+1, on main at 93e8f43, the working tree clean. No new npm package, no
+test script and no rig (none was asked for). Nothing was applied to any
+database of the network: there is no schema step. What the plan left open
+and how it was decided:
+
+- The number and the date. This section is 26, the next free number on
+  the build day. BUILD-DATE is 2026-11-22, the day of the build and of
+  the plan's FINAL.
+- The code. The statement of `listPublicRooms`, the function
+  `searchOption`, and in the service's `listPublicRooms` the two new
+  lines and the changed call are the plan's, letter for letter, with
+  2026-11-22 and 26 where the plan's comments say BUILD-DATE and N.
+- The comments. The comment of the query's `listPublicRooms` and the
+  comment of `searchOption` are the plan's blocks. The comment above the
+  service's `listPublicRooms` is given by the plan in words. It became a
+  block comment that reads: "POST /list-public-chat-rooms. Body { limit,
+  offset, search }, all optional; the rooms with the most members first,
+  and `search` keeps the rooms whose name holds it (2026-11-22, spec
+  section 26)."
+- Where the new lines sit. `searchOption` stands directly after
+  `integerOption`, in front of `caseOf`. The check of `search` stands
+  directly after the check of `offset`, in front of the empty line and
+  the `return`. It is the last check, so the three refusals of before
+  come first, as before.
+- Here and in the README. In section 4 the sentence is a paragraph of its
+  own at the end of `### chat_rooms`. In section 5 the entry of
+  `/list-public-chat-rooms` has no "Checks" paragraph, before or now: the
+  new refusal stands in brackets in the "Body" paragraph, the way the
+  entry of `/list-messages` names `400 invalid beforePosition`. The
+  README row is the plan's sentence with the date.
+- Checks (1.4). `node --check` on the two changed source files
+  (`src/chat/chat.queries.js`, `src/chat/chat.service.js`), clean, on
+  Node 24.22.0. Then the statement by psql, on a PostgreSQL 17.11 that
+  was started for this check alone: a data folder of its own in the build
+  chat's scratch folder, listening on 127.0.0.1 port 58731 and nowhere
+  else, with no socket file. This Mac's own PostgreSQL on port 5432 was
+  not touched. One transaction, rolled back: `CREATE SCHEMA
+  scratch_public_rooms`, the search path set to it (`SET LOCAL`), and
+  `db/schema.sql` read into it, which made 41 tables. Into them went
+  three throwaway pods (the statement joins the creator's row), six
+  public rooms and one private room, and ten member rows: "anoTH" (the
+  oldest, 3 members), "AnoTH traders" (2), a second "anoTH" (1), "100%
+  anos" (1), "ห้องคนไทย" (1), "other" (1, the newest of the six), and
+  the private room, newer than all of them. The statement was read out of
+  `src/chat/chat.queries.js` by a small script, with the profile columns
+  of `src/anopods/anopods.queries.js` put in, so what ran is what the
+  code sends. It was prepared with untyped parameters (`PREPARE`), as
+  `pg` sends them, and the server took the three as `bigint`, `bigint`
+  and `text`. 15 results, none bad. With no search word: all six, "anoTH"
+  with 3 first, "AnoTH traders" with 2 next, then the four rooms of one
+  member with the newest first ("other", "ห้องคนไทย", "100% anos",
+  "anoTH"), and the private room in no answer. "anoth" gave three, "%"
+  gave one ("100% anos"), "_" gave none, "คนไทย" gave one. `limit` 2 at
+  `offset` 0, 2 and 4 gave six different rooms, in the order of the whole
+  list, and at `offset` 6 none. After the rollback that database held no
+  scratch schema and no table. The scratch PostgreSQL was stopped
+  afterwards.
+- Two things beyond 1.4, with nothing kept. First a comparison. The
+  planning chat had tried this step in a throwaway copy of 93e8f43, with
+  the code read out of the plan file by a script (the plan's section 9).
+  The build made that copy again with the same script and compared the
+  two source files with the working tree by `diff`: they differ in
+  comment lines only, in three places (the date and the number where the
+  copy has the words BUILD-DATE and N, twice, and the comment above the
+  service's `listPublicRooms`, which the plan gives in words). No other
+  file of `src` or `db` differs from that copy. Second, the planning
+  chat's check of this step ran again, against a copy that holds the two
+  built files: the real `createRoom` and `listPublicRooms`, called from a
+  script with the pool on a database of the same scratch PostgreSQL that
+  holds the tables of `db/schema.sql`. 21 results, none bad, the same 21
+  as in the plan's section 9. Among them, what psql cannot show: the
+  word "ANOTH" with spaces around it finds the three rooms that "anoth"
+  finds; an empty word, a word of spaces and null each give all six; a
+  word of 100 characters and one of 100 Thai letters are taken; 101
+  characters and a number each give `400 invalid search`; a bad `limit`
+  beside a bad `search` is told as `400 invalid limit`. That run stops
+  before its first query unless the pool's host and port are the scratch
+  PostgreSQL's: this server's default port is 5432, which on this Mac is
+  the user's own database.
+- Not tried by the build. No server was booted, no request was signed and
+  the route was not called over HTTP. The search on the live wallet is
+  the user's (the plan's section 6). How long the read takes with
+  thousands of public rooms was not measured. A capital letter outside A
+  to Z was not tried on a database like production's: `lower` goes by the
+  database's locale. The scratch database (`en_US.UTF-8`) made "É" and
+  "Ω" small, and under the collation "C" it makes only A to Z small.
+  Production's database was made with the locale `C.UTF-8`, by its build
+  paper (`Z-TestNet/production_specs_designs`), and this Mac has no such
+  locale.
+- Places the plan does not name that this step left out of date: none
+  found. Looked through: every place here, in `README.md`, in
+  `docs/build-plan.md`, in `src`, in `db/schema.sql` and in `scripts`
+  that names `/list-public-chat-rooms`, `listPublicRooms`, a public
+  room, the index of `chat_rooms`, a search, or a list that is "newest
+  first".
+- Not touched: `chat.router.js`, `chat.handlers.js`, every other
+  function of the two changed files, every other feature folder,
+  `db/schema.sql`, `package.json`, `.example.env`, the scripts; in the
+  README everything but the one route row.
