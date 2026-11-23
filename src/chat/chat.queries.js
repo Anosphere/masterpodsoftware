@@ -2,13 +2,15 @@ import { PROFILE_COLUMNS, profileFromRow } from '../anopods/anopods.queries.js';
 import { pool } from '../db/pool.js';
 import { trimDecimal } from '../marketplace/listings.queries.js';
 import { toHex } from '../util/ids.js';
+import { encodeImage } from '../util/images.js';
 
 /**
- * SQL for the chat tables: chat_rooms, chat_room_members with chat_hpke,
- * chat_room_invites, chat_room_join_requests and chat_room_messages. Ids
- * and keys are Buffers, matching the BYTEA columns. Reads take an optional
- * `db` (a client inside a transaction; the pool by default); writes take
- * the transaction's client first.
+ * SQL for the chat tables: chat_rooms, chat_room_pictures (since
+ * 2026-11-22), chat_room_members with chat_hpke, chat_room_invites,
+ * chat_room_join_requests and chat_room_messages. Ids and keys are
+ * Buffers, matching the BYTEA columns. Reads take an optional `db` (a
+ * client inside a transaction; the pool by default); writes take the
+ * transaction's client first.
  */
 
 // ---------------------------------------------------------------------------
@@ -77,6 +79,34 @@ export async function roomAboutListingBy(listingId, creatorAnopodId, db = pool) 
     listingId: row.listing_id,
     createdAt: row.created_at,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Room pictures
+// ---------------------------------------------------------------------------
+
+/**
+ * Writes a public room's picture on `client` (2026-11-22, spec section 27):
+ * its first one, or another in place of the one it has. Returns when the
+ * row last changed, which the room lists hand out as pictureAt.
+ */
+export async function upsertRoomPicture(client, chatRoomId, contentType, bytes) {
+  const { rows } = await client.query(
+    `INSERT INTO chat_room_pictures (chat_room_id, content_type, image) VALUES ($1, $2, $3)
+     ON CONFLICT (chat_room_id) DO UPDATE SET content_type = EXCLUDED.content_type, image = EXCLUDED.image
+     RETURNING updated_at`,
+    [chatRoomId, contentType, bytes],
+  );
+  return rows[0].updated_at;
+}
+
+/** A room's picture as { picture: { contentType, image }, pictureAt }, or null when it has none (2026-11-22, spec section 27). */
+export async function findRoomPicture(chatRoomId, db = pool) {
+  const { rows } = await db.query(
+    'SELECT content_type, image, updated_at FROM chat_room_pictures WHERE chat_room_id = $1',
+    [chatRoomId],
+  );
+  return rows.length === 0 ? null : { picture: encodeImage(rows[0]), pictureAt: rows[0].updated_at.toISOString() };
 }
 
 // ---------------------------------------------------------------------------
@@ -336,13 +366,15 @@ function listingFromRow(row) {
  * gives it, and, for a room about an attestor case (chat_rooms.case_id: a
  * private room made with a caseId), the case's id and its kind ('trade',
  * 'dispute' or 'recovery'), both null on any other room: { chatRoomId,
- * type, name, listingId, listing, caseId, caseKind, creatorAnopodId,
- * hpkeKey, members, invited, lastMessage, lastPosition, createdAt }.
+ * type, name, pictureAt, listingId, listing, caseId, caseKind,
+ * creatorAnopodId, hpkeKey, members, invited, lastMessage, lastPosition,
+ * createdAt }. `pictureAt` is when the room's picture was last set, null
+ * for a room without one (2026-11-22).
  */
 export async function listRoomsFor(anopodId) {
   const { rows } = await pool.query(
     `SELECT r.chat_room_id, r.type, r.name, r.creator_anopod_id, r.created_at, h.hpke_key,
-            r.listing_id, ${ROOM_LISTING_COLUMNS}, r.case_id, r.case_kind,
+            r.listing_id, ${ROOM_LISTING_COLUMNS}, r.case_id, r.case_kind, rp.updated_at AS picture_at,
             lm.message_id AS last_message_id, lm.position AS last_position,
             lm.sender_anopod_id AS last_sender_anopod_id, lm.message AS last_message,
             lm.created_at AS last_created_at,
@@ -364,6 +396,7 @@ export async function listRoomsFor(anopodId) {
      JOIN chat_hpke h ON h.chat_room_id = cm.chat_room_id AND h.anopod_id = cm.anopod_id
      LEFT JOIN listings l ON l.listing_id = r.listing_id
      LEFT JOIN anopods la ON la.anopod_id = l.anopod_id
+     LEFT JOIN chat_room_pictures rp ON rp.chat_room_id = r.chat_room_id
      LEFT JOIN LATERAL (SELECT msg.message_id, msg.position, msg.sender_anopod_id, msg.message, msg.created_at
                           FROM chat_room_messages msg
                          WHERE msg.chat_room_id = r.chat_room_id
@@ -377,6 +410,7 @@ export async function listRoomsFor(anopodId) {
     chatRoomId: toHex(row.chat_room_id),
     type: row.type,
     name: row.name,
+    pictureAt: row.picture_at === null ? null : row.picture_at.toISOString(),
     listingId: toHex(row.listing_id),
     listing: listingFromRow(row),
     caseId: toHex(row.case_id),
@@ -457,17 +491,20 @@ export async function listJoinRequestsForCreator(creatorAnopodId) {
 /**
  * Public rooms, the ones with the most members first, then the newest
  * (2026-11-22, spec section 26; newest first until then): { chatRoomId,
- * name, creator: profile, memberCount, createdAt }. `search`, when it is
- * not null, keeps the rooms whose name holds it anywhere, capital and
- * small letters alike. It is compared as text, so % and _ mean themselves.
+ * name, pictureAt, creator: profile, memberCount, createdAt }. `search`,
+ * when it is not null, keeps the rooms whose name holds it anywhere,
+ * capital and small letters alike. It is compared as text, so % and _
+ * mean themselves. `pictureAt` is when the room's picture was last set,
+ * null for a room without one (2026-11-22, spec section 27).
  */
 export async function listPublicRooms(limit, offset, search = null) {
   const { rows } = await pool.query(
-    `SELECT r.chat_room_id, r.name, r.created_at,
+    `SELECT r.chat_room_id, r.name, r.created_at, rp.updated_at AS picture_at,
             (SELECT count(*)::int FROM chat_room_members m WHERE m.chat_room_id = r.chat_room_id) AS member_count,
             ${PROFILE_COLUMNS}
      FROM chat_rooms r
      JOIN anopods a ON a.anopod_id = r.creator_anopod_id
+     LEFT JOIN chat_room_pictures rp ON rp.chat_room_id = r.chat_room_id
      WHERE r.type = 'public'
        AND ($3::text IS NULL OR strpos(lower(r.name), lower($3::text)) > 0)
      ORDER BY member_count DESC, r.created_at DESC, r.chat_room_id
@@ -477,6 +514,7 @@ export async function listPublicRooms(limit, offset, search = null) {
   return rows.map((row) => ({
     chatRoomId: toHex(row.chat_room_id),
     name: row.name,
+    pictureAt: row.picture_at === null ? null : row.picture_at.toISOString(),
     creator: profileFromRow(row),
     memberCount: row.member_count,
     createdAt: row.created_at.toISOString(),

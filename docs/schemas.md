@@ -41,7 +41,10 @@ backup code, backup code rotation, several passkeys, several sessions).
   plaintext. Since 2026-11-12 a selfie is looked into (section 11, the
   pictures note): its bytes must begin as a picture of its content type
   does, and the width and the height its own header names must each be at
-  most 4096 pixels. A security image cannot be looked into.
+  most 4096 pixels. A security image cannot be looked into. Since
+  2026-11-22 (section 27) a public room's picture is plaintext like a
+  selfie and is looked into the same way, with limits of its own: at most
+  320 pixels wide and high, and at most 100,000 bytes.
 - Every table has `created_at`, and `updated_at` with the `set_updated_at`
   trigger unless the rows never change (then `created_at` only). (Since
   2026-11-19, section 21, one table is an exception: a `chat_room_members`
@@ -639,6 +642,25 @@ CREATE INDEX IF NOT EXISTS chat_room_messages_room_position_idx ON chat_room_mes
 drives pagination (`afterPosition`). The sender is the verified caller;
 there is no per-message signature, by decision.
 
+### chat_room_pictures
+
+```sql
+CREATE TABLE IF NOT EXISTS chat_room_pictures (
+  chat_room_id BYTEA       PRIMARY KEY CHECK (octet_length(chat_room_id) = 32),
+  content_type TEXT        NOT NULL CHECK (content_type IN ('image/jpeg', 'image/png', 'image/webp')),
+  image        BYTEA       NOT NULL CHECK (octet_length(image) BETWEEN 1 AND 100000),
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+```
+
+The picture of a public room (added 2026-11-22, section 27): at most one
+row per room, in the clear like the room's name, set by the room's creator
+with /set-chat-room-picture and handed out by /get-chat-room-picture;
+`updated_at` is when the picture was last set, which the two room lists
+hand out as `pictureAt`. The table is the room picture block, the last
+thing in `db/schema.sql`, with its trigger and its comments.
+
 ### listings
 
 ```sql
@@ -1151,7 +1173,7 @@ Answer:
 
 ```json
 {
-  "rooms": [ { "chatRoomId", "type", "name", "listingId", "listing", "caseId", "caseKind", "creatorAnopodId", "hpkeKey",
+  "rooms": [ { "chatRoomId", "type", "name", "pictureAt", "listingId", "listing", "caseId", "caseKind", "creatorAnopodId", "hpkeKey",
                "members": [ { "anopodId", "username", "seenPosition" } ], "invited": [ { "anopodId", "username" } ],
                "lastMessage", "lastPosition", "createdAt" } ],
   "invites": [ { "inviteId", "chatRoomId", "type", "name", "listingId", "listing", "caseId", "caseKind", "from": profile, "createdAt" } ],
@@ -1185,6 +1207,10 @@ Each entry of `members` carries `seenPosition` (2026-11-19, section 21),
 the highest message position that member has seen in the room, as a
 number, 0 until that member's wallet reports one; an entry of `invited`
 carries none.
+Each room carries `pictureAt` (2026-11-22, section 27): when the room's
+picture was last set, an ISO 8601 string, null for a room without one.
+Only a public room has a picture, and the picture itself is not in this
+answer: /get-chat-room-picture hands it out.
 
 ### POST /list-public-chat-rooms (setup)
 
@@ -1195,10 +1221,40 @@ value that is not a string): the answer then holds only the rooms whose
 name holds the word anywhere, capital and small letters alike. The spaces
 around the word are taken off, and an empty word means no search.
 
-Answer: `200 { rooms: [ { chatRoomId, name, creator: profile, memberCount,
-createdAt } ] }`, type `public` only. Since 2026-11-22 (section 26) the
-rooms with the most members come first, then the newest; until then the
-list was newest first.
+Answer: `200 { rooms: [ { chatRoomId, name, pictureAt, creator: profile,
+memberCount, createdAt } ] }`, type `public` only. Since 2026-11-22
+(section 26) the rooms with the most members come first, then the newest;
+until then the list was newest first. Since 2026-11-22 (section 27) each
+room carries `pictureAt`: when its picture was last set, an ISO 8601
+string, null for a room without one.
+
+### POST /set-chat-room-picture (setup)
+
+Body: `{ chatRoomId, picture: { contentType, image } }` (2026-11-22,
+section 27): the room, and its picture in the form of section 1.
+
+Checks: `400 bad request shape`; the room exists and the caller is its
+creator (`403 only the creator sets the picture`, also for a room that
+does not exist); the room is `public` (`400 only a public room has a
+picture`); the picture is one of the three types, at most 100,000 bytes,
+begins as a picture of its type does and is at most 320 pixels wide and
+high (`400 invalid picture: <why>`).
+
+Writes: `chat_room_pictures`, the room's one row: its first picture, or
+another in place of the one it has.
+
+Answer: `200 { chatRoomId, pictureAt }`, `pictureAt` when the picture was
+last set, as the two room lists then give it.
+
+### POST /get-chat-room-picture (setup)
+
+Body: `{ chatRoomId }` (2026-11-22, section 27).
+
+Checks: `400 bad request shape`; the room exists and is `public` (`404
+room not found`); it has a picture (`404 no picture`). The caller need not
+be a member: the picture is as public as the room's name.
+
+Answer: `200 { chatRoomId, picture: { contentType, image }, pictureAt }`.
 
 ### POST /list-messages (setup)
 
@@ -1911,6 +1967,9 @@ wallet spec, section 11.
   `image must be at most 4096 pixels wide and high`. Why: the selfie is
   the one picture stored in the clear and shown to everyone, and a small
   file can name a huge picture that every phone then has to unpack.
+  (Since 2026-11-22, section 27, a public room's picture is a second
+  one. It is checked the same way, with 320 pixels where the selfie has
+  4096.)
 - `imageSize(contentType, bytes)` reads the header only: nothing is
   decoded, no package is added, and no read goes past the end of the
   bytes. JPEG: `FF D8`, then the segments up to the first frame header
@@ -9600,7 +9659,11 @@ new against the statement of before: the line that begins `AND`, and
 `member_count DESC` in front of the two sort keys of before. The answer
 has the shape of before, `200 { rooms: [ { chatRoomId, name, creator:
 profile, memberCount, createdAt } ] }`, and with no room that fits it is
-`200 { rooms: [] }`.
+`200 { rooms: [] }`. (Since 2026-11-22, section 27, the statement also
+reads `rp.updated_at AS picture_at` through a left join of
+`chat_room_pictures`, and each room of the answer carries `pictureAt`
+after `name`. The block above is the statement as this section's build
+left it.)
 
 Why the names are compared as text: `strpos` asks whether the name holds
 the word, letter for letter, after `lower` has made both small. The word
@@ -9752,3 +9815,533 @@ and how it was decided:
   function of the two changed files, every other feature folder,
   `db/schema.sql`, `package.json`, `.example.env`, the scripts; in the
   README everything but the one route row.
+
+## 27. A public room's picture (2026-11-22)
+
+Design settled 2026-11-22 in a talking chat and its planning (the plan is
+`~/Desktop/Z-TestNet/forclaude/public-rooms-plan-1.md`, FINAL,
+2026-11-22; section 26 has the user's words in full and the talk's
+answer). Why: a public room's name stays free, about twenty rooms are
+called anoTH by the user's count, and a row of the wallet's list showed
+only the name, the creator and the number of members to tell two of them
+apart. The user, 2026-11-22: "2. Upload an image for the public room."
+Two repos in order: this server (this section, step 3 of the plan: one
+new table, two new routes, and one field more in the answers of the two
+room lists) and the wallet (its spec, step 4: the entry "Room picture" in
+the room's menu for the creator of a public room, and the picture drawn
+in the chat list, at the conversation's top and in the rows of Find
+public rooms), then the record files (step 5). Steps 1 and 2 of the plan
+are the search and the order (section 26). This server goes first (the
+plan's section 6): a wallet of step 4 against a server of before shows no
+picture, and its "Room picture" answers "HTTP 404". With this server
+alone deployed nothing changes for anyone: a wallet of before calls
+neither new route and does not read the new field. Inside this server's
+own deploy the order matters: the schema file goes onto the database
+before the new code runs (27.7). One schema block with one new table, and
+two new routes. No env variable and no npm package. The validators, the
+doormen, the keyholders, the signing servers and the wallet's proxy are
+not touched. Nothing above this section changes except the items in 27.5.
+
+### 27.1 The rule
+
+- A public room gets a picture (the plan's decision 2). The user: "2.
+  Upload an image for the public room."
+- Only the room's creator sets it, in one place: the room's own menu in
+  the wallet, by an entry "Room picture" (decision 17). The form "New
+  public room" stays a name and "Create", so one place serves a new room
+  and the rooms that exist today alike. Asked, with the form as a second
+  place as the other choice; the user: "1. yes", the menu only.
+- The creator can put another picture in its place at any time, and one
+  route does both. Nobody else can set a room's picture (decision 18).
+  Asked; the user: "2. yes".
+- Only a public room has a picture (decision 19). A private chat, a
+  group, a listing chat and a case chat have none: on this server those
+  are the rooms of type `private`. An old `marketplace` room has none
+  either.
+- The creator cannot take the picture away, only put another in its
+  place (decision 20). No route deletes a picture.
+- The picture is small. The wallet sends the middle of the picked
+  picture as a square of at most 320 pixels, a fresh JPEG at 0.8, as it
+  sends the public selfie (decision 21); that weighs some 15,000 to
+  30,000 bytes. This server takes a picture of one of its three types
+  that is at most 320 pixels wide and high and at most 100,000 bytes
+  (decision 22). The selfie's limits, 4096 pixels and 10 MB, are what
+  let the selfies grow to hundreds of kilobytes (section 24); a room's
+  picture starts with the small limits.
+- The picture is stored in a table of its own, `chat_room_pictures`, one
+  row per room, in the clear like the room's name (decision 23). It is
+  handed out by a read of its own, `/get-chat-room-picture`, to any pod
+  at level setup, for public rooms only. It never travels inside a list.
+- A bad picture is taken down by hand on this server's database for now
+  (decision 7). That is a workaround, not the design. The item for a
+  real way is on the after-production list, "public rooms: a bad picture
+  cannot be taken down". The user: "4. Yes. and yes to adding to after
+  production." How it is done by hand is in 27.6.
+
+### 27.2 The table
+
+`db/schema.sql`, one new block, the last thing in the file, after the
+security alerts block: "The room picture block (2026-11-22, spec section
+27)".
+
+```sql
+CREATE TABLE IF NOT EXISTS chat_room_pictures (
+  chat_room_id BYTEA       PRIMARY KEY CHECK (octet_length(chat_room_id) = 32),
+  content_type TEXT        NOT NULL CHECK (content_type IN ('image/jpeg', 'image/png', 'image/webp')),
+  image        BYTEA       NOT NULL CHECK (octet_length(image) BETWEEN 1 AND 100000),
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE OR REPLACE TRIGGER chat_room_pictures_set_updated_at
+  BEFORE UPDATE ON chat_room_pictures
+  FOR EACH ROW
+  WHEN (OLD.* IS DISTINCT FROM NEW.*)
+  EXECUTE FUNCTION set_updated_at();
+```
+
+- `chat_room_id`: the room the picture belongs to. It is the primary
+  key, so a room has at most one row.
+- `content_type`: `image/jpeg`, `image/png` or `image/webp`.
+- `image`: the picture's bytes as uploaded, 1 to 100,000 of them. The
+  route refuses a heavier picture before the table is asked; the check
+  is the table's own last word.
+- `created_at`: when the room got its first picture. Never changed.
+- `updated_at`: when the picture was last set. The trigger moves it only
+  when the row really changes: another picture moves it, and the same
+  picture sent again does not. It is what the room lists hand out as
+  `pictureAt`.
+
+No index but the primary key's: every read is by the room's id. No
+foreign key, as everywhere (section 1): the route checks that the room
+exists. No route deletes a row. The table and each column have a `COMMENT
+ON`. The block is idempotent (`IF NOT EXISTS` and `OR REPLACE`), so the
+whole file applies to a live database and a second run changes nothing.
+The file makes 42 tables, one more than before.
+
+### 27.3 The two routes
+
+**POST /set-chat-room-picture** (setup), new.
+
+Body: `{ chatRoomId, picture: { contentType, image } }`. `chatRoomId` is
+the room, hex like every id. `picture` is an image in the form of section
+1: `contentType` one of the three types, `image` the bytes as base64.
+
+Checks, in order:
+
+1. The body is an object and `chatRoomId` is a string, else `400 bad
+   request shape`.
+2. The room exists and the caller is its creator, else `403 only the
+   creator sets the picture`. A room that does not exist and an id that
+   is no id get the same words, as `/invite-to-chat-room` answers them.
+3. The room is `public`, else `400 only a public room has a picture`.
+4. `picture` is an object, its `contentType` is one of the three, and
+   its `image` is base64 of 1 to `MAX_IMAGE_BYTES` bytes, else `400
+   invalid picture: <why>` with the words of `decodeImage`
+   (`src/util/images.js`): `image must be an object`, `contentType must
+   be image/jpeg, image/png or image/webp`, or `image must be base64 of 1
+   to 10485760 bytes` (the number is `MAX_IMAGE_BYTES`).
+5. The picture is at most 100,000 bytes, else `400 invalid picture:
+   image must be at most 100000 bytes`.
+6. The bytes begin as a picture of that type does, else `400 invalid
+   picture: image must be a picture of its contentType`; and the width
+   and the height its own header names are each at most 320 pixels, else
+   `400 invalid picture: image must be at most 320 pixels wide and high`.
+   This is `pictureProblem`, the selfie's check (section 11, the pictures
+   note), with 320 where the selfie has 4096.
+
+Writes, one transaction of one statement: the room's row in
+`chat_room_pictures`. A room without a picture gets its row; a room with
+one keeps its row and gets the new type and bytes (`INSERT ... ON
+CONFLICT (chat_room_id) DO UPDATE`). No notification, no event, nothing
+else.
+
+Answer: `200 { chatRoomId, pictureAt }`. `chatRoomId` is the room in hex.
+`pictureAt` is the row's `updated_at` after the write, an ISO 8601
+string: the value the two lists then carry for the room. The same picture
+sent again answers `200` with the `pictureAt` of before.
+
+**POST /get-chat-room-picture** (setup), new.
+
+Body: `{ chatRoomId }`.
+
+Checks, in order:
+
+1. The body is an object and `chatRoomId` is a string, else `400 bad
+   request shape`.
+2. The room exists and is `public`, else `404 room not found`. A room
+   that is not public gets the same words as one that does not exist.
+3. The room has a picture, else `404 no picture`.
+
+The caller need not be a member of the room: the picture is as public as
+the room's name, which `/list-public-chat-rooms` hands to any pod at this
+level. The route writes nothing.
+
+Answer: `200 { chatRoomId, picture: { contentType, image }, pictureAt }`.
+`picture` is the stored image in the form of section 1, and `pictureAt`
+the row's `updated_at`.
+
+### 27.4 `pictureAt` in the two lists, and what a wallet does with it
+
+`/list-chat-rooms` and `/list-public-chat-rooms` (section 5) each carry
+one more field per room, `pictureAt`, after `name`: when the room's
+picture was last set, an ISO 8601 string, null for a room without one.
+Both statements read it the same way, `rp.updated_at AS picture_at`
+through `LEFT JOIN chat_room_pictures rp ON rp.chat_room_id =
+r.chat_room_id`. A room has at most one row there, so the join adds no
+row to either list. In `/list-chat-rooms` every room of the answer has
+the field, and it is null on every room that is not public; the invites
+and the join requests of that answer carry none.
+
+Why the field (decision 24): without it a member's wallet could not tell
+that a room has a picture, or that it got a new one, short of asking for
+every room. `/list-chat-rooms` is the read every wallet makes every 5
+seconds, and its weight is on the after-production list ("chat list:
+every member of every chat is sent again every 5 seconds"). The field
+adds 39 characters to a room with a picture and 17 to a room without.
+Asked for that reason; the user: "3. yes". The picture itself never
+travels in a list.
+
+What a wallet does with it (decisions 25 and 29; the wallet's step 4): it
+reads a picture with `/get-chat-room-picture` once per room and per
+`pictureAt` for the life of a tab, five reads at a time. A new picture
+has a new `pictureAt`, so it is read again: the members see it within
+about 5 seconds, a person on Find public rooms at the next read of the
+list. A server of before this section sends no `pictureAt`, and a wallet
+reads a missing one as null: no picture, no read.
+
+### 27.5 Files
+
+- `db/schema.sql`: the room picture block, new, at the end.
+- `src/chat/chat.queries.js`: the import of `encodeImage`;
+  `upsertRoomPicture` and `findRoomPicture`, new, under a new heading
+  "Room pictures" after the block "Rooms"; in `listRoomsFor` and in
+  `listPublicRooms` the column `rp.updated_at AS picture_at`, the join
+  and the field `pictureAt` after `name`; the comment of `listRoomsFor`
+  names the field; and, on the user's word after the build, the file's
+  opening comment and the comment of `listPublicRooms`.
+- `src/chat/chat.service.js`: the imports of `decodeImage`,
+  `pictureProblem`, `findRoomPicture` and `upsertRoomPicture`; the
+  constants `PICTURE_MAX_SIDE` and `PICTURE_MAX_BYTES`; `setRoomPicture`
+  and `getRoomPicture`, new, after `listPublicRooms`; the file's opening
+  comment.
+- `src/chat/chat.handlers.js`: `setChatRoomPicture` and
+  `getChatRoomPicture`, new, after `listPublicChatRooms`, and the two
+  imports.
+- `src/chat/chat.router.js`: the two routes' lines after
+  `/list-public-chat-rooms`, the two imports, and "sixteen" in the
+  comment.
+- `src/app.js`, on the user's word after the build: "sixteen" in the
+  comment on the chat router's line. No line of code.
+- `src/util/images.js`, on the user's word after the build: the opening
+  comment and the comment of `pictureProblem`, which now name a public
+  room's picture beside the selfie. No line of code.
+- Here: section 1 (the item on images, one sentence), section 4 (`###
+  chat_room_pictures`, new, after `### chat_room_messages`), section 5
+  (`### POST /list-chat-rooms` and `### POST /list-public-chat-rooms`,
+  `pictureAt` in the answer and a dated sentence each; `### POST
+  /set-chat-room-picture` and `### POST /get-chat-room-picture`, new,
+  after `/list-public-chat-rooms`) and this section; and, on the user's
+  word after the build, a dated clause in 26.2 and one in the pictures
+  note of section 11. `README.md`: the Endpoints table (the two new rows,
+  and `pictureAt` in the rows of the two lists) and the new row of
+  `chat_room_pictures` in "Database tables"; and, on the user's word
+  after the build, the `chat/` line of the Layout.
+
+Nothing else in existing code changes: `/create-chat-room` and every
+other chat route, `package.json` and `.example.env` are as they were, and
+`src/util/images.js` and `src/app.js` changed in comments alone. One new
+table and two new routes; no env variable, no npm package.
+
+### 27.6 What is left as it is
+
+- Nobody but the creator can take a room's picture down, and no route
+  takes the creator's right away. Until the item of the after-production
+  list is built, a bad picture is taken down by hand, on the leader of
+  this server's database, with the two lines of the plan's section 8: a
+  look-only line that finds the room by a word of its name, and `delete
+  from chat_room_pictures where chat_room_id = decode('<the room id>',
+  'hex')`. The room, its name, its members and its messages are not
+  touched. The members' wallets show the globe again within about 5
+  seconds, and Find public rooms at its next read. The planning chat ran
+  both lines on a scratch database (the plan's section 9); they have not
+  been run on the servers.
+- A picture that was taken down by hand can be set again by the creator.
+- The creator cannot take the picture away. A room gets no picture at
+  its creation. A private chat, a group, a listing chat and a case chat
+  get none.
+- The picture is not drawn again on this server. The wallet redraws it,
+  and this server checks its type, its size in pixels and its bytes. A
+  request made by hand can still send any picture inside those limits.
+  The same gap is the after-production item "selfies redrawn on the
+  server".
+- Look-alike names stay possible, and a room can be dressed up as
+  official with a picture.
+- A person on Find public rooms sees a new picture of a room only at the
+  next read of the list.
+- The read of every 5 seconds grows by one field per room (27.4).
+
+### 27.7 Notes from the build
+
+#### Build 1, the masterpod (2026-11-22)
+
+Built from `~/Desktop/Z-TestNet/forclaude/public-rooms-plan-1.md` section
+3, on main at 6ba4826 (step 1 of the same plan), the working tree clean.
+No new npm package, no test script and no rig (none was asked for). The
+schema was not applied to any database of the network: the user applies
+the whole file as section 6 of `forclaude/masterpod-deploy-plan-1.md`
+says, on the leader, before the first restart (the plan's section 6). On
+a database without the table this code fails every `/list-chat-rooms`,
+the read every wallet makes every 5 seconds, and every
+`/list-public-chat-rooms`: the chat would be down for everybody until the
+table is there. The other order is safe: the code of before does not
+know the table. Both were tried (below). What the plan left open and how
+it was decided:
+
+- The number and the date. This section is 27, the next free number on
+  the build day. BUILD-DATE is 2026-11-22, the day of the build and of
+  the plan's FINAL.
+- The code. The schema block, `upsertRoomPicture`, `findRoomPicture`,
+  the two constants, `setRoomPicture`, `getRoomPicture`, the two handlers
+  and the two router lines are the plan's, letter for letter, with
+  2026-11-22 and 27 where the plan's comments say BUILD-DATE and M.
+- Where the plan gives a change in words. The import of `encodeImage`
+  stands after the import of `toHex`, where the file's order by path puts
+  it. The heading "Room pictures" has the form of the file's other
+  headings and stands between `roomAboutListingBy`, the last function of
+  "Rooms", and the heading "Members and their wrapped keys". In
+  `listRoomsFor` the new column follows `r.case_kind` on that column's
+  line, and the join stands after the join of the listing's owner, in
+  front of the lateral join of the newest message. In
+  `listPublicRooms` the new column is the last of the first line of the
+  select list, and the join stands after the join of the creator. In
+  both, `pictureAt` follows `name` in the room's object. These are the
+  places the planning chat's tried copy has (the plan's section 9).
+- The comments given in words. The comment of `listRoomsFor` lists
+  `pictureAt` after `name` in the room's object and ends: "`pictureAt` is
+  when the room's picture was last set, null for a room without one
+  (2026-11-22)." The opening comment of `chat.service.js` gained "the
+  picture of a public room (since 2026-11-22)" in its list of what the
+  chat feature holds. The router's comment says "All sixteen routes".
+- The order of the checks in `setRoomPicture`, as the plan's code has it.
+  The creator is checked before the room's type. The 100,000 bytes are
+  checked before the picture's header is read. A base64 string longer
+  than `MAX_IMAGE_BYTES` allows is refused by `decodeImage` before it is
+  decoded, as for a selfie.
+- `pictureAt` on its way out. `updated_at` keeps millionths of a second.
+  The `pg` library hands it to the code as a JavaScript date, which keeps
+  thousandths, and `toISOString()` writes it. The answer of
+  `/set-chat-room-picture`, the read and both lists go the same way, so
+  they give the same string for one row.
+- `getRoomPicture` reads the room first and the picture second, in two
+  statements with no transaction around them: a picture set between the
+  two is simply the one read.
+- Here and in the README. In section 1 the sentence is the last of the
+  item on images. In section 4 `### chat_room_pictures` stands between
+  `### chat_room_messages` and `### listings`, with the `CREATE TABLE`
+  and two sentences; the trigger is in 27.2. In section 5 `"pictureAt"`
+  stands after `"name"` in the JSON block of `/list-chat-rooms`, and its
+  dated sentence is the last of the entry's text, with one sentence more
+  on where the picture itself is read; in the entry of
+  `/list-public-chat-rooms` `pictureAt` stands after `name` in the
+  answer, and the dated sentence is its last. The two new routes have the
+  short form of their neighbours; the numbered checks are in 27.3. In the
+  README the two new rows follow the row of `/list-public-chat-rooms`,
+  and the row of `chat_room_pictures` follows the row of
+  `chat_room_messages`. The plan asks for "the count of tables wherever
+  the file names it": the README names no such count, so none changed.
+- Checks (3.6), the first two. `node --check` on the four changed source
+  files of `src/chat/`, clean, on Node 24.22.0. Then one load of the app
+  with no server, from the build chat's scratch folder: a small script
+  imports `src/app.js` and calls `createApp()`, with made-up
+  `PGDATABASE`, `PGUSER` and `PGPASSWORD` and `PGHOST=/nonexistent`. It
+  counted 110 routes, two more than a copy of 6ba4826 gave the same way
+  (108), sixteen of them the chat's, with the two new ones between
+  `/list-public-chat-rooms` and `/list-messages`, and ended with exit 0.
+  Nothing listened and no database was reached.
+- Checks (3.6), the schema file. By psql on a PostgreSQL 17.11 that was
+  started for this build alone: a data folder of its own in the build
+  chat's scratch folder, listening on 127.0.0.1 port 58931 and nowhere
+  else, with no socket file. This Mac's own PostgreSQL on port 5432 was
+  not touched. One transaction, rolled back. The file of 6ba4826 went
+  into an empty scratch schema first (`git show HEAD:db/schema.sql`,
+  byte for byte the file of the security alerts' commit 93e8f43): 41
+  tables, no `chat_room_pictures`. Into them went two pods, two public
+  rooms and one private room, four member rows with their wrapped keys,
+  and one message. Then the new file on top: 42 tables. The new file
+  once more: 42 tables, and one md5 over every column, constraint, index,
+  trigger, comment and function of the schema was the same after both
+  runs. Every row was still there. The new table had its five columns,
+  its primary key and its three checks
+  (`chat_room_pictures_chat_room_id_check`,
+  `chat_room_pictures_content_type_check`,
+  `chat_room_pictures_image_check`), its trigger, and a comment on the
+  table and on each column. For a database built from nothing the new
+  file went alone into a second empty scratch schema, twice: 42 tables
+  and the same md5 as the updated schema, both times.
+- Checks (3.6), the statements. The four statements were read out of
+  `src/chat/chat.queries.js` by a small script, with
+  `${ROOM_LISTING_COLUMNS}` and `${PROFILE_COLUMNS}` filled in from the
+  source, so what ran is what the code sends. They were prepared with
+  untyped parameters (`PREPARE`), as `pg` sends them; the server took
+  the three of `upsertRoomPicture`'s statement as `bytea`, `text` and
+  `bytea`. One thing the plan's 3.6 asks for cannot show inside one
+  transaction as it stands: "`updated_at` later the second time".
+  `now()` is the moment the transaction began and does not move inside
+  it. So time was made to pass by hand: between the runs the row's times
+  were set back, with the triggers off for that one statement (`SET
+  LOCAL session_replication_role = replica`). The statement's first run
+  made one row, with both times at that moment. With both times set back
+  one hour, the second run, with other bytes and another type, left one
+  row with the new bytes, `created_at` where it was and `updated_at` an
+  hour later, which it also answered. With `updated_at` set back half an
+  hour, the third run, with the same bytes again, answered that earlier
+  time and left the row as it was: the trigger did not fire. The table
+  itself refused a picture of 100,001 bytes
+  (`chat_room_pictures_image_check`), wrote no row for it and took one
+  of 100,000 bytes; it also refused a picture of no bytes, a fourth type
+  and a room id of 31 bytes. Those five ran through the same statement,
+  from a function that catches the refusal and names the check. The
+  bytes of this check were made-up bytes: the table does not look into a
+  picture, the route does. The statement of `findRoomPicture` gave the
+  type, the bytes and `updated_at` for the room with a picture, and no
+  row for the room without. The statement of `listRoomsFor` gave the
+  creator's three rooms, newest first, `picture_at` on the public room
+  with the picture and null on the other public room and on the private
+  one, and gave a member who is not the creator the one room with the
+  same `picture_at`. The statement of `listPublicRooms` gave the two
+  public rooms, the bigger first, `picture_at` on the one and null on the
+  other, the private room not among them; the word "plain" gave the one
+  room. 43 results, none bad. After the rollback that database held no
+  scratch schema and no table.
+- Beyond 3.6, with nothing kept in the repo. First a comparison. The
+  planning chat had tried this step in a throwaway copy, with the code
+  read out of the plan file by a script (the plan's section 9). The
+  build made that copy again with the same script, on a copy of 6ba4826,
+  and compared the five files with the working tree by `diff`:
+  `chat.handlers.js` and `chat.router.js` are the same byte for byte, and
+  `db/schema.sql`, `chat.queries.js` and `chat.service.js` differ in
+  comment lines only (eight lines with the date and the number where the
+  copy has the words BUILD-DATE and M, and the two comments the plan
+  gives in words). No other file of `src` or `db` differs from that
+  copy.
+- Second, the planning chat's check of this step ran again, against a
+  copy that holds the built files, with the copy's own pool on a
+  throwaway database of the same scratch PostgreSQL, built from the new
+  `db/schema.sql`: the real `createRoom`, `setRoomPicture`,
+  `getRoomPicture`, `listRooms` and `listPublicRooms`. 35 results, none
+  bad, the same 35 as in the plan's section 9. Each call there is a
+  transaction of its own, so `pictureAt` moved by itself when another
+  picture was set, and stayed for the same picture.
+- Third, the two half-deployed states, the same way. The built code on a
+  database with the tables of before: `/list-chat-rooms` and
+  `/list-public-chat-rooms` both failed with `relation
+  "chat_room_pictures" does not exist`. The code of 6ba4826 on the new
+  tables: both lists answered, with no `pictureAt`. So the schema line
+  goes first.
+- Fourth, the two new handlers and the two list handlers of that copy,
+  called with a stand-in for the HTTP answer, with real pictures in
+  place of made-up bytes behind a true header: a JPEG of 320 by 320 at
+  quality 80 (18,575 bytes), a PNG and a WebP, drawn by the `sharp`
+  library of `scripts/small-selfies`. 20 results, none bad. `200 {
+  chatRoomId, pictureAt }`, then the read with the same bytes and the
+  same `pictureAt`, which stood in both lists right after `name`; a PNG
+  and then a WebP in its place; `403 { error }` for a member and for a
+  stranger; a real JPEG of 321 by 320, a JPEG sent as a PNG and a real
+  PNG of 282,077 bytes each refused with its own words; two different
+  pictures for one room at the same moment, in ten rooms, every call
+  `200` and one row a room. The heaviest JPEG that library makes at 320
+  by 320 and quality 80, with every pixel random, weighed 65,356 bytes,
+  inside the 100,000. A browser's own JPEG writer was not measured.
+- The runs that use the pool stop before their first query unless the
+  pool's host and port are the scratch PostgreSQL's: this server's
+  default port is 5432, which on this Mac is the user's own database.
+  The scratch PostgreSQL was stopped afterwards.
+- Not tried by the build. No server was booted, no request was signed
+  and no route was called over HTTP: the session check, the envelope and
+  the wallet are the user's run-through (the plan's section 6), with the
+  wallet's step 4. A photo from a phone was not sent. How long the two
+  lists take with thousands of rooms was not measured; each gained one
+  join by a primary key.
+- Places the plan does not name that this step left out of date. The
+  build left them as they are and put them to the user, who had all
+  seven brought in line the same day (below). Four comments, no line of
+  code: in `src/app.js` the comment on the chat router's line
+  says "the fourteen chat routes"; the opening comment of
+  `src/chat/chat.queries.js` names the chat tables without
+  `chat_room_pictures`; the comment of `listPublicRooms` in that file
+  gives a room's object without `pictureAt` (the plan names the comment
+  of `listRoomsFor` alone); in `src/util/images.js` the opening comment
+  and the comment of `pictureProblem` name the selfie as the picture
+  stored in the clear. In `README.md` the `chat/` line of the Layout
+  says "the fourteen chat routes". Here, 26.2 shows the statement and
+  the answer of `/list-public-chat-rooms` as step 1 left them, and the
+  pictures note of 2026-11-12 in section 11 calls the selfie "the one
+  picture stored in the clear and shown to everyone". `docs/build-plan.md`
+  is a record of 2026-10-24 and is not on this list.
+- Not touched by the build: in the four changed source files everything
+  the plan does not name; `src/app.js`, `src/util/images.js`, every other
+  feature folder, `package.json`, `.example.env`, the scripts; in the
+  README everything but the five rows named above. (Comments of
+  `src/app.js`, `src/util/images.js` and `src/chat/chat.queries.js` and
+  one more line of the README changed afterwards, on the user's word,
+  below.)
+- The numbers. `db/schema.sql` has 1600 lines, 27 more than before, and
+  its sha256 begins d016140c. Before the step it had 1573 lines and its
+  sha256 began eb1289b4. It makes 42 tables where it made 41: the count
+  that the deploy's schema line prints goes from 41 to 42. That line
+  carries the whole hash and stops by itself on any other file. It was
+  tried here in a stand-in form on the scratch PostgreSQL, with a copy
+  of a local file in place of the download: with the new file it printed
+  41, the apply's lines, 42, the owner and 1 for the new table; with the
+  file of before it printed `FAILED` and applied nothing.
+
+#### After the build's report, the same day (2026-11-22)
+
+The user read the report in the build chat. It listed the seven places
+above, with the advice to bring all of them in line before the commit and
+to give the two in older notes a dated clause beside the old words. The
+user: "Fix the out of place stuff first". So the seven were brought in
+line before the commit. None of this is in the plan, and no line of code
+changed.
+
+- `src/app.js`, the comment on the chat router's line: "owns the sixteen
+  chat routes".
+- `src/chat/chat.queries.js`, the file's opening comment. The list of
+  the chat tables now has "chat_room_pictures (since 2026-11-22)" after
+  `chat_rooms`.
+- `src/chat/chat.queries.js`, the comment of `listPublicRooms`. A room's
+  object lists `pictureAt` after `name`, and the comment ends:
+  "`pictureAt` is when the room's picture was last set, null for a room
+  without one (2026-11-22, spec section 27)."
+- `src/util/images.js`. The opening comment says "Public selfies and,
+  since 2026-11-22, the pictures of public chat rooms are plaintext".
+  The comment of `pictureProblem` names "the selfie and, since
+  2026-11-22, a public room's picture" as the pictures stored in the
+  clear.
+- `README.md`, the `chat/` line of the Layout: "the sixteen chat
+  routes".
+- Here, 26.2. The words of before stay. A clause in brackets after them,
+  which begins "Since 2026-11-22, section 27", says that the statement
+  also reads `picture_at` through a left join of `chat_room_pictures`,
+  that each room of the answer carries `pictureAt`, and that the block
+  there is the statement as that section's build left it.
+- Here, the pictures note of 2026-11-12 in section 11. The words of
+  before stay. A clause in brackets after them, which begins "Since
+  2026-11-22, section 27", says that a public room's picture is a second
+  picture stored in the clear, checked the same way with 320 pixels.
+- Checks. All of them ran again, with the same results. `node --check`
+  on the six changed source files, clean. A `diff` against the copy that
+  the checks had run on shows 31 lines in `src`, old and new together,
+  every one a comment line, and none in `db/schema.sql`. The load with
+  no server: 110 routes. The psql check in one rolled-back transaction:
+  the four statements read out of the source were byte for byte the ones
+  of before, and it gave the same 43 results, none bad. The real functions
+  on a copy of the files as they now stand: 35 results, none bad; the
+  two half-deployed states as before. The handlers with real pictures,
+  drawn anew: 20 results, none bad. The scratch PostgreSQL was stopped
+  again afterwards.
+- The numbers. `db/schema.sql` was not touched: the same 1600 lines and
+  the same sha256, so the deploy's schema line stands as handed. One
+  commit carries the build and this: nine files, the seven of the build
+  and `src/app.js` and `src/util/images.js`.

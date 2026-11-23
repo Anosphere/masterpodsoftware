@@ -6,6 +6,7 @@ import {
   declineInvite,
   declineJoin,
   getChatPublicKeys,
+  getRoomPicture,
   invite,
   leave,
   listPublicRooms,
@@ -14,6 +15,7 @@ import {
   markSeen,
   requestToJoin,
   sendMessage,
+  setRoomPicture,
 } from './chat.service.js';
 
 /**
@@ -70,6 +72,16 @@ export async function listChatRooms(req, res) {
 /** POST /list-public-chat-rooms */
 export async function listPublicChatRooms(req, res) {
   answer(res, await listPublicRooms(req.body));
+}
+
+/** POST /set-chat-room-picture */
+export async function setChatRoomPicture(req, res) {
+  answer(res, await setRoomPicture(req.anopod, req.body));
+}
+
+/** POST /get-chat-room-picture */
+export async function getChatRoomPicture(req, res) {
+  answer(res, await getRoomPicture(req.body));
 }
 
 /** POST /list-messages */

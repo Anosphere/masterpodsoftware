@@ -7,6 +7,7 @@ import {
   declineInviteHandler,
   declineJoinHandler,
   getChatPublicKeysHandler,
+  getChatRoomPicture,
   inviteToChatRoom,
   leaveChatRoom,
   listChatRooms,
@@ -15,10 +16,11 @@ import {
   markSeenHandler,
   requestToJoinHandler,
   sendMessageHandler,
+  setChatRoomPicture,
 } from './chat.handlers.js';
 
 /**
- * Chat feature router. All fourteen routes are level "setup": a vouched pod
+ * Chat feature router. All sixteen routes are level "setup": a vouched pod
  * with chat keys.
  *
  * Mounted at the root in app.js, so the paths below are the full public
@@ -36,6 +38,8 @@ chatRouter.post('/decline-join', requireSetup, declineJoinHandler);
 chatRouter.post('/leave-chat-room', requireSetup, leaveChatRoom);
 chatRouter.post('/list-chat-rooms', requireSetup, listChatRooms);
 chatRouter.post('/list-public-chat-rooms', requireSetup, listPublicChatRooms);
+chatRouter.post('/set-chat-room-picture', requireSetup, setChatRoomPicture);
+chatRouter.post('/get-chat-room-picture', requireSetup, getChatRoomPicture);
 chatRouter.post('/list-messages', requireSetup, listMessagesHandler);
 chatRouter.post('/send-message', requireSetup, sendMessageHandler);
 chatRouter.post('/mark-messages-seen', requireSetup, markSeenHandler);

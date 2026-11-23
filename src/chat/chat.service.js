@@ -8,7 +8,7 @@ import { isUniqueViolation, withTransaction } from '../db/transaction.js';
 import { findListing, findListingByRoom } from '../marketplace/listings.queries.js';
 import { notify } from '../notifications/notifications.queries.js';
 import { decodeId, randomId, toHex } from '../util/ids.js';
-import { decodeBase64 } from '../util/images.js';
+import { decodeBase64, decodeImage, pictureProblem } from '../util/images.js';
 import { isObject } from '../util/is-object.js';
 import { ok, refuse } from '../util/result.js';
 import {
@@ -19,6 +19,7 @@ import {
   findInvite,
   findJoinRequest,
   findRoom,
+  findRoomPicture,
   insertInvite,
   insertJoinRequest,
   insertMember,
@@ -35,15 +36,17 @@ import {
   listRoomsFor,
   raiseSeenPosition,
   roomAboutListingBy,
+  upsertRoomPicture,
 } from './chat.queries.js';
 
 /**
  * The chat feature: rooms, invites, join requests, membership, messages,
- * how far each member has read (the seen positions, since 2026-11-19) and
- * the chat public keys. The server never opens a wrapped room key or a
- * message; it checks who may do what and stores bytes. Each function runs
- * its route's checks in the spec's order (section 5) and returns
- * ok(status, body) or refuse(status, reason).
+ * how far each member has read (the seen positions, since 2026-11-19), the
+ * picture of a public room (since 2026-11-22) and the chat public keys.
+ * The server never opens a wrapped room key or a message; it checks who
+ * may do what and stores bytes. Each function runs its route's checks in
+ * the spec's order (section 5) and returns ok(status, body) or
+ * refuse(status, reason).
  */
 
 const BAD_SHAPE = 'bad request shape';
@@ -65,6 +68,10 @@ const MESSAGES_MAX_LIMIT = 200;
 
 /** /get-chat-public-keys takes 1 to 50 ids. */
 const MAX_KEY_LOOKUPS = 50;
+
+/** A room's picture is at most this many pixels wide and high and at most this many bytes (2026-11-22, spec section 27). The wallet sends the middle of a picture as a square of at most 320, about 30,000 bytes. */
+const PICTURE_MAX_SIDE = 320;
+const PICTURE_MAX_BYTES = 100_000;
 
 /** Decodes a wrapped room key from hex or base64; null when it is not one. */
 function decodeHpkeKey(value) {
@@ -384,6 +391,42 @@ export async function listPublicRooms(body) {
   if (search === undefined) return refuse(400, 'invalid search');
 
   return ok(200, { rooms: await listPublicRoomsQuery(limit, offset, search) });
+}
+
+/**
+ * POST /set-chat-room-picture. Body { chatRoomId, picture: { contentType,
+ * image } } (2026-11-22, spec section 27). The creator of a public room
+ * gives it a picture, or another in place of the one it has.
+ */
+export async function setRoomPicture(anopod, body) {
+  if (!isObject(body) || typeof body.chatRoomId !== 'string') return refuse(400, BAD_SHAPE);
+  const chatRoomId = decodeId(body.chatRoomId);
+  const room = chatRoomId === null ? null : await findRoom(chatRoomId);
+  if (room === null || !room.creatorAnopodId.equals(anopod.anopodId)) return refuse(403, 'only the creator sets the picture');
+  if (room.type !== 'public') return refuse(400, 'only a public room has a picture');
+  const picture = decodeImage(body.picture);
+  if (picture.reason) return refuse(400, `invalid picture: ${picture.reason}`);
+  if (picture.bytes.length > PICTURE_MAX_BYTES) return refuse(400, `invalid picture: image must be at most ${PICTURE_MAX_BYTES} bytes`);
+  const problem = pictureProblem(picture, PICTURE_MAX_SIDE);
+  if (problem) return refuse(400, `invalid picture: ${problem}`);
+
+  const pictureAt = await withTransaction((client) => upsertRoomPicture(client, chatRoomId, picture.contentType, picture.bytes));
+  return ok(200, { chatRoomId: toHex(chatRoomId), pictureAt: pictureAt.toISOString() });
+}
+
+/**
+ * POST /get-chat-room-picture. Body { chatRoomId } (2026-11-22, spec
+ * section 27). The picture of a public room, for any caller at level
+ * setup: it is as public as the room's name.
+ */
+export async function getRoomPicture(body) {
+  if (!isObject(body) || typeof body.chatRoomId !== 'string') return refuse(400, BAD_SHAPE);
+  const chatRoomId = decodeId(body.chatRoomId);
+  const room = chatRoomId === null ? null : await findRoom(chatRoomId);
+  if (room === null || room.type !== 'public') return refuse(404, 'room not found');
+  const found = await findRoomPicture(chatRoomId);
+  if (found === null) return refuse(404, 'no picture');
+  return ok(200, { chatRoomId: toHex(chatRoomId), ...found });
 }
 
 /**
