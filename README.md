@@ -139,8 +139,10 @@ are base64 / base64url as the browser produces them.
 | `/approve-join`                 | setup   | The creator lets the requester in with the wrapped key                                   |
 | `/decline-join`                 | setup   | Drops the join request                                                                   |
 | `/leave-chat-room`              | setup   | Leaves a room; the creator cannot                                                        |
-| `/list-chat-rooms`              | setup   | The caller's rooms (members, each with how far they have read, invited, own wrapped key, newest message, the listing a room is about with its owner, the case a room is about with its kind), open invites (each with its listing and its case too), join requests on its rooms |
-| `/list-public-chat-rooms`       | setup   | Public rooms, the ones with the most members first; `search` narrows them by name (2026-11-22); paged |
+| `/list-chat-rooms`              | setup   | The caller's rooms (members, each with how far they have read, invited, own wrapped key, newest message, the listing a room is about with its owner, the case a room is about with its kind, and `pictureAt`, when the room's picture was last set), open invites (each with its listing and its case too), join requests on its rooms |
+| `/list-public-chat-rooms`       | setup   | Public rooms, the ones with the most members first; `search` narrows them by name (2026-11-22); each with `pictureAt`, when its picture was last set; paged |
+| `/set-chat-room-picture`        | setup   | The creator of a public room gives it a picture, or another in place of the one it has (2026-11-22, section 27): at most 320 pixels wide and high and 100,000 bytes |
+| `/get-chat-room-picture`        | setup   | A public room's picture, for any pod at this level: it is as public as the room's name   |
 | `/list-messages`                | setup   | A room's messages after a position, or the newest ones before a position, members only   |
 | `/send-message`                 | setup   | Stores a ciphertext message, members only                                                |
 | `/mark-messages-seen`           | setup   | Records how far the caller has read in a room, members only                              |
@@ -276,6 +278,7 @@ keep the references straight. Every table and column has a `COMMENT ON`
 | `chat_room_invites`       | Open invites, carrying the wrapped key                                 |
 | `chat_room_join_requests` | Open join requests                                                     |
 | `chat_room_messages`      | Ciphertext messages, numbered by `position`                            |
+| `chat_room_pictures`      | The picture of a public room (section 27): at most one per room, in the clear like the room's name, set by the room's creator |
 | `listings`                | Marketplace listings; `chat_room_id` only on the old ones that got a room |
 | `anos_accounts`           | One row per anos account a pod made: type, the blob with both pairs, the first key blob, the signed creation, when it was submitted, the break-glass blob after a recovery; never deleted |
 | `noted_transactions`      | One row per ledger transaction a pod noted for its tax records: the ledger's facts in the clear, the private part as a blob under the pod's encryption key; one per pod and transaction; deleted when the person removes it |
@@ -387,7 +390,7 @@ src/
   appointments/      the appointments table's queries (section 16): who holds a live appointment as a moderator or an attestor, or as a pod that may stake for validator or masterPod; written only by scripts/appoint.js and scripts/revoke.js
   notifications/     /list-notifications, /mark-notifications-read; notify() for every feature
   security/          the three bucket routes
-  chat/              the fourteen chat routes
+  chat/              the sixteen chat routes
   marketplace/       /create-listing, /close-listing, /list-listings
   anos-accounts/     /create-anos-account, /mark-anos-account-submitted, /list-anos-accounts, /store-first-key-blob, /get-anos-account
   wallet-memory/     the six wallet memory routes, /add-noted-transaction to /set-wallet-settings; the two tables' queries

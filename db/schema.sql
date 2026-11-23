@@ -1571,3 +1571,30 @@ COMMENT ON COLUMN alert_messages.gave_up_at  IS 'When the sender stopped trying:
 COMMENT ON COLUMN alert_messages.last_error  IS 'The last failure, in a few words, with no address in it.';
 COMMENT ON COLUMN alert_messages.created_at  IS 'When the row was inserted. Set by default, never changed.';
 COMMENT ON COLUMN alert_messages.updated_at  IS 'When the row last changed. Maintained by the alert_messages_set_updated_at trigger.';
+
+
+-- The room picture block (2026-11-22, spec section 27): one new table.
+-- chat_room_pictures is the picture of a public chat room, set by the room's
+-- creator and public like the room's name. Idempotent: IF NOT EXISTS and
+-- OR REPLACE.
+
+CREATE TABLE IF NOT EXISTS chat_room_pictures (
+  chat_room_id BYTEA       PRIMARY KEY CHECK (octet_length(chat_room_id) = 32),
+  content_type TEXT        NOT NULL CHECK (content_type IN ('image/jpeg', 'image/png', 'image/webp')),
+  image        BYTEA       NOT NULL CHECK (octet_length(image) BETWEEN 1 AND 100000),
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE OR REPLACE TRIGGER chat_room_pictures_set_updated_at
+  BEFORE UPDATE ON chat_room_pictures
+  FOR EACH ROW
+  WHEN (OLD.* IS DISTINCT FROM NEW.*)
+  EXECUTE FUNCTION set_updated_at();
+
+COMMENT ON TABLE  chat_room_pictures              IS 'The picture of a public chat room (spec section 27), at most one per room, set by the room''s creator with /set-chat-room-picture. In the clear and public, like the room''s name.';
+COMMENT ON COLUMN chat_room_pictures.chat_room_id IS 'The room the picture belongs to.';
+COMMENT ON COLUMN chat_room_pictures.content_type IS 'image/jpeg, image/png or image/webp.';
+COMMENT ON COLUMN chat_room_pictures.image        IS 'The picture''s bytes as uploaded: at most 320 pixels wide and high and at most 100,000 bytes.';
+COMMENT ON COLUMN chat_room_pictures.created_at   IS 'When the room got its first picture. Set by default, never changed.';
+COMMENT ON COLUMN chat_room_pictures.updated_at   IS 'When the picture was last set: what the room lists hand out as pictureAt. Maintained by the chat_room_pictures_set_updated_at trigger.';
