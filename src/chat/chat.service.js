@@ -78,6 +78,20 @@ function integerOption(value, fallback, min, max) {
 }
 
 /**
+ * The search word of /list-public-chat-rooms (2026-11-22, spec section
+ * 26): a string of at most NAME_MAX_CHARS characters, with the spaces
+ * around it taken off. Null when it is absent or empty, which means no
+ * search; undefined when it is not a string or too long.
+ */
+function searchOption(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'string') return undefined;
+  const text = value.trim();
+  if (Array.from(text).length > NAME_MAX_CHARS) return undefined;
+  return text === '' ? null : text;
+}
+
+/**
  * The attestor case with this id (a 32-byte Buffer), as { kind, status,
  * parties }, or null: assisted_trades first, then escrow_disputes, then
  * break_glass_cases (a case id names one row in one table). `kind` is what
@@ -355,15 +369,21 @@ export async function listRooms(anopod) {
   return ok(200, { rooms, invites, joinRequests });
 }
 
-/** POST /list-public-chat-rooms. Body { limit, offset }, optional. */
+/**
+ * POST /list-public-chat-rooms. Body { limit, offset, search }, all
+ * optional; the rooms with the most members first, and `search` keeps the
+ * rooms whose name holds it (2026-11-22, spec section 26).
+ */
 export async function listPublicRooms(body) {
   if (!isObject(body)) return refuse(400, BAD_SHAPE);
   const limit = integerOption(body.limit, PUBLIC_ROOMS_DEFAULT_LIMIT, 1, PUBLIC_ROOMS_MAX_LIMIT);
   if (limit === undefined) return refuse(400, 'invalid limit');
   const offset = integerOption(body.offset, 0, 0, Number.MAX_SAFE_INTEGER);
   if (offset === undefined) return refuse(400, 'invalid offset');
+  const search = searchOption(body.search);
+  if (search === undefined) return refuse(400, 'invalid search');
 
-  return ok(200, { rooms: await listPublicRoomsQuery(limit, offset) });
+  return ok(200, { rooms: await listPublicRoomsQuery(limit, offset, search) });
 }
 
 /**

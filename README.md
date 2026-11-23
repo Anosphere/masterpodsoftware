@@ -140,7 +140,7 @@ are base64 / base64url as the browser produces them.
 | `/decline-join`                 | setup   | Drops the join request                                                                   |
 | `/leave-chat-room`              | setup   | Leaves a room; the creator cannot                                                        |
 | `/list-chat-rooms`              | setup   | The caller's rooms (members, each with how far they have read, invited, own wrapped key, newest message, the listing a room is about with its owner, the case a room is about with its kind), open invites (each with its listing and its case too), join requests on its rooms |
-| `/list-public-chat-rooms`       | setup   | Public rooms by name, newest first, paged                                                |
+| `/list-public-chat-rooms`       | setup   | Public rooms, the ones with the most members first; `search` narrows them by name (2026-11-22); paged |
 | `/list-messages`                | setup   | A room's messages after a position, or the newest ones before a position, members only   |
 | `/send-message`                 | setup   | Stores a ciphertext message, members only                                                |
 | `/mark-messages-seen`           | setup   | Records how far the caller has read in a room, members only                              |

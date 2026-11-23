@@ -454,8 +454,14 @@ export async function listJoinRequestsForCreator(creatorAnopodId) {
   }));
 }
 
-/** Public rooms, newest first: { chatRoomId, name, creator: profile, memberCount, createdAt }. */
-export async function listPublicRooms(limit, offset) {
+/**
+ * Public rooms, the ones with the most members first, then the newest
+ * (2026-11-22, spec section 26; newest first until then): { chatRoomId,
+ * name, creator: profile, memberCount, createdAt }. `search`, when it is
+ * not null, keeps the rooms whose name holds it anywhere, capital and
+ * small letters alike. It is compared as text, so % and _ mean themselves.
+ */
+export async function listPublicRooms(limit, offset, search = null) {
   const { rows } = await pool.query(
     `SELECT r.chat_room_id, r.name, r.created_at,
             (SELECT count(*)::int FROM chat_room_members m WHERE m.chat_room_id = r.chat_room_id) AS member_count,
@@ -463,9 +469,10 @@ export async function listPublicRooms(limit, offset) {
      FROM chat_rooms r
      JOIN anopods a ON a.anopod_id = r.creator_anopod_id
      WHERE r.type = 'public'
-     ORDER BY r.created_at DESC, r.chat_room_id
+       AND ($3::text IS NULL OR strpos(lower(r.name), lower($3::text)) > 0)
+     ORDER BY member_count DESC, r.created_at DESC, r.chat_room_id
      LIMIT $1 OFFSET $2`,
-    [limit, offset],
+    [limit, offset, search],
   );
   return rows.map((row) => ({
     chatRoomId: toHex(row.chat_room_id),
