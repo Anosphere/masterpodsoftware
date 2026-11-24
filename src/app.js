@@ -10,6 +10,7 @@ import { chatRouter } from './chat/chat.router.js';
 import { env } from './config/env.js';
 import { daoRouter } from './dao/dao.router.js';
 import { healthRouter } from './health/health.router.js';
+import { joyRouter } from './joy/joy.router.js';
 import { marketplaceRouter } from './marketplace/marketplace.router.js';
 import { errorHandler } from './middleware/error-handler.js';
 import { notFound } from './middleware/not-found.js';
@@ -58,6 +59,7 @@ export function createApp() {
   app.use(marketplaceRouter); // owns /create-listing, /close-listing, /list-listings, /get-listing
   app.use(anosAccountsRouter); // owns /create-anos-account, /mark-anos-account-submitted, /list-anos-accounts, /store-first-key-blob, /get-anos-account
   app.use(walletMemoryRouter); // owns the six wallet memory routes, /add-noted-transaction to /set-wallet-settings
+  app.use(joyRouter); // owns Joy's three routes, /ask-joy, /get-joy-memory and /set-joy-memory
   app.use(recoveryRouter); // owns /open-recovery-case, /unlock-recovery-pod, /get-recovery-pod
   app.use(attestingRouter); // owns the fourteen attestor routes, /list-attestors to /dismiss-attestor-case, and the person's /list-my-cases, /get-my-case, /share-lookup-id, /add-dispute-evidence
   app.use(breakGlassRouter); // owns the nine break-glass routes: the person's /file-break-glass-moves and /list-my-break-glass-moves, and the attestors' /list-break-glass-cases to /dismiss-break-glass-case

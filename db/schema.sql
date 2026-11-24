@@ -1822,3 +1822,55 @@ COMMENT ON COLUMN chat_rooms.people_seq                IS 'The counter''s value 
 COMMENT ON COLUMN chat_room_invites.change_seq         IS 'The counter''s value (chat_change_seq) when the invite was written (spec section 29). Set by the chat_room_invites_set_change_seq trigger; an invite that was open when the column was added got its number then. /list-chat-rooms hands the invite to a wallet whose `since` is below it.';
 COMMENT ON COLUMN chat_room_join_requests.change_seq   IS 'The counter''s value (chat_change_seq) when the request was written (spec section 29). Set by the chat_room_join_requests_set_change_seq trigger; a request that was open when the column was added got its number then. /list-chat-rooms hands the request to a wallet whose `since` is below it.';
 COMMENT ON COLUMN chat_room_members.seen_seq           IS 'The counter''s value (chat_change_seq) when the member''s seen_position last changed (spec section 29); 0 while seen_position is 0. Set by the chat_room_members_set_seen_seq trigger; a row that held a seen_position when the column was added got its number then. /list-messages hands the member''s position to a wallet whose `seenSince` is below it.';
+
+-- Joy, the wallet's AI (2026-11-24, spec section 30): two tables, added at
+-- the end for a database that already has the rest. Nothing above changes.
+
+CREATE TABLE IF NOT EXISTS joy_memories (
+  anopod_id   BYTEA       PRIMARY KEY CHECK (octet_length(anopod_id) = 32),
+  memory_blob BYTEA       NOT NULL CHECK (octet_length(memory_blob) <= 32768),
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE OR REPLACE TRIGGER joy_memories_set_updated_at
+  BEFORE UPDATE ON joy_memories
+  FOR EACH ROW
+  WHEN (OLD.* IS DISTINCT FROM NEW.*)
+  EXECUTE FUNCTION set_updated_at();
+
+COMMENT ON TABLE  joy_memories             IS 'One row per pod: the member''s memory file for Joy, as one blob the wallet made under the pod''s encryption key (spec section 30). This server cannot open it. Written whole by /set-joy-memory.';
+COMMENT ON COLUMN joy_memories.anopod_id   IS 'The pod.';
+COMMENT ON COLUMN joy_memories.memory_blob IS 'Ciphertext of the memory file, at most 32768 bytes. The file itself is text of at most 10240 bytes.';
+COMMENT ON COLUMN joy_memories.created_at  IS 'When the row was inserted. Set by default, never changed.';
+COMMENT ON COLUMN joy_memories.updated_at  IS 'When the row last changed. Maintained by the joy_memories_set_updated_at trigger.';
+
+CREATE TABLE IF NOT EXISTS joy_usage (
+  anopod_id          BYTEA       NOT NULL CHECK (octet_length(anopod_id) = 32),
+  day                DATE        NOT NULL,
+  messages           INTEGER     NOT NULL DEFAULT 0 CHECK (messages >= 0),
+  input_tokens       BIGINT      NOT NULL DEFAULT 0 CHECK (input_tokens >= 0),
+  output_tokens      BIGINT      NOT NULL DEFAULT 0 CHECK (output_tokens >= 0),
+  cache_read_tokens  BIGINT      NOT NULL DEFAULT 0 CHECK (cache_read_tokens >= 0),
+  cache_write_tokens BIGINT      NOT NULL DEFAULT 0 CHECK (cache_write_tokens >= 0),
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (anopod_id, day)
+);
+
+CREATE OR REPLACE TRIGGER joy_usage_set_updated_at
+  BEFORE UPDATE ON joy_usage
+  FOR EACH ROW
+  WHEN (OLD.* IS DISTINCT FROM NEW.*)
+  EXECUTE FUNCTION set_updated_at();
+
+COMMENT ON TABLE  joy_usage                    IS 'One row per pod and day (UTC): how many messages the pod sent Joy that day and the tokens Anthropic counted for them (spec section 30). Holds no text of a message. The daily limit is read from it.';
+COMMENT ON COLUMN joy_usage.anopod_id          IS 'The pod.';
+COMMENT ON COLUMN joy_usage.day                IS 'The day, in UTC.';
+COMMENT ON COLUMN joy_usage.messages           IS 'The messages the pod sent Joy that day. Counted when /ask-joy takes a message, before Anthropic is called, so a message that then fails is counted too.';
+COMMENT ON COLUMN joy_usage.input_tokens       IS 'Input tokens Anthropic billed at the full price (usage.input_tokens), summed.';
+COMMENT ON COLUMN joy_usage.output_tokens      IS 'Output tokens (usage.output_tokens), the model''s thinking included, summed.';
+COMMENT ON COLUMN joy_usage.cache_read_tokens  IS 'Input tokens read from Anthropic''s prompt cache (usage.cache_read_input_tokens), summed.';
+COMMENT ON COLUMN joy_usage.cache_write_tokens IS 'Input tokens written to Anthropic''s prompt cache (usage.cache_creation_input_tokens), summed.';
+COMMENT ON COLUMN joy_usage.created_at         IS 'When the row was inserted. Set by default, never changed.';
+COMMENT ON COLUMN joy_usage.updated_at         IS 'When the row last changed. Maintained by the joy_usage_set_updated_at trigger.';

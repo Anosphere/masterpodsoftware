@@ -88,6 +88,29 @@ function readAlerts() {
   });
 }
 
+/** An optional choice: the value when it is one of `choices`; `fallback` when the variable is not set. */
+function optionalChoice(name, choices, fallback) {
+  const value = optionalText(name);
+  if (value === null) return fallback;
+  if (!choices.includes(value)) throw new Error(`${name} must be one of ${choices.join(', ')}, got "${value}"`);
+  return value;
+}
+
+/**
+ * The settings of Joy, the wallet's AI (src/joy/, spec section 30). With
+ * ANTHROPIC_API_KEY set Joy is on. Without it Joy is off: /ask-joy says
+ * so, and nothing is sent to Anthropic. No error ever prints the key.
+ */
+function readJoy() {
+  return Object.freeze({
+    apiKey: optionalText('ANTHROPIC_API_KEY'),
+    model: optionalText('JOY_MODEL') ?? 'claude-haiku-5-5',
+    effort: optionalChoice('JOY_EFFORT', ['low', 'medium', 'high'], 'medium'),
+    maxTokens: optionalInteger('JOY_MAX_TOKENS', 16_000),
+    dailyMessages: optionalInteger('JOY_DAILY_MESSAGES', 300),
+  });
+}
+
 export const env = Object.freeze({
   nodeEnv: process.env.NODE_ENV ?? 'development',
   port: Number(process.env.PORT) || 3100,
@@ -166,4 +189,11 @@ export const env = Object.freeze({
   // gets every alert, in minutes (a month); and the file with the
   // validators' public keys.
   alerts: readAlerts(),
+
+  // Joy, the wallet's AI (src/joy/, spec section 30): Anthropic's API key
+  // (without it Joy is off); the model that writes her answers; how hard
+  // the model thinks before it answers (low, medium or high); the most
+  // tokens one request to Anthropic may write, thinking included; and how
+  // many messages one pod may send her in one day (UTC).
+  joy: readJoy(),
 });
