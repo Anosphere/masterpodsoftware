@@ -17,6 +17,7 @@ import { notificationsRouter } from './notifications/notifications.router.js';
 import { passkeysRouter } from './passkeys/passkeys.router.js';
 import { recoveryRouter } from './recovery/recovery.router.js';
 import { securityRouter } from './security/security.router.js';
+import { stickersRouter } from './stickers/stickers.router.js';
 import { vouchingRouter } from './vouching/vouching.router.js';
 import { walletMemoryRouter } from './wallet-memory/wallet-memory.router.js';
 
@@ -53,6 +54,7 @@ export function createApp() {
   app.use(vouchingRouter); // owns /search-usernames, /send-vouch-request, /list-vouch-requests, /approve-vouch-request, /decline-vouch-request
   app.use(securityRouter); // owns /add-to-security-bucket-one, /add-to-security-bucket-two, /list-security-records
   app.use(chatRouter); // owns the sixteen chat routes, /create-chat-room to /get-chat-public-keys
+  app.use(stickersRouter); // owns /list-stickers and GET /sticker-picture/:set/:number
   app.use(marketplaceRouter); // owns /create-listing, /close-listing, /list-listings, /get-listing
   app.use(anosAccountsRouter); // owns /create-anos-account, /mark-anos-account-submitted, /list-anos-accounts, /store-first-key-blob, /get-anos-account
   app.use(walletMemoryRouter); // owns the six wallet memory routes, /add-noted-transaction to /set-wallet-settings
