@@ -63,7 +63,7 @@ Four pod levels and three more:
 
 | session  | Signed by the pod's current ephemeral keys (the envelope below). Vouched or not.          |
 | vouched  | session, and `anopods.vouched` is true.                                                  |
-| setup    | vouched, and setup is complete (the pod has chat keys): every chat and marketplace route, the four anos account routes, the six wallet memory routes, `/rotate-backup-code` and `/store-break-glass-blob` after a recovery, the person's four attestation routes `/list-my-cases`, `/get-my-case`, `/share-lookup-id`, `/add-dispute-evidence`, the person's two break-glass routes `/file-break-glass-moves`, `/list-my-break-glass-moves`, the two passkey routes `/add-passkey`, `/list-passkeys`, the eight routes of a pod's security alerts, `/list-alert-settings` to `/keep-alert-phone`, and `/list-stickers`. |
+| setup    | vouched, and setup is complete (the pod has chat keys): every chat and marketplace route, the four anos account routes, the six wallet memory routes, `/rotate-backup-code` and `/store-break-glass-blob` after a recovery, the person's four attestation routes `/list-my-cases`, `/get-my-case`, `/share-lookup-id`, `/add-dispute-evidence`, the person's two break-glass routes `/file-break-glass-moves`, `/list-my-break-glass-moves`, the two passkey routes `/add-passkey`, `/list-passkeys`, the eight routes of a pod's security alerts, `/list-alert-settings` to `/keep-alert-phone`, `/list-stickers`, and Joy's three routes `/ask-joy`, `/get-joy-memory`, `/set-joy-memory`. |
 | recovery | Signed by a recovery pod's current ephemeral keys: the same envelope with `caseId` in place of `anopodId` (`src/auth/require-recovery-session.js`); `/get-recovery-pod`, `/complete-recovery-case`. |
 
 | moderator | session, and the pod holds a live appointment for the role (`appointments`, `docs/schemas.md` section 16, written by `npm run appoint`; `src/auth/require-moderator.js`; the stake is the keyholders' check); the six moderation routes. |
@@ -166,6 +166,9 @@ are base64 / base64url as the browser produces them.
 | `/list-noted-transactions`      | setup   | The caller's notes in a date range, newest first, the newest 1,000 with `more` when there are older ones |
 | `/get-wallet-settings`          | setup   | The caller's wallet settings blob and when it was set, null before the first set         |
 | `/set-wallet-settings`          | setup   | Stores the caller's wallet settings blob whole: one row per pod, replaced in place        |
+| `/ask-joy`                      | setup   | A message to Joy, the wallet's AI (2026-11-24, section 30): the conversation and the caller's opened memory file go to Anthropic's model, and the answer comes back as a stream of JSON lines; counted against the caller's messages of the day; nothing of it is stored |
+| `/get-joy-memory`               | setup   | The caller's memory file for Joy, as the blob the wallet made, and when it was set, null before the first set |
+| `/set-joy-memory`               | setup   | Stores the caller's memory file blob whole: one row per pod, replaced in place           |
 
 | `/get-anos-account`             | none    | For the validators' binding check and their appointment check: the pod that made an account, whether it is vouched, and its role (`moderator`, `attestor` or null) |
 | `/open-recovery-case`           | none    | A locked-out person's recovery case and its recovery pod: the lookup id, a contact email and a contact phone (both required since 2026-11-12; the phone since 2026-11-11), a new passkey (PRF required) registered under the pod's id (the one the keyholders named, from `/challenge` openCase), the hybrid key the bankers encrypt shares to; `409` while a case for the lookup id is open |
@@ -294,6 +297,8 @@ tables, and no route reads the counter itself.
 | `anos_accounts`           | One row per anos account a pod made: type, the blob with both pairs, the first key blob, the signed creation, when it was submitted, the break-glass blob after a recovery; never deleted |
 | `noted_transactions`      | One row per ledger transaction a pod noted for its tax records: the ledger's facts in the clear, the private part as a blob under the pod's encryption key; one per pod and transaction; deleted when the person removes it |
 | `wallet_settings`         | One row per pod: the small things its wallet remembers as one encrypted blob (the Protect your passkey answer first); replaced in place |
+| `joy_memories`            | One row per pod: the member's memory file for Joy (section 30) as one encrypted blob, which this server cannot open; replaced in place |
+| `joy_usage`               | One row per pod and day (UTC): the messages sent to Joy and the tokens Anthropic counted for them; no text of a message; the daily limit is read from it |
 | `recovery_cases`          | One row per recovery case: lookup id, the pod being recovered, contact email and phone (both on a case opened since 2026-11-12; the table's check is still at least one of the two, for a case of before), status; one open case per lookup id |
 | `recovery_pods`           | One per case: the recovery passkey, the recovery session, the hybrid key and its wrapped private halves |
 | `recovery_shares`         | What the keyholders posted to a case, as posted; append-only           |
@@ -349,6 +354,11 @@ at boot. Everything after `PGPASSWORD` has a default.
 | `ALERT_PUSH_CONTACT`       | none                    | The contact the delivery services are given: `https://wallet.anocloud.com` on the servers |
 | `ALERT_REMOVE_MINUTES`     | `43200`                 | How long an email or a phone that was taken off still gets every alert (a month) |
 | `VALIDATOR_KEYS_FILE`      | `network/validators.json` | The validators' public keys, for their reports of waiting transfers; a path from the repo's root, or a full path |
+| `ANTHROPIC_API_KEY`        | none: Joy is off        | Anthropic's API key (Joy, `docs/schemas.md` section 30); without it `/ask-joy` answers `503 joy is off` |
+| `JOY_MODEL`                | `claude-haiku-5-5`      | The model that writes Joy's answers                              |
+| `JOY_EFFORT`               | `medium`                | How hard the model thinks before it answers: `low`, `medium` or `high` |
+| `JOY_MAX_TOKENS`           | `16000`                 | The most tokens one request to Anthropic may write, the model's thinking included |
+| `JOY_DAILY_MESSAGES`       | `300`                   | How many messages one pod may send Joy in one day (UTC)          |
 
 The JSON body limit is computed from the last two:
 `MAX_IMAGES_PER_REQUEST * MAX_IMAGE_BYTES * 1.4 + 1 MB`.
@@ -406,6 +416,7 @@ src/
   marketplace/       /create-listing, /close-listing, /list-listings
   anos-accounts/     /create-anos-account, /mark-anos-account-submitted, /list-anos-accounts, /store-first-key-blob, /get-anos-account
   wallet-memory/     the six wallet memory routes, /add-noted-transaction to /set-wallet-settings; the two tables' queries
+  joy/               Joy, the wallet's AI (section 30): /ask-joy, /get-joy-memory, /set-joy-memory; the two Joy tables' queries; joy.anthropic.js, the call to Anthropic through its own package; joy.memory.js, the memory file's text and Joy's two tools
   recovery/          /open-recovery-case, /unlock-recovery-pod, /get-recovery-pod, the six moderator routes, /receive-recovery-share/:caseId, /recover-with-backup-code, /complete-recovery-case, /rotate-backup-code, /store-break-glass-blob; the four recovery tables' queries
   attesting/         the fourteen attestor routes, /list-attestors to /dismiss-attestor-case, and the person's /list-my-cases, /get-my-case, /share-lookup-id, /add-dispute-evidence; the five attestation tables' queries; account-signatures.js, the validators' any-two-pairs rule
   break-glass/       the nine break-glass routes, the person's /file-break-glass-moves and /list-my-break-glass-moves and the attestors' /list-break-glass-cases to /dismiss-break-glass-case; the two break-glass tables' queries
@@ -415,6 +426,8 @@ src/
   middleware/        404 and the central error handler
 db/
   schema.sql         the whole schema, built from nothing
+joy/
+  shared-memory.md   what every request to Anthropic begins with, the same for every member: who Joy is and how she answers (section 30)
 network/
   validators.json    the id and the public key of each validator, from the validators' registry: who may report a waiting transfer (section 25)
 scripts/

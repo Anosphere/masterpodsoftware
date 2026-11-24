@@ -80,7 +80,7 @@ Four levels. A route's level is given with the route in section 5.
 | none | Plain JSON body, no signature. | `/challenge`, `/check-username`, `/get-anopod-session-keys`, `/get-anos-account`, `/check-signing-passkey` (section 22), `/report-waiting-transfers` (2026-11-21, section 25), whose message is signed by a validator's own key, `GET /sticker-picture/<set>/<number>` (2026-11-23, section 28), which has no body at all, and `/create-anopod`, `/unlock`, which are signed by the ephemeral keys inside them |
 | session | Signed by the pod's current ephemeral keys (section 3). Vouched or not. | `/search-usernames`, `/send-vouch-request`, `/check-anopod-status`, `/list-notifications`, `/mark-notifications-read`, `/get-anopod-profile` |
 | vouched | session, and `anopods.vouched` is true. | `/list-vouch-requests`, `/approve-vouch-request`, `/decline-vouch-request`, `/complete-setup`, `/add-to-security-bucket-one`, `/add-to-security-bucket-two`, `/list-security-records` |
-| setup | vouched, and setup is complete (`anopod_encryption_key_blob_2` is set, so the pod has chat keys). | every chat and marketplace route; `/create-anos-account`, `/mark-anos-account-submitted`, `/list-anos-accounts`, `/store-first-key-blob` (section 22); the six wallet memory routes, `/add-noted-transaction` to `/set-wallet-settings` (2026-11-07); the person's two break-glass routes, `/file-break-glass-moves` and `/list-my-break-glass-moves` (2026-11-08, section 14); the six DAO routes, `/create-dao-proposal` to `/list-dao-votes` (2026-11-08, section 15); `/add-passkey` and `/list-passkeys` (section 19); the eight routes of a pod's security alerts, `/list-alert-settings` to `/keep-alert-phone` (2026-11-21, section 25); `/list-stickers` (2026-11-23, section 28) |
+| setup | vouched, and setup is complete (`anopod_encryption_key_blob_2` is set, so the pod has chat keys). | every chat and marketplace route; `/create-anos-account`, `/mark-anos-account-submitted`, `/list-anos-accounts`, `/store-first-key-blob` (section 22); the six wallet memory routes, `/add-noted-transaction` to `/set-wallet-settings` (2026-11-07); the person's two break-glass routes, `/file-break-glass-moves` and `/list-my-break-glass-moves` (2026-11-08, section 14); the six DAO routes, `/create-dao-proposal` to `/list-dao-votes` (2026-11-08, section 15); `/add-passkey` and `/list-passkeys` (section 19); the eight routes of a pod's security alerts, `/list-alert-settings` to `/keep-alert-phone` (2026-11-21, section 25); `/list-stickers` (2026-11-23, section 28); Joy's three routes, `/ask-joy`, `/get-joy-memory` and `/set-joy-memory` (2026-11-24, section 30) |
 
 Three middlewares: `requireSession`, `requireVouched`, `requireSetup`.
 Failing them: `401` (session), `403 anopod not vouched`, `403 setup not
@@ -1758,6 +1758,11 @@ Keys live in RAM and die with the tab. Nothing secret is stored on the phone.
 | `ALERT_PUSH_CONTACT` | none | The contact the delivery services are given: `https://wallet.anocloud.com` on the servers |
 | `ALERT_REMOVE_MINUTES` | `43200` | How long an email or a phone that was taken off still gets every alert (a month) |
 | `VALIDATOR_KEYS_FILE` | `network/validators.json` | The validators' public keys; a path from the repo's root, or a full path |
+| `ANTHROPIC_API_KEY` | none: Joy is off | Anthropic's API key (section 30, 2026-11-24) |
+| `JOY_MODEL` | `claude-haiku-5-5` | The model that writes Joy's answers |
+| `JOY_EFFORT` | `medium` | How hard the model thinks before it answers: `low`, `medium` or `high` |
+| `JOY_MAX_TOKENS` | `16000` | The most tokens one request to Anthropic may write, the model's thinking included |
+| `JOY_DAILY_MESSAGES` | `300` | How many messages one pod may send Joy in one day (UTC) |
 
 All have defaults, so the existing `.env` keeps working. The JSON body
 limit is computed from the last two: `MAX_IMAGES_PER_REQUEST *
@@ -1771,6 +1776,9 @@ four of them have no default. With both email lines set the emails are
 on, and with both phone lines set the notifications on the phone are on.
 With neither line of a pair that part is off, and one line of a pair
 without the other stops the boot (25.8).
+
+The five after them are Joy's (section 30, 2026-11-24). The first has no
+default: without it Joy is off and this server runs as before (30.8).
 
 ## 9. Genesis
 
@@ -11928,3 +11936,424 @@ scratch folder, and none of them is kept in it.
   sha256 began 9894ae57. It makes 45 tables, as before: the count that
   the deploy's schema line prints does not change with this step, so
   that line also counts the five new columns and the nine new triggers.
+
+## 30. Joy, the wallet's AI (2026-11-24)
+
+Design settled 2026-11-24 in a talking chat with the user, with no plan
+file: the chat's messages are the plan, and the user's word for the build
+was "Let's do it." The work note of that talk is
+`~/Desktop/Z-TestNet/forclaude/notes/project-wallet-ai-joy.md`. What it
+is: a member writes to an AI in the wallet, named Joy, as they would to
+any AI chat. The user: "Basically they're getting AI for free. They can
+use it for whatever the hell they would use the free version of CHATgpt
+for." The answers are written by a model of the company Anthropic,
+Claude Haiku 5.5, which this server calls for every message. Two steps in
+order: this server (this section) and the wallet (its spec: a Joy tab,
+the chat, the memory file's page). With this server alone deployed
+nothing changes for anyone: no wallet calls the new routes. One feature
+folder, `src/joy/`; two tables; three routes; five env variables; one
+file of text, `joy/shared-memory.md`; and one npm package,
+`@anthropic-ai/sdk`, this server's first new package since the build of
+2026-10-24. The validators, the keyholders, the signing servers and the
+doormen are not touched. Nothing above this section changes except the
+items in 30.9.
+
+### 30.1 The rules
+
+- Day one is one thing. The user: "For day one, I want a joy tab, and
+  there is a chat where members can chat with Joy." And: "Remember,
+  simple set up at first, 1 task, use AI in my web app".
+- Only vouched members. The user: "Of course only vouched members can
+  use it". The three routes are at level setup, as every chat route is.
+- A memory file for each member. The user: "The user needs a memory file
+  like i have one on my computer so that Joy knows who they are and shit
+  like that." Joy reads it with every message and adds to it herself.
+  The member reads it, changes it and empties it in the wallet.
+- The memory file is encrypted on the phone, as a note is (the chat's
+  question, the user: "Okay."). This server stores a blob it cannot
+  open.
+- A conversation is stored nowhere on this server. The wallet holds it
+  and sends it with every message. The user: "Because chat's dont't
+  really need to be saved." The wallet keeps the one chat that is under
+  way in the browser, so a reload does not lose it (its spec). Saved
+  chats are a later build, on the after-production list ("Joy: saved
+  chats").
+- The answer is a stream (the user: "3. Yes."). The doormen in front of
+  this server end a request that waits 30 seconds for a byte (`timeout
+  server 30s` in their HAProxy settings), and a long answer in one piece
+  can take longer. A stream keeps bytes moving.
+- 300 messages a day for one pod (the user: "4. Yes."). The user's own
+  words before: "we can set an accounts limit really high, incase some
+  butt head is trying to blast it."
+- A basic shared memory file from the start. The user: "Probably do want
+  to have a basic share memory file to start with. Like you say, I'm
+  Joy, etc..." It is a file of this repository for now (30.7).
+- Cost is not the first aim. The user: "It will add to the cost, but
+  tha'ts okay, I want this to be cool, not just cheap."
+
+### 30.2 What this server keeps, and what passes through it
+
+Kept, in the database:
+
+- The member's memory file, as one blob under the pod's encryption key
+  (`joy_memories`). This server cannot open it.
+- For each pod and each day, the number of messages sent to Joy and the
+  tokens Anthropic counted for them (`joy_usage`). No text.
+
+Passing through, kept nowhere:
+
+- The conversation and the opened memory file. The wallet sends both in
+  the clear with every message, inside the signed request. They pass
+  through this server's memory on their way to Anthropic. They are
+  written into no table and no log.
+
+So this is the one place where something a pod keeps private reaches
+this server readable. It has to: Anthropic's model reads the text.
+The wallet says so to the member on the Joy tab (its spec).
+
+### 30.3 Tables
+
+`joy_memories`, one row per pod, replaced in place:
+
+| Column | Type | Notes |
+| ------ | ---- | ----- |
+| `anopod_id` | `BYTEA` | Primary key, 32 bytes. The pod |
+| `memory_blob` | `BYTEA` | Not null, at most 32768 bytes. Ciphertext of the memory file, made by the wallet |
+| `created_at`, `updated_at` | `TIMESTAMPTZ` | As every table |
+
+`joy_usage`, one row per pod and day:
+
+| Column | Type | Notes |
+| ------ | ---- | ----- |
+| `anopod_id` | `BYTEA` | 32 bytes. The pod |
+| `day` | `DATE` | The day, in UTC. Primary key with `anopod_id` |
+| `messages` | `INTEGER` | The messages the pod sent Joy that day; 0 or more |
+| `input_tokens` | `BIGINT` | `usage.input_tokens` of Anthropic's answers, summed |
+| `output_tokens` | `BIGINT` | `usage.output_tokens`, the model's thinking included, summed |
+| `cache_read_tokens` | `BIGINT` | `usage.cache_read_input_tokens`, summed |
+| `cache_write_tokens` | `BIGINT` | `usage.cache_creation_input_tokens`, summed |
+| `created_at`, `updated_at` | `TIMESTAMPTZ` | As every table |
+
+Both have the `set_updated_at` trigger and a `COMMENT ON` for the table
+and every column. No foreign keys, as everywhere.
+
+The memory file itself is text of at most 10240 bytes (UTF-8). Its blob
+may be up to 32768 bytes, because the wallet wraps the text in JSON
+before it encrypts it, and JSON can double a text.
+
+### 30.4 Routes
+
+All three at level setup. The caller is `req.anopod`.
+
+**`POST /get-joy-memory`**. Body `{ }`. Answers `200 { memoryBlob,
+updatedAt }`: the blob in hex and when it was last set, both `null`
+before the first set.
+
+**`POST /set-joy-memory`**. Body `{ memoryBlob }`, hex or base64, 1 to
+32768 bytes. Checks: the shape (`400 bad request shape`); the blob's
+length (`400 invalid memoryBlob`). Writes the pod's one row whole.
+Answers `200 { updatedAt }`. A member empties the file by setting the
+blob of an empty file.
+
+**`POST /ask-joy`**. Body:
+
+```
+{
+  messages: [ { role: "user" | "assistant", text: "..." }, ... ],
+  memory:   "<the member's memory file, as text>"
+}
+```
+
+`messages` is the conversation, oldest first, with the member's new
+message last. Checks, in order:
+
+1. The shape: `messages` an array, `memory` a string. `400 bad request
+   shape`.
+2. The messages: 1 to 200; each with `role` `user` or `assistant` and a
+   `text` that is a string with more than spaces in it; the first and
+   the last are the member's. `400 invalid messages`. Two messages of
+   the same role may follow each other.
+3. The texts together are at most 120,000 bytes. `400 conversation too
+   long`.
+4. `memory` is at most 10240 bytes. `400 memory too long`.
+5. Joy is on (`ANTHROPIC_API_KEY` is set). `503 joy is off`.
+6. The pod's count of the day (UTC) is below `JOY_DAILY_MESSAGES`. `429
+   daily limit reached`. Passing this check raises the count by one, in
+   the same statement, so two requests at the same instant cannot both
+   take the last place.
+
+A refusal of these checks is answered as every route answers one. Past
+them the answer has status `200` and the type `application/x-ndjson;
+charset=utf-8`, with `Cache-Control: no-store`. It is a stream of lines,
+each one JSON object with a line break after it:
+
+```
+{ "text": "..." }                       a piece of Joy's answer, as it is written
+{ "done": true, "stop": "end", "memory": null }
+                                        the last line of an answer that ended
+{ "error": "joy busy" }                 the last line of an answer that failed
+```
+
+- `stop` is `end`, `length` (the model reached `JOY_MAX_TOKENS`, so the
+  answer is cut off) or `refused` (Anthropic's safety check stopped the
+  answer).
+- `memory` is the member's whole memory file after Joy changed it, as
+  text, or `null` when she changed nothing. The wallet encrypts it and
+  stores it with `/set-joy-memory`.
+- `error` is `joy busy` (too many calls in a minute at Anthropic, or
+  Anthropic is overloaded or failing), `joy unavailable` (Anthropic
+  cannot be reached, the key is refused, the credit or the spend limit
+  is used up, or Anthropic does not take the request) or `joy was cut
+  off` (the connection to Anthropic dropped in the middle of an answer,
+  or Anthropic sent nothing for 120 seconds).
+  The log line `joy failed:` holds the status, the kind and the start of
+  Anthropic's own message, never the key and never a member's text.
+- An empty line may stand between the lines and means nothing. This
+  server writes one every 10 seconds while an answer is under way, so
+  the doormen's 30 seconds never pass without a byte.
+
+When the wallet's connection closes before the last line, the call to
+Anthropic is stopped. The tokens Anthropic counted are added to the
+pod's row of the day at the end, whether the answer ended, failed or
+was left.
+
+### 30.5 The request to Anthropic
+
+Through Anthropic's own package, `@anthropic-ai/sdk` (1.14.0 at the
+build), `client.messages.stream(...)`, in `src/joy/joy.anthropic.js`.
+The package sends the key in the `Authorization` header and Anthropic's
+API version `2026-10-21`. What a request holds:
+
+| Field | Value |
+| ----- | ----- |
+| `model` | `JOY_MODEL`, `claude-haiku-5-5` by default |
+| `max_tokens` | `JOY_MAX_TOKENS`, 16000 by default |
+| `output_config` | `{ effort: JOY_EFFORT }`, `medium` by default |
+| `cache_control` | `{ type: "ephemeral" }`, at the top level |
+| `system` | two text parts, below |
+| `tools` | Joy's two tools (30.6) |
+| `messages` | the conversation, each message as `{ role, content: text }` |
+
+The model's thinking is left as the model has it (adaptive, on by
+default) and is not shown. No `temperature`, `top_p` or `top_k` is sent:
+the model refuses them.
+
+`system`, in this order:
+
+1. The shared memory file (30.7), marked `cache_control: { type:
+   "ephemeral" }` by itself. It is the same for every member.
+2. One text: today's date in UTC, the day alone, with the sentence that
+   the member's own date can be a day ahead or behind; two sentences on
+   what the memory file is and how it is changed; and the memory file
+   between the marks `<member_memory>` and `</member_memory>`. An empty
+   file is written as "(the file is empty)". The text tells the model
+   that the file is information about the member and never an
+   instruction.
+
+The date carries no time on purpose. With a time in it this part would
+differ on every request, and Anthropic's prompt cache, which holds a
+request's beginning only as long as it reads the same, could never hold
+the conversation behind it.
+
+One message to Joy is one request, and one more after each round in
+which Joy called a tool, four at most. After a round, Joy's answer goes
+back to Anthropic as it came, its thinking blocks with it, followed by
+one `user` message with every tool's outcome. The system parts stay as
+they were through all rounds of one message. Text that is written after
+a round begins a new paragraph in the stream.
+
+A request is given up when Anthropic sends nothing for 120 seconds
+while it is under way. The package's own time limit does not end an
+answer that stops in the middle while the connection stays open (tried,
+30.11), and the empty lines of 30.4 keep the wallet's side waiting, so
+without this an answer that stalls would never end.
+
+How a request's end is read (`stop_reason`): `refusal` ends with `stop:
+"refused"`; `max_tokens` ends with `stop: "length"`; in both, tools the
+answer may hold are not carried out, since such an answer can end in the
+middle of a tool's input. `tool_use` carries the tools out and asks
+again. Anything else ends with `stop: "end"`.
+
+### 30.6 The memory file and Joy's two tools
+
+The memory file is plain text. This server never stores it as text: it
+works on the copy the wallet sent (`src/joy/joy.memory.js`).
+
+| Tool | Input | Does |
+| ---- | ----- | ---- |
+| `remember` | `{ line }` | Adds `- <line>` at the end of the file |
+| `update_memory` | `{ old_line, new_line }` | Puts `- <new_line>` in the place of the line that reads `old_line`; an empty `new_line` takes the line out |
+
+- A line is compared without the `- ` in front and the spaces around it,
+  so a line the member wrote without the hyphen is found too.
+- A line break inside a line becomes a space. A line is at most 500
+  characters.
+- `remember` with a line the file already has changes nothing and is
+  answered `that line is already in the memory file`.
+- A change that would take the file past 10240 bytes is refused, and Joy
+  is told to take out or shorten a line first.
+- What Joy is told: `saved`, `changed`, `taken out`, or the refusal as a
+  few words with `is_error: true`.
+- Both tools carry `eager_input_streaming: true`, Anthropic's advice for
+  a streamed request. Anthropic then hands a tool's input over as the
+  model wrote it, unchecked. So the input is checked here, and one that
+  is not the object the tool asks for is told back in Anthropic's own
+  form for it, `{ "INVALID_JSON": "<the input>" }`.
+
+Anthropic also offers a ready-made memory tool, which works on a folder
+of files and makes the model look into the folder before it answers.
+Joy has one file, and it is in every request already, so two small tools
+of our own are the shorter way.
+
+### 30.7 The shared memory file
+
+`joy/shared-memory.md`, at the repository's root: who Joy is, how she
+answers, what she cannot do yet and what she never asks for. It is read
+once, when the server starts, and stands at the beginning of every
+request, the same for every member. An empty file stops the boot. The
+whole file goes to the model, so it holds no note for a reader of the
+repository.
+
+What it says today, in short: Joy is an AI and says so; she answers in
+the member's language, shortly, in plain text with no Markdown (the
+wallet shows her words as they are); she cannot look anything up, see
+pictures or act in the wallet; she has not been taught how the wallet
+works and says so, and never guesses at passkeys, recovery or sending;
+she never asks for a passkey, recovery details, a key or a password.
+
+A shortcut that fits a file of about twenty lines: a change to it is a
+commit and this server's update on the three servers. When the file
+grows into the wallet's how-to, it moves into the database, so that it
+can be changed without an update. That is not built.
+
+### 30.8 Environment variables
+
+| Variable | Default | Description |
+| -------- | ------- | ----------- |
+| `ANTHROPIC_API_KEY` | none: Joy is off | Anthropic's API key |
+| `JOY_MODEL` | `claude-haiku-5-5` | The model that writes Joy's answers |
+| `JOY_EFFORT` | `medium` | How hard the model thinks before it answers: `low`, `medium` or `high`; anything else stops the boot |
+| `JOY_MAX_TOKENS` | `16000` | The most tokens one request to Anthropic may write, the model's thinking included |
+| `JOY_DAILY_MESSAGES` | `300` | How many messages one pod may send Joy in one day (UTC) |
+
+This server boots and runs without any of them. Without the key,
+`/ask-joy` answers `503 joy is off`, nothing is sent to Anthropic and
+nothing is counted; the two memory routes work. So this step can be
+deployed before the key is set. The key is read in `src/config/env.js`
+like every setting and handed to the package; no error prints it.
+
+### 30.9 Files
+
+- New: `src/joy/joy.router.js`, `joy.handlers.js`, `joy.service.js`,
+  `joy.queries.js`, `joy.anthropic.js`, `joy.memory.js`;
+  `joy/shared-memory.md`.
+- `db/schema.sql`: one block at the end, the two tables with their
+  triggers and comments.
+- `src/app.js`: the router is mounted, after the wallet memory router.
+- `src/config/env.js`: `optionalChoice`, `readJoy`, and `joy` in `env`.
+- `package.json`, `package-lock.json`: `@anthropic-ai/sdk`, and the
+  seven packages it brings.
+- `.example.env`: the five variables, each as a comment line.
+- `README.md`: the three routes, the two tables, the five variables,
+  the folder and the file in their lists, and the three routes in the
+  row of level setup.
+- Above this section: the three routes in the row of level setup in
+  section 2, and the five variables with one paragraph in section 8.
+
+### 30.10 What was decided in the build, and what is left
+
+Decided while building, each a small thing the talk had not named:
+
+- The last line of an answer carries `stop` beside `memory`, so the
+  wallet can tell a member that an answer was cut off or refused.
+- Today's date is in the request, as a day in UTC. Joy would otherwise
+  take the year her training ended for the present. The member's own
+  clock is not sent.
+- `medium` for the model's effort, its own default, and 16000 tokens
+  for one request. Both are settings.
+- A message is counted before Anthropic is called. A message that then
+  fails is counted too.
+- 120 seconds of silence from Anthropic end a request (30.5).
+- The sizes: 200 messages and 120,000 bytes for one request, 500
+  characters for a line of the memory file. 120,000 bytes keep one
+  request far under the 100,000 tokens above which Anthropic's price
+  for this model is five times as high.
+
+Left as it is:
+
+- Joy cannot look anything up on the internet, and takes no pictures or
+  files.
+- She knows nothing of the wallet. The shared memory file tells her to
+  say so.
+- The memory file is the last one written. A member who writes to Joy
+  on two devices at the same moment can lose a line that one of them
+  saved.
+- When an answer fails after Joy saved a line in an earlier round of
+  the same message, that line is lost: the changed file travels in the
+  last line only.
+- Nothing reads `joy_usage` but the daily limit. A look at the numbers
+  is a psql line.
+
+### 30.11 Notes from the build
+
+#### Build 1, the masterpod (2026-11-24)
+
+- Built in the working tree of `~/Desktop/Z-TestNet/masterpodsoftware`
+  on top of 305fe5e, in the talking chat itself, on the user's word.
+- No real call to Anthropic was made: no key existed yet. Everything
+  below ran against a stand-in for Anthropic's API on this Mac, a small
+  server that answers `POST /v1/messages` with a stream in Anthropic's
+  form. The package was pointed at it by `ANTHROPIC_BASE_URL`. So the
+  form of the request is checked against Anthropic's reference and the
+  package's own types, and the first real answer is the proof that is
+  still owed.
+- The load. `createApp()` with made-up settings and no key: 115 routes,
+  three more than before, each of the three with the three checks of
+  level setup in front of its handler. A `JOY_EFFORT` of `max` stops
+  the boot with the variable's name.
+- The trial. The working tree's app on a scratch PostgreSQL of its own
+  (port 57931, never this Mac's own server), called over HTTP with
+  requests signed as a wallet signs them, 81 checks, none failed: the
+  refusals of a pod that is not vouched and of one without setup on all
+  three routes; the memory file's two routes with their limits (32768
+  bytes taken, 32769 refused); the thirteen refusals of `/ask-joy`'s
+  checks, none of which reached the stand-in or the count; a plain
+  answer line by line; every field of the request to Anthropic; Joy
+  saving a line (two requests, her answer going back whole with its
+  thinking block, the outcome in one message, the new file in the last
+  line); two tools in one answer; a tool input of the wrong kind; a
+  model that never stops calling tools (four requests, then the end);
+  a refused and a cut-off answer; a refused key, a used-up spend limit,
+  a rate limit and an overloaded Anthropic, each as its reason; a
+  connection dropped in mid-answer; an empty line after 10 seconds of
+  silence; the call to Anthropic stopped when the caller went away; the
+  daily limit, with twenty requests at the same instant and five places
+  left (five answered, fifteen refused); and the two tools by
+  themselves. With no key: `503 joy is off`, nothing counted, the
+  memory routes working.
+- The watch on silence. First the fault: with the package's time limit
+  set to 3 seconds, a stand-in that sent half an answer and then nothing
+  left the call waiting after 9 seconds. Then the watch, in a copy of
+  the code with its 120 seconds set to 2: the half answer came, the call
+  ended after 2.0 seconds as `joy was cut off` and was closed at the
+  stand-in; an answer of forty pieces over 6 seconds, never 2 seconds
+  silent, came whole.
+- The schema file. On top of a database built from the file of before:
+  45 tables, then 47, and 47 again after a second run. Its schema as
+  `pg_dump` prints it is the same as that of a database built from the
+  new file alone.
+- A type checker's read of the whole app (`tsc --checkJs`): none of the
+  kinds that mean a real mistake.
+- The trial's tools are kept nowhere in this repository.
+- The numbers. `db/schema.sql` has 1876 lines, 52 more than before, and
+  its sha256 begins 9ae0fd66. Before the step it had 1824 lines and its
+  sha256 began 0d713e9a. It makes 47 tables where it made 45.
+- The deploy has three things the usual update does not: the schema
+  file goes onto the database before the new code runs; `npm ci` runs
+  on each server, since `package-lock.json` changed; and the key goes
+  into `.env` on each server, before or after, since Joy is off without
+  it.
+- Left, and asked about: two sentences say that everything a pod keeps
+  private reaches this server as ciphertext (the README's second
+  paragraph, and section 1's last bullet). What a member writes to Joy
+  does not. They were not changed in this build.
