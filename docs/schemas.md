@@ -44,7 +44,10 @@ backup code, backup code rotation, several passkeys, several sessions).
   most 4096 pixels. A security image cannot be looked into. Since
   2026-11-22 (section 27) a public room's picture is plaintext like a
   selfie and is looked into the same way, with limits of its own: at most
-  320 pixels wide and high, and at most 100,000 bytes.
+  320 pixels wide and high, and at most 100,000 bytes. Since 2026-11-23
+  (section 28) a sticker's picture is the one picture that does not
+  travel inside JSON: it is the answer of a `GET`, the bytes themselves
+  with the type `image/webp`.
 - Every table has `created_at`, and `updated_at` with the `set_updated_at`
   trigger unless the rows never change (then `created_at` only). (Since
   2026-11-19, section 21, one table is an exception: a `chat_room_members`
@@ -74,10 +77,10 @@ Four levels. A route's level is given with the route in section 5.
 
 | Level | Meaning | Routes |
 | ----- | ------- | ------ |
-| none | Plain JSON body, no signature. | `/challenge`, `/check-username`, `/get-anopod-session-keys`, `/get-anos-account`, `/check-signing-passkey` (section 22), `/report-waiting-transfers` (2026-11-21, section 25), whose message is signed by a validator's own key, and `/create-anopod`, `/unlock`, which are signed by the ephemeral keys inside them |
+| none | Plain JSON body, no signature. | `/challenge`, `/check-username`, `/get-anopod-session-keys`, `/get-anos-account`, `/check-signing-passkey` (section 22), `/report-waiting-transfers` (2026-11-21, section 25), whose message is signed by a validator's own key, `GET /sticker-picture/<set>/<number>` (2026-11-23, section 28), which has no body at all, and `/create-anopod`, `/unlock`, which are signed by the ephemeral keys inside them |
 | session | Signed by the pod's current ephemeral keys (section 3). Vouched or not. | `/search-usernames`, `/send-vouch-request`, `/check-anopod-status`, `/list-notifications`, `/mark-notifications-read`, `/get-anopod-profile` |
 | vouched | session, and `anopods.vouched` is true. | `/list-vouch-requests`, `/approve-vouch-request`, `/decline-vouch-request`, `/complete-setup`, `/add-to-security-bucket-one`, `/add-to-security-bucket-two`, `/list-security-records` |
-| setup | vouched, and setup is complete (`anopod_encryption_key_blob_2` is set, so the pod has chat keys). | every chat and marketplace route; `/create-anos-account`, `/mark-anos-account-submitted`, `/list-anos-accounts`, `/store-first-key-blob` (section 22); the six wallet memory routes, `/add-noted-transaction` to `/set-wallet-settings` (2026-11-07); the person's two break-glass routes, `/file-break-glass-moves` and `/list-my-break-glass-moves` (2026-11-08, section 14); the six DAO routes, `/create-dao-proposal` to `/list-dao-votes` (2026-11-08, section 15); `/add-passkey` and `/list-passkeys` (section 19); the eight routes of a pod's security alerts, `/list-alert-settings` to `/keep-alert-phone` (2026-11-21, section 25) |
+| setup | vouched, and setup is complete (`anopod_encryption_key_blob_2` is set, so the pod has chat keys). | every chat and marketplace route; `/create-anos-account`, `/mark-anos-account-submitted`, `/list-anos-accounts`, `/store-first-key-blob` (section 22); the six wallet memory routes, `/add-noted-transaction` to `/set-wallet-settings` (2026-11-07); the person's two break-glass routes, `/file-break-glass-moves` and `/list-my-break-glass-moves` (2026-11-08, section 14); the six DAO routes, `/create-dao-proposal` to `/list-dao-votes` (2026-11-08, section 15); `/add-passkey` and `/list-passkeys` (section 19); the eight routes of a pod's security alerts, `/list-alert-settings` to `/keep-alert-phone` (2026-11-21, section 25); `/list-stickers` (2026-11-23, section 28) |
 
 Three middlewares: `requireSession`, `requireVouched`, `requireSetup`.
 Failing them: `401` (session), `403 anopod not vouched`, `403 setup not
@@ -718,9 +721,20 @@ phone, written inside the transaction of the event it reports and sent by
 the alert sender. It holds no address, and it is kept after it is sent.
 The table and its columns are in 25.2.
 
+### sticker_sets, stickers, sticker_tags
+
+Added 2026-11-23 (section 28). The stickers of the wallet's chat: the
+sets, each with its place in the row of sets; the stickers, each with its
+set, its two-digit number, its place in the set and its picture, a WebP;
+and the tags of each sticker, one row per sticker and tag. In the clear
+and the same for everybody. Only `scripts/stickers.js` writes them. The
+tables and their columns are in 28.2.
+
 ## 5. Routes
 
-Every route is a `POST` with a JSON body. Level `none` routes take the body
+Every route is a `POST` with a JSON body. (Since 2026-11-23, section 28,
+one route is a `GET` with no body: `/sticker-picture/<set>/<number>`.)
+Level `none` routes take the body
 as shown; every other route takes the section 3 envelope and the body shown
 is `payload.body`. Checks run in the order listed and stop at the first
 failure. "The caller" is `req.anopod`. Every multi-row write is one database
@@ -1302,6 +1316,28 @@ Body: `{ anopodIds: [ ... ] }`, 1 to 50.
 
 Answer: `200 { keys: [ { anopodId, chatPublicKey, chatPublicKeyPq } ] }`,
 only for pods whose setup is complete; the others are left out.
+
+### POST /list-stickers (setup)
+
+Body: `{}` (2026-11-23, section 28).
+
+Answer: `200 { sets: [ { name, stickers: [ { number, tags: [ ... ] } ] } ] }`:
+every set of stickers in the order of the row, each with its stickers in
+their order, each sticker with its two-digit number and its tags. Text
+only; no picture. A set with no sticker is left out. The route writes
+nothing.
+
+### GET /sticker-picture/:set/:number (none)
+
+No body (2026-11-23, section 28). `:set` is a set's name and `:number` a
+sticker's two-digit number, as `/list-stickers` gives them.
+
+Checks: there is such a sticker (`404 no sticker`, also for a name or a
+number that cannot be one).
+
+Answer: `200` with the picture's bytes as they are stored and
+`Content-Type: image/webp`. This is the one answer of this server that is
+not JSON. The route writes nothing.
 
 ### POST /create-listing (setup)
 
@@ -10345,3 +10381,670 @@ changed.
   the same sha256, so the deploy's schema line stands as handed. One
   commit carries the build and this: nine files, the seven of the build
   and `src/app.js` and `src/util/images.js`.
+
+## 28. Stickers (2026-11-23)
+
+Design settled 2026-11-23 in a talking chat (the plan is
+`~/Desktop/Z-TestNet/forclaude/stickers-database-plan-1.md`, FINAL,
+2026-11-23, on the user's word "Yes, final"). Why: the user, 2026-11-23:
+"I want to add the ability for my users to add stickers to their chats,
+much like how LINE does it." An earlier try of the same day kept the
+stickers as files on the wallet's servers, and the user set it aside: "It
+started by building something that would work great for 10 stickers, but
+not for a real website." So the stickers are in this server's database,
+the pictures too (the user: "1. Yes"). Three steps in order: this server
+(this section, step 1 of the plan: three new tables, two new reads, and
+the script that puts the stickers in), the wallet (its spec, step 2: the
+address `/stickers/<set>/<number>` in the wallet's server program, the
+read of the list, and what a person sees), and the stickers themselves
+(step 3: the folder of the first 200 is copied onto a masterpod server
+and put in with the script, with no commit and no deploy). With this
+server alone deployed nothing changes for anyone: no wallet calls the two
+reads yet, and the tables are empty. One schema block with three new
+tables, two new routes and one new script. No env variable and no npm
+package. The validators, the doormen, the keyholders, the signing servers
+and the wallet's proxy are not touched. Nothing above this section
+changes except the items in 28.6.
+
+### 28.1 The rule
+
+- The stickers are the team's, free and the same for everybody (the
+  plan's section 1, point 8). They are stored here in the clear, the
+  pictures too (decision 4).
+- A sticker belongs to a set. A set has a name: small letters, digits and
+  hyphens, at most 32 characters. A sticker has a number in its set: two
+  digits, `01` to `99`. The name and the number travel inside every
+  message that carries the sticker, so neither is ever changed.
+- A sticker's picture is a WebP, still or moving, of at most 150,000
+  bytes, at most 370 pixels wide and 320 high (the plan's section 4,
+  point 2).
+- A picture never changes under its number. A redrawn sticker gets a new
+  number (section 4, point 1). This is what lets a phone keep a picture
+  for a year (step 2).
+- The sets stand in a row, and the stickers of a set stand in an order.
+  The database sorts both (the plan's 3.5).
+- A sticker has tags: the words that bring it up while a person types.
+  They are matched on the phone, from the list (decision 5; the user: "2.
+  Yes"). This server never searches the tags, so nothing a person types
+  in a chat reaches it.
+- The stickers come in by a script that the operator runs on a masterpod
+  server (decision 6; the user: "3. Yes"). No route writes a sticker.
+- The script adds, and brings in line. It deletes nothing and moves no
+  set that is in the row (section 4, point 4). Taking a set or a sticker
+  out and moving a set are plain database lines, in 28.5.
+- A sticker that somebody sends is an ordinary encrypted message whose
+  whole text is `[sticker:<set>/<number>]` (the plan's 3.5). This server
+  cannot tell it from any other message, and no chat route changes.
+
+### 28.2 The three tables
+
+`db/schema.sql`, one new block, the last thing in the file, after the
+room picture block: "The stickers block (2026-11-23, spec section 28)".
+
+```sql
+CREATE TABLE IF NOT EXISTS sticker_sets (
+  set_name   TEXT        PRIMARY KEY CHECK (set_name ~ '^[a-z0-9-]{1,32}$'),
+  place      INTEGER     NOT NULL CHECK (place >= 1),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE OR REPLACE TRIGGER sticker_sets_set_updated_at
+  BEFORE UPDATE ON sticker_sets
+  FOR EACH ROW
+  WHEN (OLD.* IS DISTINCT FROM NEW.*)
+  EXECUTE FUNCTION set_updated_at();
+
+CREATE TABLE IF NOT EXISTS stickers (
+  set_name   TEXT        NOT NULL CHECK (set_name ~ '^[a-z0-9-]{1,32}$'),
+  number     TEXT        NOT NULL CHECK (number ~ '^[0-9]{2}$' AND number <> '00'),
+  place      INTEGER     NOT NULL CHECK (place >= 1),
+  image      BYTEA       NOT NULL CHECK (octet_length(image) BETWEEN 1 AND 150000),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (set_name, number)
+);
+
+CREATE OR REPLACE TRIGGER stickers_set_updated_at
+  BEFORE UPDATE ON stickers
+  FOR EACH ROW
+  WHEN (OLD.* IS DISTINCT FROM NEW.*)
+  EXECUTE FUNCTION set_updated_at();
+
+CREATE TABLE IF NOT EXISTS sticker_tags (
+  set_name   TEXT        NOT NULL CHECK (set_name ~ '^[a-z0-9-]{1,32}$'),
+  number     TEXT        NOT NULL CHECK (number ~ '^[0-9]{2}$' AND number <> '00'),
+  tag        TEXT        NOT NULL CHECK (char_length(tag) BETWEEN 1 AND 100),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (set_name, number, tag)
+);
+```
+
+`sticker_sets`, one row per set:
+
+- `set_name`: the set's name. It is the primary key.
+- `place`: the set's place in the row. The sets are handed out by this
+  number, the smallest first, and by name where two hold the same number.
+  The script gives a new set the highest number plus one.
+- `created_at`: when the set was added. `updated_at`: when it was last
+  moved in the row.
+
+`stickers`, one row per sticker:
+
+- `set_name` and `number`: the set and the sticker's number in it,
+  together the primary key. The number is kept as the two characters that
+  travel, `07` and not 7.
+- `place`: the sticker's place in its set. The stickers of a set are
+  handed out by this number, the smallest first. The script sets it to
+  the sticker's line in the set's file, at every run.
+- `image`: the picture's bytes, 1 to 150,000 of them. The script checks
+  that they are a WebP and how many pixels it has; the table checks the
+  weight alone. Never changed.
+- `created_at`: when the sticker was added. `updated_at`: when it last
+  got another place in its set.
+
+`sticker_tags`, one row per sticker and tag:
+
+- `set_name` and `number`: the sticker.
+- `tag`: one tag, a word or several, in small letters, 1 to 100
+  characters. The three columns together are the primary key, so a
+  sticker holds a tag once. Rows are added and deleted, never changed, so
+  the table has `created_at` alone.
+
+A `place` is not unique, in either table. A row of numbers that must
+never hold the same number twice cannot be put in a new order one row at
+a time, and the lines of 28.5 and the script do exactly that. The order
+is still always the same: where two rows hold the same number, the name
+or the sticker's number decides. No column says what kind of picture a
+sticker is: every one is a WebP. No foreign key, as everywhere (section
+1): the script writes a set, its stickers and their tags in one
+transaction. No index but the three primary keys: `/sticker-picture`
+reads one row by its key, and `/list-stickers` reads all of them. Each
+table and each column has a `COMMENT ON`. The block is idempotent (`IF
+NOT EXISTS` and `OR REPLACE`), so the whole file applies to a live
+database and a second run changes nothing. The file makes 45 tables,
+three more than before.
+
+### 28.3 The two routes
+
+**POST /list-stickers** (setup), new.
+
+Body: `{}`. The envelope of section 3, signed like every chat route. The
+route has no check of its own and writes nothing.
+
+Answer: `200`, every set in the order of the row, each with its stickers
+in their order:
+
+```json
+{
+  "sets": [
+    {
+      "name": "bear",
+      "stickers": [
+        { "number": "02", "tags": ["hello", "hi", "สวัสดี"] },
+        { "number": "01", "tags": [] }
+      ]
+    }
+  ]
+}
+```
+
+One statement reads it, so the answer is the database at one moment, also
+while the script writes. It reads no picture. The sets are sorted by
+`place` and then by name, the stickers of a set by `place` and then by
+number, and the tags of a sticker by their bytes (`COLLATE "C"`), which is
+the same order on every machine. A set with no sticker is left out. With
+no set at all the answer is `{ "sets": [] }`. The first sticker of a set
+is also the set's small picture in the wallet's row of sets.
+
+The wallet asks once after each login, when a conversation is first
+opened, and keeps the answer in the page's memory (the plan's 3.3). There
+is no timer. With 200 made-up stickers of nine tags each the answer was
+23,042 bytes and took 2 milliseconds to read; with 2,000 it was 228,290
+bytes and 17 milliseconds (28.8).
+
+**GET /sticker-picture/:set/:number** (none), new.
+
+This server's first `GET` that hands out data. It needs no login: a
+sticker is the same for everybody, and a picture on a page is fetched by
+its address alone, with nothing signed. `:set` is a set's name and
+`:number` a sticker's number, as `/list-stickers` gives them:
+`/sticker-picture/bear/07`.
+
+Checks, in order:
+
+1. `:set` has the form of a set's name and `:number` the form of a
+   sticker's number, else `404 no sticker`. The database is not asked.
+2. There is such a sticker, else `404 no sticker`.
+
+Answer: `200` with the picture's bytes as they are stored, `Content-Type:
+image/webp` and the `Content-Length`. This is the one answer of this
+server that is not JSON; a refusal is JSON like every other, `{ "error":
+"no sticker" }`. An address with a part more or a part less, and a `POST`
+to it, get the plain `404 Not Found` of every unknown route.
+
+The answer carries no keep time (`Cache-Control`). The wallet's server
+program adds the year when it hands the picture to a phone, and marks an
+answer that is not a picture "do not keep" (the plan's 3.4, step 2).
+Express adds its own mark of the bytes (`ETag`) and answers `304` with no
+body to a caller that sends the mark back (`If-None-Match`).
+
+The doormen count 50 requests in 10 seconds from one address, except from
+the wallet's servers. A phone fetches a picture through the wallet's
+servers, so that count does not reach it (read in the planning chat; the
+doormen do not change).
+
+### 28.4 The script
+
+On a masterpod server, as the masterpod user in the checkout:
+
+```bash
+npm run stickers -- look <folder>
+npm run stickers -- write <folder>
+```
+
+`look` reads the folder and the database, says what it would write and
+names every fault. It writes nothing. `write` does the same and then
+writes, all of it or nothing. The script reads `.env` like the server and
+writes through the server's own pool, so it runs on any of the three
+masterpod servers. There is no route for it.
+
+The folder has the form of the page that was written on 2026-11-23 for
+the person who makes the stickers
+(`~/Desktop/Z-TestNet/forclaude/sticker-set-template/`):
+
+```
+all-sets.ts     the list of the sets, in the order of the row
+bear.ts         the set "bear": its stickers and their tags
+bear/           the pictures of the set: 01.webp, 02.webp, ...
+cat.ts
+cat/
+```
+
+The `.ts` files are read as text and never run: a file that comes from
+outside is not run as code on a masterpod server. The reader knows the
+form of the two files and nothing more of the language. It passes over
+comments, and it does not mind how the lines are broken. In
+`all-sets.ts` it reads the lines `import { SET as <NICKNAME> } from
+'./<set>';` and the one list `export const ALL_SETS = [ <NICKNAME>, ...
+];`. A set stands in both places, once, and the order of the list is the
+order of the sets. In a set's file it reads `export const SET = { id:
+'<set>', stickers: [ { id: '<number>', tags: [ '<tag>', ... ] }, ... ]
+};`. The order of the lines is the order of the stickers. Another key in
+an object is passed over. In a folder of pictures a name that begins with
+a dot is passed over, and so is everything else in the folder that
+`all-sets.ts` does not name.
+
+What a write does:
+
+- A set that is not in the database is added behind the last set of the
+  row. Several new sets go in the order of `all-sets.ts`. A set that is
+  in the row keeps its place, whatever `all-sets.ts` says.
+- A sticker that is not in the database is added, with its picture and
+  its tags.
+- For a sticker that is in the database, its place in the set and its
+  tags are brought in line with the set's file: a tag that is new in the
+  file is added, and one that is gone from the file is deleted. This is
+  how tags and the order are changed later: edit the file, run the script
+  again.
+- A tag is stored without the spaces around it and in small letters. An
+  empty tag and a second same tag of one sticker are left out.
+- A set that is in the database and not in the folder is left as it is.
+  So a folder may hold the new sets alone.
+
+A fault stops the run before anything is written. Every fault of the
+folder and of the comparison is named in one run, each on a line of its
+own:
+
+| The fault | Its line |
+| --------- | -------- |
+| a file that is not WebP | `bear/01.webp: not a WebP picture` |
+| a file above 150,000 bytes | `bear/02.webp: 359,332 bytes, the limit is 150,000` |
+| a file above 370 by 320 pixels | `bear/03.webp: 371 by 320 pixels, the limit is 370 by 320` |
+| a line with no picture | `bear.ts line 9: sticker 05 has no picture bear/05.webp` |
+| a picture with no line | `bear/09.webp: the picture has no line in bear.ts` |
+| a number used twice | `bear.ts line 11: the number 06 stands twice` |
+| a set's name that is not small letters, digits and hyphens, or longer than 32 | `all-sets.ts: Big_Cat is not a set's name: small letters, digits and hyphens, at most 32 characters` |
+| a picture that differs from the stored one under the same number | `cat/01.webp: differs from the picture stored under this number` |
+| a sticker that is in the database and missing from the file | `cat.ts: sticker 03 is in the database and has no line in the file` |
+| a number that is not two digits, or `00` | `bear.ts line 12: 7 is not a sticker's number: two digits, 01 to 99` |
+| a file in a folder of pictures that is not named like `01.webp` | `bear/notes.txt: not a picture named by its number, like 01.webp` |
+| the name inside a set's file is not the file's name | `fox.ts: the name inside is wolf, and the file's own name says fox` |
+| a tag above 100 characters | `bear.ts line 14: a tag of more than 100 characters` |
+| a file or a folder that is not there | `bear.ts is not there`, `cat: the folder of pictures is not there` |
+| a file that cannot be read as its form | `dog.ts line 4: a quote mark that is not closed` |
+
+The first nine are the plan's (3.2). The others are what the script needs
+to read the folder at all, and the table's own limit for a tag. A file
+that cannot be read as its form gets one line, for the first place the
+reader does not understand.
+
+The report of a run without a fault, here the first run of the trial:
+
+```
+stickers: look (nothing is written)
+folder: /tmp/stickers
+sets in all-sets.ts: 2
+  bear: a new set, place 1 in the row, 5 new stickers (9,542 bytes), 12 tags added
+  cat: a new set, place 2 in the row, 3 new stickers (3,460 bytes)
+to write: 2 new sets, 8 new stickers (13,002 bytes), 12 tags added
+Nothing was written.
+```
+
+A set that is in the database has a line like `bear: in the database with
+5 stickers: 1 new sticker (6,950 bytes), 4 tags added, 3 tags taken off, 5
+stickers moved in the set`, or `nothing to change`. A `write` run prints
+the same report and then `committed`, or `Nothing to write.` when the
+database already holds what the folder says. With faults both runs print
+`faults: <n>`, the lines, and `Nothing was written.`
+
+The write is one transaction on one client: the comparison, the writes,
+and the comparison once more, which must find nothing left to write and
+no fault, then `COMMIT`. An error on the way ends in `ROLLBACK` and the
+lines of the error and `Nothing was written.` A picture is compared by
+its SHA-256, which the database works out, so no stored picture travels
+to the script.
+
+Exit codes: 0 for a run without a fault; 1 for faults and for an error; 2
+with the usage line for anything but `look` or `write` with one folder.
+The report goes to standard output; the faults, an error and the usage
+line go to standard error. A folder is best given by its full path: npm
+starts the script in the checkout, so another path is read from there.
+The report's second line shows which folder was read.
+
+### 28.5 Taking out and moving: plain database lines
+
+The script deletes nothing and moves no set. These are plain `psql` lines
+on the database server that takes the writes (the leader), as the lines
+of 24.3 are. Each write line is one transaction (`-1`). The names in them
+(`bear`, `cat`, `dog`, `02`) are examples.
+
+The look, which writes nothing and can run on any of the three: the row
+of sets, each with its number of stickers, their weight and its number of
+tags.
+
+```text
+sudo -u postgres psql -X -P pager=off "dbname=masterpod options='-c default_transaction_read_only=on'" -c "select s.place, s.set_name, count(t.number) as stickers, coalesce(sum(octet_length(t.image)), 0) as bytes, (select count(*) from sticker_tags g where g.set_name = s.set_name) as tags from sticker_sets s left join stickers t using (set_name) group by s.place, s.set_name order by s.place, s.set_name"
+```
+
+One sticker out, here `02` of the set `bear`:
+
+```text
+sudo -u postgres psql -X -v ON_ERROR_STOP=1 -1 -P pager=off -d masterpod -c "delete from sticker_tags where set_name = 'bear' and number = '02'" -c "delete from stickers where set_name = 'bear' and number = '02'"
+```
+
+It prints `DELETE` with the number of the sticker's tags and `DELETE 1`.
+A second run prints `DELETE 0` twice.
+
+A set out, here `cat`:
+
+```text
+sudo -u postgres psql -X -v ON_ERROR_STOP=1 -1 -P pager=off -d masterpod -c "delete from sticker_tags where set_name = 'cat'" -c "delete from stickers where set_name = 'cat'" -c "delete from sticker_sets where set_name = 'cat'"
+```
+
+It prints `DELETE` with the number of the set's tags, `DELETE` with the
+number of its stickers and `DELETE 1`.
+
+The row in a new order: the names of all the sets, in the order wanted,
+the first one first.
+
+```text
+sudo -u postgres psql -X -v ON_ERROR_STOP=1 -1 -P pager=off -d masterpod -c "update sticker_sets s set place = o.place from unnest(array['dog', 'bear', 'cat']) with ordinality as o(set_name, place) where s.set_name = o.set_name" -c "select place, set_name from sticker_sets order by place, set_name"
+```
+
+It prints `UPDATE` with the number of sets named and then the row. The
+first name gets the place 1, the second 2, and so on. A name that is no
+set changes nothing. A set that is left out keeps the number it had, so
+name every set.
+
+What follows from these lines:
+
+- The folder has to follow. A sticker that is taken out here and still
+  stands in the set's file, with its picture, is put back by the next
+  `write`. A set that is taken out and still stands in `all-sets.ts` is
+  added again, behind the last set.
+- A wallet has the list of its login. It offers a sticker or a set that
+  was taken out until its next login.
+- A message that carries a sticker that was taken out shows the word
+  "Sticker" where the picture can no longer be fetched (the plan's
+  section 1, point 7), and a phone that has the picture already keeps
+  showing it (step 2).
+- A number that was taken out is not given to another picture, for the
+  same reason: phones keep the old one.
+
+### 28.6 Files
+
+- `db/schema.sql`: the stickers block, new, at the end.
+- `src/stickers/`, new: `stickers.router.js` (the two paths and their
+  levels), `stickers.handlers.js`, `stickers.service.js` (`listSets`,
+  `getPicture`), `stickers.queries.js` (the SQL of the three tables: the
+  two reads of the routes, and the reads and writes of the script) and
+  `sticker-rules.js` (the form of a name and of a number, and the limits
+  of a picture and of a tag, in one place for the routes and the script).
+- `src/app.js`: the import of the stickers router and its line, after
+  the chat router's.
+- `scripts/stickers.js`, new: the script.
+- `package.json`: the line `stickers` in `scripts`, after
+  `small-selfies`.
+- Here: section 1 (the item on images, one sentence), section 2 (the rows
+  of `none` and `setup`), section 4 (`### sticker_sets, stickers,
+  sticker_tags`, new, the last entry), section 5 (the sentence on `GET`
+  in its opening; `### POST /list-stickers` and `### GET
+  /sticker-picture/:set/:number`, new, after `/get-chat-public-keys`) and
+  this section. `README.md`: one row under "Scripts"; under "Who may call
+  what" the sentence on `GET` and the rows of `none` and `setup`; two
+  rows in the Endpoints table; three rows in "Database tables"; one line
+  each for `stickers/` and `stickers.js` in the Layout.
+
+Nothing else in existing code changes: every other route, `.example.env`
+and this server's `dependencies` are as they were. Three new tables, two
+new routes, one new script; no env variable, no npm package.
+
+### 28.7 What is left as it is
+
+- No route writes, deletes or moves a sticker. An upload page for the
+  team is a later step if it is wanted (the plan's section 6).
+- No shop, no sets that people make themselves, no search bar over the
+  stickers (the plan's section 6).
+- The list is read whole at each login. A phone that keeps the list
+  between logins and asks only for what is new is worth it at some
+  thousands of stickers; a file store for the pictures in place of the
+  database at tens of thousands (the plan's section 6).
+- This server looks into no picture on its way out, and into none on its
+  way in: the script checks a picture, and the table checks its weight.
+  Somebody who writes into the database by hand can store anything of up
+  to 150,000 bytes.
+- The picture read has no limit of its own. The doormen's count holds for
+  every caller but the wallet's servers.
+- A sticker message is ciphertext like every message. This server cannot
+  count which stickers are sent.
+- The script reads the form of the page of 2026-11-23. If the first 200
+  come in another form, the script is changed to read that form (the
+  plan's 3.2).
+
+### 28.8 Notes from the build
+
+#### Build 1, the masterpod (2026-11-23)
+
+Built from `~/Desktop/Z-TestNet/forclaude/stickers-database-plan-1.md`,
+its sections 3, 4 and 7 and step 1 of section 5, on main at a11fffe, the
+working tree clean. The plan holds no code, so all of the code is the
+build's. No new npm package, and no test script in the repo. The schema
+was not applied to any database of the network: the user applies the
+whole file as section 6 of `forclaude/masterpod-deploy-plan-1.md` says,
+on the leader, and then pulls and restarts the three servers. What the
+plan left open and how it was decided:
+
+- The number and the date. This section is 28, as the planning chat had
+  read it. BUILD-DATE is 2026-11-23, the day of the build and of the
+  plan's FINAL.
+- The columns. The plan's table gives what each table holds, not its
+  columns. The set's name is `set_name` in all three tables. A sticker's
+  number is two characters of text, as it travels in a message, in an
+  address and in a file's name, so it is never turned into a number and
+  back. A place is a whole number from 1. A sticker has no column for the
+  kind of picture, and a set none for "shown": the plan has neither.
+- A place is not unique (28.2). The smallest way that lets the lines of
+  28.5 and the script give a new order one row at a time.
+- A set's name is at most 32 characters. The plan says small letters,
+  digits and hyphens; the 32 is the page's of 2026-11-23.
+- The tags. The plan names no fault for a tag. The page asks for small
+  letters, so the script stores a tag in small letters and without the
+  spaces around it, and leaves out an empty one and a repeat. The table
+  takes a tag of 1 to 100 characters, and the script names a longer one
+  as a fault, so that a `write` never fails at the table's check after a
+  clean `look`. The tags of a sticker come out in the order of their
+  bytes, not in the file's order: the plan's table has no place for a
+  tag, and nothing reads their order.
+- The answer of `/list-stickers`. The plan gives its content; the names
+  `sets`, `name`, `stickers`, `number` and `tags` are the build's, after
+  the plan's own words. A set with no sticker is left out, so a wallet
+  never has a set without a small picture.
+- The picture read. A name or a number that cannot be one is answered
+  `404 no sticker` without a read of the database: text with a zero byte
+  would otherwise come back from PostgreSQL as an error, which is a
+  `500`. The answer carries no keep time; that is the wallet's server
+  program's to add (step 2).
+- Where the code is. The stickers have a folder of their own (the plan's
+  section 7). The script is one file, like `scripts/appoint.js`, with no
+  folder and no package file of its own: it draws nothing, and
+  `imageSize` (`src/util/images.js`) reads a WebP's width and height. Its
+  SQL is in `src/stickers/stickers.queries.js` beside the routes', as the
+  appointments' is.
+- How the `.ts` files are read. As text, by a small reader of their form
+  (28.4), and not by running them: a file from outside is not run as code
+  on a masterpod server. The reader takes any layout of the lines, so a
+  file that an editor has laid out anew still reads.
+- `look` asks the database too. It has to: which sets are new, which
+  stickers are new and whether a stored picture differs is only known
+  there.
+- Faults beyond the plan's nine (28.4): the ones without which the folder
+  cannot be read as what it is, and the tag's length. A fault ends either
+  run with exit 1.
+- The second comparison inside the write's transaction is the build's, in
+  the manner of the count in `scripts/small-selfies`: the script commits
+  only what it has read back.
+- The client of the write has an `error` listener, and a `ROLLBACK` that
+  fails is passed over, as in `scripts/small-selfies` (24.5): with these
+  a connection that is cut in the middle ends in the error's line and
+  `Nothing was written.`
+- A limit, as in 24.5. An error at the `COMMIT` itself also prints
+  `Nothing was written.` If the connection is lost in that very moment,
+  the script cannot know whether PostgreSQL kept the transaction. A
+  `look` run says which it is: `to write: nothing` when it was kept.
+- Checks, the code. `node --check` on the six new files and on
+  `src/app.js`, clean, on Node 24.22.0. A type checker's read of
+  `src/app.js` and `scripts/stickers.js` (`tsc --checkJs`, TypeScript
+  6.0.3 from the wallet's folder) named no unknown name, no wrong count
+  of arguments and no missing export or module, in the new files or the
+  old.
+- Checks, the schema file. By psql on a PostgreSQL 17.11 that was started
+  for this build alone: a data folder of its own in the build chat's
+  scratch folder, listening on 127.0.0.1 port 59631 and nowhere else,
+  with no socket file. This Mac's own PostgreSQL on port 5432 was not
+  touched. Each apply ran as the deploy's line runs it, in one
+  transaction after `SET ROLE masterpodsoftware`, into a database that
+  the role owns. The file of a11fffe into an empty database: 42 tables.
+  The new file on top: 45 tables, one owner. The new file once more: 45
+  tables, and one md5 over every column, constraint, index, trigger,
+  comment and function was the same after both runs. The new file alone
+  into a second empty database, twice: 45 tables and that same md5, both
+  times. The three tables had their fourteen columns, three primary keys
+  and nine checks, the two triggers, and a comment on each table and each
+  column. The tables' own checks were asked directly, fifteen statements
+  through a function that catches the refusal and names the check: a
+  picture of 150,001 bytes and one of none were refused and one of
+  150,000 taken; the numbers `00` and `1`, a place of 0, a name with a
+  capital letter, one of 33 characters and one with a line end in it, an
+  empty tag and a tag of 101 Thai characters were refused, and a name of
+  32 characters and a tag of 100 Thai characters taken; a sticker's tag a
+  second time and a sticker's number a second time were refused by the
+  primary keys.
+- Checks, the script. The real file, started as `node
+  scripts/stickers.js` with the settings on the line, as the role
+  `masterpodsoftware`, on made-up folders with real WebP pictures that
+  the `sharp` of `scripts/small-selfies` drew: a lossy still, a lossless
+  still, a still with a see-through part, three moving ones, and one of
+  exactly 370 by 320 pixels. The first folder (two sets, eight stickers,
+  the lines of one set not in the order of its numbers; tags with a
+  capital letter, a repeat, spaces around, an empty one, an apostrophe,
+  two words and Thai; a comment behind a line; a `.DS_Store`, a
+  `__MACOSX` folder and a page beside the files): `look` printed the
+  report of 28.4 and left no row; `write` printed it and `committed`; the
+  rows held the two sets at the places 1 and 2, the stickers at the
+  places of their lines, every picture byte for byte, and the twelve tags
+  in small letters, with no repeat and no empty one; `look` again: `to
+  write: nothing`; `write` again: `Nothing to write.` The second folder
+  (the first set with one new sticker on its first line, another order
+  and changed tags; the second set as it was; a third set, named first in
+  `all-sets.ts`): `1 new set, 3 new stickers (8,242 bytes), 5 tags
+  added, 3 tags taken off, 5 stickers moved in the set`, and `committed`.
+  The new set stood at place 3, behind the two that were there. The five
+  stickers had their new places, `updated_at` had moved on those five
+  alone, `created_at` and every picture were as before, the nine tag rows
+  that stayed were the rows of the first write, and the two set rows of
+  before were untouched. The first folder once more then named the new
+  sticker as in the database and with no line in the file.
+- Checks, the faults. One folder with every fault of 28.4's table except
+  the last two rows: both runs named 20 faults in one go and left every
+  row as it was (one md5 over the rows before and after). Six more
+  folders, for the two last rows: no `all-sets.ts`; a nickname in the
+  list with no import line; an import line that is not in the list; no
+  list; one set under two nicknames; and one folder with a set whose file
+  is missing, a set whose folder of pictures is missing, a quote mark
+  that is not closed and tags that are no list. Each was named with its
+  file and, where it has one, its line. A folder that is not there is
+  named as that. An `all-sets.ts` with an empty list is no fault: `to
+  write: nothing`.
+- Checks, a write that fails in the middle, each by a trigger of the
+  trial on a scratch database of its own: the database refuses a row
+  after several were written; the connection is cut by
+  `pg_terminate_backend` while a sticker is written; a tag is changed on
+  its way in, so that the second comparison finds a difference. Each
+  ended with its line (the last with `After the write the database does
+  not hold what the folder says.`), `Nothing was written.` and exit 1,
+  with no row in any of the three tables. The same folder was then
+  written whole. A database that cannot be reached gave its message and
+  `Nothing was written.`; no word, a wrong word, no folder and a word too
+  many gave the usage line and exit 2.
+- Checks, `npm run stickers` itself, as the server's line starts it
+  (`bash -c 'cd <checkout> && npm run --silent stickers -- look
+  <folder>'`), in a copy of the working tree with a made-up settings file
+  for the scratch database. The repo's own `.env` was not read. Both
+  runs gave the reports above, and the exit codes 1 and 2 reached the
+  shell through npm.
+- Checks, the two reads, over HTTP. The app of the working tree
+  (`createApp()`), listening on 127.0.0.1 with its own pool on the
+  scratch database; `src/server.js` was not started, so no clock ran.
+  Three pods were written for the run, one with setup, one vouched
+  without setup and one not vouched, each with session keys made for the
+  run, and the requests were signed with them as a wallet signs
+  (P-256 and ML-DSA-87 over the canonical bytes). 31 results after the
+  first write and 34 after the second, none bad. `/list-stickers`: `400
+  bad request shape` with no envelope; `403 anopod not vouched`; `403
+  setup not complete`; `401 path mismatch` for a request signed for
+  another path; `401 bad signature` for a body changed after the
+  signing; `200` with the sets, the stickers and the tags in their
+  order; `401 replay` for the same request again; a `GET` to it `404`.
+  `/sticker-picture`: every sticker of the list `200`, `image/webp`, its
+  bytes equal to the file's, the still and the moving ones alike; a
+  `HEAD` `200` with the length and no body; `404 no sticker` for a
+  number and a set that are not there, a capital letter, a number of one
+  and of three digits, `00`, `.webp` behind the number, a zero byte and
+  a quote mark in the name, and a name of 33 characters; the plain `404
+  Not Found` for an address with no number or a part too many and for a
+  `POST`. A plain HTTP client that sent the answer's `ETag` back got
+  `304` with no body. The pods of the run were deleted again.
+- Checks, the load. The app counted 112 routes, two more than a copy of
+  a11fffe gave the same way (110).
+- Checks, the two half-deployed states, each with the real app over
+  HTTP. The built code on a database with the tables of before: the two
+  new reads answered `500`, and a signed `/list-chat-rooms` answered
+  `200`. Nobody calls the two reads before the wallet's step, so this
+  order would break nothing; the sheet's order stays all the same, the
+  schema line first. The code of a11fffe on the new tables: `404 Not
+  Found` for both new paths, everything else as before.
+- Checks, times and weights, with made-up lots on that same scratch
+  PostgreSQL, each picture a real WebP of about 26,000 bytes with nine
+  tags. 200 stickers in 8 sets: `look` 0.3 seconds, `write` 0.4; the list
+  23,042 bytes, read in 2 milliseconds; a picture read in 0.2
+  milliseconds; the three tables 5.6 MB on disk. 2,000 stickers in 40
+  sets: `write` 1.1 seconds; the list 228,290 bytes, read in 17
+  milliseconds; the tables 53 MB. These are this Mac's figures, with no
+  PgBouncer between.
+- Checks, the lines of 28.5, with this Mac's psql and the scratch server
+  in place of `sudo -u postgres psql ... -d masterpod`: the look; the
+  look's refusal of a write (`cannot execute DELETE in a read-only
+  transaction`); a sticker out (`DELETE 4`, `DELETE 1`, then `DELETE 0`
+  twice); a set out; the row in a new order (`UPDATE 2` and the row), with
+  a name that is no set, and with a set left out. The script then offered
+  to put back what the folder still held, as 28.5 says.
+- The runs that use the pool stop before their first query unless the
+  pool's host and port are the scratch PostgreSQL's, and the database and
+  the role of the trial do not exist on this Mac's own PostgreSQL. The
+  scratch PostgreSQL was stopped afterwards, and no file of these checks
+  is in the repo.
+- Not tried by the build. Nothing on a server, nothing on Linux and
+  nothing through PgBouncer. `src/server.js` was not booted. No wallet
+  called the reads: the wallet's part is step 2. No picture from the
+  person who makes the stickers was read: the 200 are still to come, and
+  the form of their files is taken from the page of 2026-11-23. Two
+  `write` runs at the same moment were not tried; the second would fail
+  at a primary key and write nothing.
+- Not touched: everything under `src` but the new folder and the two
+  lines of `src/app.js`; `.example.env`, `src/config/env.js`, the other
+  scripts and this server's `package-lock.json`; in `package.json`
+  everything but the one line.
+- The numbers. `db/schema.sql` has 1666 lines, 66 more than before, and
+  its sha256 begins 9894ae57. Before the step it had 1600 lines and its
+  sha256 began d016140c. It makes 45 tables where it made 42: the count
+  that the deploy's schema line prints goes from 42 to 45. That line
+  carries the whole hash and stops by itself on any other file. It was
+  tried here in a stand-in form on the scratch PostgreSQL, with a copy of
+  a local file in place of the download: with the new file it printed
+  42, the apply's lines, 45, the owner and 3 for the three new tables;
+  with the file of before it printed `FAILED` and applied nothing. The
+  lines that put a folder of stickers onto a server (the copy with `scp`
+  into `/tmp`, then `look` and `write` as the masterpod user) were tried
+  the same way, with this Mac's own file server in place of the
+  connection; none of them has run on a server.

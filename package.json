@@ -14,6 +14,7 @@
     "appoint": "node --env-file=.env scripts/appoint.js",
     "revoke": "node --env-file=.env scripts/revoke.js",
     "small-selfies": "node --env-file=.env scripts/small-selfies/small-selfies.js",
+    "stickers": "node --env-file=.env scripts/stickers.js",
     "make-alert-push-key": "node scripts/make-alert-push-key.js"
   },
   "engines": {

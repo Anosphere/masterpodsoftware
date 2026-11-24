@@ -48,19 +48,22 @@ Then open <http://localhost:3100>. The web app that drives it is
 | `npm run appoint -- <id> <role>` | Appoint the pod with this hex id for a role: `moderator`, `attestor`, `validator` or `masterPod` (`docs/schemas.md` section 16; the last two only let the pod stake for that purpose, 16.7). |
 | `npm run revoke -- <id>` | End the pod's appointment; the row stays on record.                   |
 | `npm run small-selfies -- look` | The one-time job that makes the stored selfies small (`docs/schemas.md` section 24): `look` reads and draws every selfie and writes nothing; with `write` in its place it does the same and then writes. Its own packages are in `scripts/small-selfies/`. |
+| `npm run stickers -- look <folder>` | Puts the stickers of the wallet's chat into the database (`docs/schemas.md` section 28), from a folder with `all-sets.ts`, one `.ts` file for each set and one folder of pictures for each set: `look` says what it would write, names every fault and writes nothing; with `write` in its place it does the same and then writes, all of it or nothing. |
 | `npm run make-alert-push-key -- <file>` | Makes this server's key for the phones' delivery services (`docs/schemas.md` section 25): writes ONE line, `ALERT_PUSH_PRIVATE_KEY=...`, to `<file>`, which only its owner can read and which is never overwritten, and prints the public half. The line goes to the end of `.env`. |
 
 ## Who may call what
 
-Every route is a `POST` with a JSON body. Four pod levels and three more:
+Every route is a `POST` with a JSON body, except one: `GET
+/sticker-picture/<set>/<number>` (2026-11-23), which answers a picture.
+Four pod levels and three more:
 
 | Level    | Meaning                                                                                  |
 | -------- | ---------------------------------------------------------------------------------------- |
-| none     | Plain JSON body, no signature: `/challenge`, `/check-username`, `/get-anopod-session-keys`, `/get-anos-account`, `/check-signing-passkey`, the keyholders' `/receive-recovery-share/:caseId`, the validators' `/report-waiting-transfers`, whose message is signed by a validator's own key; `/create-anopod`, `/unlock`, `/open-recovery-case` and `/unlock-recovery-pod` are signed by the ephemeral keys inside them, `/recover-with-backup-code` by the backup code keys inside it. |
+| none     | Plain JSON body, no signature: `/challenge`, `/check-username`, `/get-anopod-session-keys`, `/get-anos-account`, `/check-signing-passkey`, the keyholders' `/receive-recovery-share/:caseId`, the validators' `/report-waiting-transfers`, whose message is signed by a validator's own key, `GET /sticker-picture/<set>/<number>`, which has no body; `/create-anopod`, `/unlock`, `/open-recovery-case` and `/unlock-recovery-pod` are signed by the ephemeral keys inside them, `/recover-with-backup-code` by the backup code keys inside it. |
 
 | session  | Signed by the pod's current ephemeral keys (the envelope below). Vouched or not.          |
 | vouched  | session, and `anopods.vouched` is true.                                                  |
-| setup    | vouched, and setup is complete (the pod has chat keys): every chat and marketplace route, the four anos account routes, the six wallet memory routes, `/rotate-backup-code` and `/store-break-glass-blob` after a recovery, the person's four attestation routes `/list-my-cases`, `/get-my-case`, `/share-lookup-id`, `/add-dispute-evidence`, the person's two break-glass routes `/file-break-glass-moves`, `/list-my-break-glass-moves`, the two passkey routes `/add-passkey`, `/list-passkeys`, and the eight routes of a pod's security alerts, `/list-alert-settings` to `/keep-alert-phone`. |
+| setup    | vouched, and setup is complete (the pod has chat keys): every chat and marketplace route, the four anos account routes, the six wallet memory routes, `/rotate-backup-code` and `/store-break-glass-blob` after a recovery, the person's four attestation routes `/list-my-cases`, `/get-my-case`, `/share-lookup-id`, `/add-dispute-evidence`, the person's two break-glass routes `/file-break-glass-moves`, `/list-my-break-glass-moves`, the two passkey routes `/add-passkey`, `/list-passkeys`, the eight routes of a pod's security alerts, `/list-alert-settings` to `/keep-alert-phone`, and `/list-stickers`. |
 | recovery | Signed by a recovery pod's current ephemeral keys: the same envelope with `caseId` in place of `anopodId` (`src/auth/require-recovery-session.js`); `/get-recovery-pod`, `/complete-recovery-case`. |
 
 | moderator | session, and the pod holds a live appointment for the role (`appointments`, `docs/schemas.md` section 16, written by `npm run appoint`; `src/auth/require-moderator.js`; the stake is the keyholders' check); the six moderation routes. |
@@ -147,6 +150,8 @@ are base64 / base64url as the browser produces them.
 | `/send-message`                 | setup   | Stores a ciphertext message, members only                                                |
 | `/mark-messages-seen`           | setup   | Records how far the caller has read in a room, members only                              |
 | `/get-chat-public-keys`         | setup   | The chat public keys of up to 50 pods that completed setup                               |
+| `/list-stickers`                | setup   | The stickers of the wallet's chat (2026-11-23, section 28): every set in the order of the row, each with its stickers in their order, each sticker with its two-digit number and its tags; text only, no picture |
+| `GET /sticker-picture/:set/:number` | none | One sticker's picture, the bytes as `image/webp`; `404` when there is no such sticker. The one `GET` that hands out data, and the one answer that is not JSON |
 | `/create-listing`               | setup   | A listing of anos for a fiat currency; since 2026-11-06 without a room of its own, people connect with a private room each; `403` at the limit of 10 open listings per pod |
 | `/close-listing`                | setup   | Closes the owner's listing; an old listing's room stays, new join requests and new rooms about it are refused |
 | `/list-listings`                | setup   | Listings filtered by side, currency, country and status (`any` allowed), the caller's own with `mine`, sorted and paged |
@@ -279,6 +284,9 @@ keep the references straight. Every table and column has a `COMMENT ON`
 | `chat_room_join_requests` | Open join requests                                                     |
 | `chat_room_messages`      | Ciphertext messages, numbered by `position`                            |
 | `chat_room_pictures`      | The picture of a public room (section 27): at most one per room, in the clear like the room's name, set by the room's creator |
+| `sticker_sets`            | The sets of stickers of the wallet's chat (section 28), each with its place in the row of sets; written by `npm run stickers` alone |
+| `stickers`                | One row per sticker: its set, its two-digit number, its place in the set and its picture, a WebP of at most 150,000 bytes; in the clear, the same for everybody |
+| `sticker_tags`            | The tags of the stickers, one row per sticker and tag: the words that bring a sticker up while a person types; matched on the phone, never searched here |
 | `listings`                | Marketplace listings; `chat_room_id` only on the old ones that got a room |
 | `anos_accounts`           | One row per anos account a pod made: type, the blob with both pairs, the first key blob, the signed creation, when it was submitted, the break-glass blob after a recovery; never deleted |
 | `noted_transactions`      | One row per ledger transaction a pod noted for its tax records: the ledger's facts in the clear, the private part as a blob under the pod's encryption key; one per pod and transaction; deleted when the person removes it |
@@ -391,6 +399,7 @@ src/
   notifications/     /list-notifications, /mark-notifications-read; notify() for every feature
   security/          the three bucket routes
   chat/              the sixteen chat routes
+  stickers/          /list-stickers and GET /sticker-picture/:set/:number (section 28); the three sticker tables' queries, the reads of the routes and the reads and writes of scripts/stickers.js; sticker-rules.js, the form of a set's name and of a sticker's number and the limits of a picture and of a tag
   marketplace/       /create-listing, /close-listing, /list-listings
   anos-accounts/     /create-anos-account, /mark-anos-account-submitted, /list-anos-accounts, /store-first-key-blob, /get-anos-account
   wallet-memory/     the six wallet memory routes, /add-noted-transaction to /set-wallet-settings; the two tables' queries
@@ -413,6 +422,7 @@ scripts/
   appoint.js         appoint a pod as a moderator or an attestor, or to stake for validator or masterPod (section 16)
   revoke.js          end a pod's appointment
   small-selfies/     the one-time job that makes the stored selfies small (section 24): small-selfies.js, with a package.json and a package-lock.json of its own for sharp
+  stickers.js        puts the stickers of the wallet's chat into the database, with a look run that writes nothing and a write run (section 28)
   make-alert-push-key.js  makes this server's key for the phones' delivery services (section 25)
 docs/
   schemas.md         the specification: tables, routes, objects, client crypto, variables

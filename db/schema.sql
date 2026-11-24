@@ -1598,3 +1598,69 @@ COMMENT ON COLUMN chat_room_pictures.content_type IS 'image/jpeg, image/png or i
 COMMENT ON COLUMN chat_room_pictures.image        IS 'The picture''s bytes as uploaded: at most 320 pixels wide and high and at most 100,000 bytes.';
 COMMENT ON COLUMN chat_room_pictures.created_at   IS 'When the room got its first picture. Set by default, never changed.';
 COMMENT ON COLUMN chat_room_pictures.updated_at   IS 'When the picture was last set: what the room lists hand out as pictureAt. Maintained by the chat_room_pictures_set_updated_at trigger.';
+
+
+-- The stickers block (2026-11-23, spec section 28): three new tables.
+-- sticker_sets is the sets of stickers of the wallet's chat, each with its
+-- place in the row of sets. stickers is one row per sticker: its set, its
+-- number, its place in the set and its picture. sticker_tags is the words
+-- that bring a sticker up while a person types. The stickers are the same
+-- for everybody and public. scripts/stickers.js alone writes the three
+-- tables; no route does. Idempotent: IF NOT EXISTS and OR REPLACE.
+
+CREATE TABLE IF NOT EXISTS sticker_sets (
+  set_name   TEXT        PRIMARY KEY CHECK (set_name ~ '^[a-z0-9-]{1,32}$'),
+  place      INTEGER     NOT NULL CHECK (place >= 1),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE OR REPLACE TRIGGER sticker_sets_set_updated_at
+  BEFORE UPDATE ON sticker_sets
+  FOR EACH ROW
+  WHEN (OLD.* IS DISTINCT FROM NEW.*)
+  EXECUTE FUNCTION set_updated_at();
+
+COMMENT ON TABLE  sticker_sets            IS 'The sets of stickers of the wallet''s chat (spec section 28), one row per set. Written by scripts/stickers.js, which adds a set and never moves or deletes one; read by /list-stickers.';
+COMMENT ON COLUMN sticker_sets.set_name   IS 'The set''s name: small letters, digits and hyphens, at most 32 characters. It travels inside every message that carries one of the set''s stickers, so it is never changed.';
+COMMENT ON COLUMN sticker_sets.place      IS 'The set''s place in the row of sets: the sets are handed out by this number, the smallest first, and by name where two hold the same number. A new set gets the highest number plus one.';
+COMMENT ON COLUMN sticker_sets.created_at IS 'When the set was added. Set by default, never changed.';
+COMMENT ON COLUMN sticker_sets.updated_at IS 'When the row last changed: when the set was last moved in the row. Maintained by the sticker_sets_set_updated_at trigger.';
+
+CREATE TABLE IF NOT EXISTS stickers (
+  set_name   TEXT        NOT NULL CHECK (set_name ~ '^[a-z0-9-]{1,32}$'),
+  number     TEXT        NOT NULL CHECK (number ~ '^[0-9]{2}$' AND number <> '00'),
+  place      INTEGER     NOT NULL CHECK (place >= 1),
+  image      BYTEA       NOT NULL CHECK (octet_length(image) BETWEEN 1 AND 150000),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (set_name, number)
+);
+
+CREATE OR REPLACE TRIGGER stickers_set_updated_at
+  BEFORE UPDATE ON stickers
+  FOR EACH ROW
+  WHEN (OLD.* IS DISTINCT FROM NEW.*)
+  EXECUTE FUNCTION set_updated_at();
+
+COMMENT ON TABLE  stickers            IS 'One row per sticker (spec section 28), with its picture. In the clear and public: a sticker is the same for everybody. Written by scripts/stickers.js; read by /list-stickers, without the picture, and by /sticker-picture, which hands out the picture.';
+COMMENT ON COLUMN stickers.set_name   IS 'The set the sticker belongs to: sticker_sets.set_name.';
+COMMENT ON COLUMN stickers.number     IS 'The sticker''s number in its set, two digits, 01 to 99. A message that carries the sticker holds the set''s name and this number, so a number is never given to another picture.';
+COMMENT ON COLUMN stickers.place      IS 'The sticker''s place in its set: the stickers of a set are handed out by this number, the smallest first. scripts/stickers.js sets it to the sticker''s line in the set''s file, at every run.';
+COMMENT ON COLUMN stickers.image      IS 'The picture''s bytes, a WebP, still or moving: at most 150,000 bytes, and at most 370 pixels wide and 320 high by the script''s check. Never changed: a redrawn sticker gets a new number.';
+COMMENT ON COLUMN stickers.created_at IS 'When the sticker was added. Set by default, never changed.';
+COMMENT ON COLUMN stickers.updated_at IS 'When the row last changed: when the sticker last got another place in its set. Maintained by the stickers_set_updated_at trigger.';
+
+CREATE TABLE IF NOT EXISTS sticker_tags (
+  set_name   TEXT        NOT NULL CHECK (set_name ~ '^[a-z0-9-]{1,32}$'),
+  number     TEXT        NOT NULL CHECK (number ~ '^[0-9]{2}$' AND number <> '00'),
+  tag        TEXT        NOT NULL CHECK (char_length(tag) BETWEEN 1 AND 100),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (set_name, number, tag)
+);
+
+COMMENT ON TABLE  sticker_tags            IS 'The tag words of the stickers (spec section 28), one row per sticker and word: the words that bring a sticker up while a person types. The wallet matches them on the phone; this server never searches them. Written by scripts/stickers.js, which adds and deletes rows to bring a sticker''s words in line with its set''s file; read by /list-stickers. A row is never updated.';
+COMMENT ON COLUMN sticker_tags.set_name   IS 'The sticker''s set: stickers.set_name.';
+COMMENT ON COLUMN sticker_tags.number     IS 'The sticker''s number: stickers.number.';
+COMMENT ON COLUMN sticker_tags.tag        IS 'One tag: a word or several, in small letters, in any language, 1 to 100 characters. A sticker holds a tag once.';
+COMMENT ON COLUMN sticker_tags.created_at IS 'When the row was inserted. Set by default, never changed.';
