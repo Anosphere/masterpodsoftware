@@ -175,6 +175,34 @@ export async function lastPosition(chatRoomId, db = pool) {
   return Number(rows[0].last);
 }
 
+/**
+ * The seen positions of the room that changed after `seenSince`
+ * (2026-11-24, spec section 29): { seen, seenSeq }. `seen` is the members
+ * whose seen_seq is above `seenSince`, in the order of a room's members,
+ * each as { anopodId, seenPosition }. `seenSeq` is the highest seen_seq of
+ * the room's members, 0 when no member has seen anything: what a wallet
+ * sends as its next `seenSince`. One statement reads both, so they are the
+ * room at one moment. With `seenSince` 0 it is every member who has seen
+ * anything.
+ */
+export async function listSeenSince(chatRoomId, seenSince) {
+  const { rows } = await pool.query(
+    `SELECT m.anopod_id, m.seen_position, t.seen_seq
+     FROM (SELECT COALESCE(max(seen_seq), 0) AS seen_seq
+             FROM chat_room_members
+            WHERE chat_room_id = $1) t
+     LEFT JOIN chat_room_members m ON m.chat_room_id = $1 AND m.seen_seq > $2::bigint
+     ORDER BY m.created_at, m.anopod_id`,
+    [chatRoomId, seenSince],
+  );
+  return {
+    seen: rows
+      .filter((row) => row.anopod_id !== null)
+      .map((row) => ({ anopodId: toHex(row.anopod_id), seenPosition: Number(row.seen_position) })),
+    seenSeq: Number(rows[0].seen_seq),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Invites
 // ---------------------------------------------------------------------------
@@ -355,6 +383,53 @@ function listingFromRow(row) {
 }
 
 /**
+ * The change numbers of everything in `anopodId`'s chat list (2026-11-24,
+ * spec section 29), read by one statement, so they are the list at one
+ * moment: { rooms, invites, joinRequests }. `rooms` is the rooms the pod is
+ * a member of, in the order of listRoomsFor, each as { chatRoomId,
+ * messageSeq, peopleSeq }; `invites` the open invites to the pod, each as
+ * { inviteId, changeSeq }; `joinRequests` the open join requests on rooms
+ * the pod created, each as { joinRequestId, changeSeq }. The ids are
+ * Buffers and the numbers are numbers. Each of the three selects has the
+ * joins of its list (listRoomsFor, listInvitesFor,
+ * listJoinRequestsForCreator), so it counts the rows that list hands out.
+ */
+export async function listChangeNumbersFor(anopodId) {
+  const { rows } = await pool.query(
+    `SELECT n.kind, n.id, n.message_seq, n.people_seq, n.change_seq
+     FROM (SELECT 'room' AS kind, r.chat_room_id AS id, r.message_seq, r.people_seq, 0::bigint AS change_seq, r.created_at
+             FROM chat_room_members cm
+             JOIN chat_rooms r ON r.chat_room_id = cm.chat_room_id
+             JOIN chat_hpke h ON h.chat_room_id = cm.chat_room_id AND h.anopod_id = cm.anopod_id
+            WHERE cm.anopod_id = $1
+           UNION ALL
+           SELECT 'invite', i.invite_id, 0, 0, i.change_seq, i.created_at
+             FROM chat_room_invites i
+             JOIN chat_rooms r ON r.chat_room_id = i.chat_room_id
+             JOIN anopods a ON a.anopod_id = i.anopod_id_from
+            WHERE i.anopod_id_to = $1
+           UNION ALL
+           SELECT 'joinRequest', j.join_request_id, 0, 0, j.change_seq, j.created_at
+             FROM chat_room_join_requests j
+             JOIN chat_rooms r ON r.chat_room_id = j.chat_room_id
+             JOIN anopods a ON a.anopod_id = j.anopod_id
+            WHERE r.creator_anopod_id = $1) n
+     ORDER BY n.kind, n.created_at DESC, n.id`,
+    [anopodId],
+  );
+  const ofKind = (kind) => rows.filter((row) => row.kind === kind);
+  return {
+    rooms: ofKind('room').map((row) => ({
+      chatRoomId: row.id,
+      messageSeq: Number(row.message_seq),
+      peopleSeq: Number(row.people_seq),
+    })),
+    invites: ofKind('invite').map((row) => ({ inviteId: row.id, changeSeq: Number(row.change_seq) })),
+    joinRequests: ofKind('joinRequest').map((row) => ({ joinRequestId: row.id, changeSeq: Number(row.change_seq) })),
+  };
+}
+
+/**
  * The rooms `anopodId` is a member of, newest first, each with the caller's
  * own wrapped key, the members (id, username and, since 2026-11-19,
  * `seenPosition`), the people invited who have not answered yet (oldest
@@ -369,9 +444,11 @@ function listingFromRow(row) {
  * type, name, pictureAt, listingId, listing, caseId, caseKind,
  * creatorAnopodId, hpkeKey, members, invited, lastMessage, lastPosition,
  * createdAt }. `pictureAt` is when the room's picture was last set, null
- * for a room without one (2026-11-22).
+ * for a room without one (2026-11-22). `chatRoomIds`, when it is not null,
+ * keeps the rooms with one of these ids (Buffers) and leaves the others
+ * out (2026-11-24, spec section 29).
  */
-export async function listRoomsFor(anopodId) {
+export async function listRoomsFor(anopodId, chatRoomIds = null) {
   const { rows } = await pool.query(
     `SELECT r.chat_room_id, r.type, r.name, r.creator_anopod_id, r.created_at, h.hpke_key,
             r.listing_id, ${ROOM_LISTING_COLUMNS}, r.case_id, r.case_kind, rp.updated_at AS picture_at,
@@ -403,8 +480,9 @@ export async function listRoomsFor(anopodId) {
                          ORDER BY msg.position DESC
                          LIMIT 1) lm ON true
      WHERE cm.anopod_id = $1
+       AND ($2::bytea[] IS NULL OR r.chat_room_id = ANY($2::bytea[]))
      ORDER BY r.created_at DESC, r.chat_room_id`,
-    [anopodId],
+    [anopodId, chatRoomIds],
   );
   return rows.map((row) => ({
     chatRoomId: toHex(row.chat_room_id),
@@ -435,13 +513,52 @@ export async function listRoomsFor(anopodId) {
 }
 
 /**
+ * The newest message of each of the given rooms (ids as Buffers) that
+ * `anopodId` is a member of (2026-11-24, spec section 29): { chatRoomId,
+ * lastMessage, lastPosition }, the three fields of listRoomsFor that a
+ * message changes, in its forms. A room the pod is not in is left out.
+ */
+export async function listNewestMessagesFor(anopodId, chatRoomIds) {
+  const { rows } = await pool.query(
+    `SELECT cm.chat_room_id,
+            lm.message_id AS last_message_id, lm.position AS last_position,
+            lm.sender_anopod_id AS last_sender_anopod_id, lm.message AS last_message,
+            lm.created_at AS last_created_at
+     FROM chat_room_members cm
+     LEFT JOIN LATERAL (SELECT msg.message_id, msg.position, msg.sender_anopod_id, msg.message, msg.created_at
+                          FROM chat_room_messages msg
+                         WHERE msg.chat_room_id = cm.chat_room_id
+                         ORDER BY msg.position DESC
+                         LIMIT 1) lm ON true
+     WHERE cm.anopod_id = $1 AND cm.chat_room_id = ANY($2::bytea[])`,
+    [anopodId, chatRoomIds],
+  );
+  return rows.map((row) => ({
+    chatRoomId: toHex(row.chat_room_id),
+    lastMessage:
+      row.last_message_id === null
+        ? null
+        : {
+            messageId: toHex(row.last_message_id),
+            position: Number(row.last_position),
+            senderAnopodId: toHex(row.last_sender_anopod_id),
+            message: row.last_message.toString('base64'),
+            createdAt: row.last_created_at.toISOString(),
+          },
+    lastPosition: row.last_position === null ? 0 : Number(row.last_position),
+  }));
+}
+
+/**
  * The open invites to `anopodId`, oldest first, each with the listing its
  * room is about (listingFromRow; null without one) and the attestor case
  * its room is about (the case's id and kind; both null without one):
  * { inviteId, chatRoomId, type, name, listingId, listing, caseId, caseKind,
- * from: profile, createdAt }.
+ * from: profile, createdAt }. `inviteIds`, when it is not null, keeps the
+ * invites with one of these ids (Buffers) and leaves the others out
+ * (2026-11-24, spec section 29).
  */
-export async function listInvitesFor(anopodId) {
+export async function listInvitesFor(anopodId, inviteIds = null) {
   const { rows } = await pool.query(
     `SELECT i.invite_id, i.chat_room_id, i.created_at, r.type, r.name, r.listing_id, ${ROOM_LISTING_COLUMNS},
             r.case_id, r.case_kind,
@@ -452,8 +569,9 @@ export async function listInvitesFor(anopodId) {
      LEFT JOIN listings l ON l.listing_id = r.listing_id
      LEFT JOIN anopods la ON la.anopod_id = l.anopod_id
      WHERE i.anopod_id_to = $1
+       AND ($2::bytea[] IS NULL OR i.invite_id = ANY($2::bytea[]))
      ORDER BY i.created_at, i.invite_id`,
-    [anopodId],
+    [anopodId, inviteIds],
   );
   return rows.map((row) => ({
     inviteId: toHex(row.invite_id),
@@ -469,16 +587,23 @@ export async function listInvitesFor(anopodId) {
   }));
 }
 
-/** The open join requests on rooms `creatorAnopodId` created, oldest first: { joinRequestId, chatRoomId, from: profile, createdAt }. */
-export async function listJoinRequestsForCreator(creatorAnopodId) {
+/**
+ * The open join requests on rooms `creatorAnopodId` created, oldest first:
+ * { joinRequestId, chatRoomId, from: profile, createdAt }.
+ * `joinRequestIds`, when it is not null, keeps the requests with one of
+ * these ids (Buffers) and leaves the others out (2026-11-24, spec section
+ * 29).
+ */
+export async function listJoinRequestsForCreator(creatorAnopodId, joinRequestIds = null) {
   const { rows } = await pool.query(
     `SELECT j.join_request_id, j.chat_room_id, j.created_at, ${PROFILE_COLUMNS}
      FROM chat_room_join_requests j
      JOIN chat_rooms r ON r.chat_room_id = j.chat_room_id
      JOIN anopods a ON a.anopod_id = j.anopod_id
      WHERE r.creator_anopod_id = $1
+       AND ($2::bytea[] IS NULL OR j.join_request_id = ANY($2::bytea[]))
      ORDER BY j.created_at, j.join_request_id`,
-    [creatorAnopodId],
+    [creatorAnopodId, joinRequestIds],
   );
   return rows.map((row) => ({
     joinRequestId: toHex(row.join_request_id),

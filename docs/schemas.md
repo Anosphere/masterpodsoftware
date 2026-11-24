@@ -533,6 +533,8 @@ CREATE TABLE IF NOT EXISTS chat_rooms (
   case_kind         TEXT        CHECK (case_kind IN ('trade', 'dispute', 'recovery')),
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  message_seq       BIGINT      NOT NULL DEFAULT 0 CHECK (message_seq >= 0),
+  people_seq        BIGINT      NOT NULL DEFAULT 0 CHECK (people_seq >= 0),
   CHECK ((type = 'public') = (name IS NOT NULL)),
   CONSTRAINT chat_rooms_case_check CHECK ((case_id IS NULL) = (case_kind IS NULL)
     AND (case_id IS NULL OR (type = 'private' AND listing_id IS NULL)))
@@ -567,6 +569,19 @@ The index on `(type, created_at DESC)` no longer gives the order of
 `/list-public-chat-rooms` since 2026-11-22: the list sorts by the number
 of members (section 26).
 
+`message_seq` and `people_seq` (added 2026-11-24, section 29) are two
+values of the counter `chat_change_seq`: the first is taken when a message
+is written in the room, the second when the room changes in another way (a
+member joins or leaves, an invite to it is made or answered, its picture
+is set, its listing is closed). Triggers set both, and both are 0 until
+the room's first such change after the columns were added.
+/list-chat-rooms compares them with the `since` a wallet sends. For a live
+database the chat change block at the end of `db/schema.sql` adds the two
+columns, with their comments; the counter, the triggers and the block are
+in 29.2. The triggers' writes also move `updated_at`: since that block a
+room's `updated_at` is the time of its last message or its last other
+change.
+
 ### chat_room_members, chat_hpke
 
 ```sql
@@ -575,6 +590,7 @@ CREATE TABLE IF NOT EXISTS chat_room_members (
   anopod_id    BYTEA       NOT NULL CHECK (octet_length(anopod_id) = 32),
   created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
   seen_position BIGINT NOT NULL DEFAULT 0 CHECK (seen_position >= 0),
+  seen_seq BIGINT NOT NULL DEFAULT 0 CHECK (seen_seq >= 0),
   PRIMARY KEY (chat_room_id, anopod_id)
 );
 CREATE INDEX IF NOT EXISTS chat_room_members_anopod_id_idx ON chat_room_members (anopod_id);
@@ -598,6 +614,11 @@ position the member has seen in the room, 0 until the member's wallet
 reports one: /mark-messages-seen raises it, and /list-chat-rooms hands it
 to every member of the room.
 
+`seen_seq` (added 2026-11-24, section 29) is the value of the counter
+`chat_change_seq` taken when the row's `seen_position` last changed, 0
+while `seen_position` is 0. A trigger sets it. /list-messages hands a
+member's position to a wallet whose `seenSince` is below it (29.4).
+
 ### chat_room_invites, chat_room_join_requests
 
 ```sql
@@ -608,6 +629,7 @@ CREATE TABLE IF NOT EXISTS chat_room_invites (
   anopod_id_to   BYTEA       NOT NULL CHECK (octet_length(anopod_id_to) = 32),
   hpke_key       BYTEA       NOT NULL CHECK (octet_length(hpke_key) <= 4096),
   created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  change_seq     BIGINT      NOT NULL DEFAULT 0 CHECK (change_seq >= 0),
   UNIQUE (chat_room_id, anopod_id_to)
 );
 CREATE INDEX IF NOT EXISTS chat_room_invites_anopod_id_to_idx ON chat_room_invites (anopod_id_to);
@@ -617,6 +639,7 @@ CREATE TABLE IF NOT EXISTS chat_room_join_requests (
   chat_room_id    BYTEA       NOT NULL CHECK (octet_length(chat_room_id) = 32),
   anopod_id       BYTEA       NOT NULL CHECK (octet_length(anopod_id) = 32),
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  change_seq      BIGINT      NOT NULL DEFAULT 0 CHECK (change_seq >= 0),
   UNIQUE (chat_room_id, anopod_id)
 );
 ```
@@ -626,6 +649,12 @@ it into `chat_hpke`, decline drops it. A join request carries nothing; the
 creator's approval brings the wrapped key. `anopod_id_from` is the inviter:
 the room's creator, or, since 2026-11-11, a member of a listing chat
 bringing an attestor in (/invite-to-chat-room in section 5; section 18).
+
+`change_seq` (added 2026-11-24, section 29), on both tables, is the value
+of the counter `chat_change_seq` taken when the invite or the request was
+written. A trigger sets it, and a row that was open when the column was
+added got its number then. /list-chat-rooms hands the invite or the
+request to a wallet whose `since` is below it (29.3).
 
 ### chat_room_messages
 
@@ -1181,12 +1210,14 @@ Answer: `200 { chatRoomId }`.
 
 ### POST /list-chat-rooms (setup)
 
-Body: `{}`.
+Body: `{ since }`, optional (2026-11-24, section 29); `{}` asks for
+everything.
 
 Answer:
 
 ```json
 {
+  "seq", "counts": { "rooms", "invites", "joinRequests" },
   "rooms": [ { "chatRoomId", "type", "name", "pictureAt", "listingId", "listing", "caseId", "caseKind", "creatorAnopodId", "hpkeKey",
                "members": [ { "anopodId", "username", "seenPosition" } ], "invited": [ { "anopodId", "username" } ],
                "lastMessage", "lastPosition", "createdAt" } ],
@@ -1225,6 +1256,16 @@ Each room carries `pictureAt` (2026-11-22, section 27): when the room's
 picture was last set, an ISO 8601 string, null for a room without one.
 Only a public room has a picture, and the picture itself is not in this
 answer: /get-chat-room-picture hands it out.
+Every answer carries `seq` and `counts` (2026-11-24, section 29). `seq` is
+the highest change number among the caller's rooms, open invites and join
+requests, 0 when none of them has one; `counts` is how many of each the
+caller has. With `since` in the body, a number a wallet got as `seq`
+before, the three lists hold only what changed after that number: a room
+whose people or facts changed whole, a room with only a new message as
+`{ chatRoomId, lastMessage, lastPosition }`, and the invites and the join
+requests written since. `since` is a whole number from 0 (`400 invalid
+since` for another value); without it the three lists hold everything, as
+before. The numbered steps are in 29.3.
 
 ### POST /list-public-chat-rooms (setup)
 
@@ -1272,7 +1313,7 @@ Answer: `200 { chatRoomId, picture: { contentType, image }, pictureAt }`.
 
 ### POST /list-messages (setup)
 
-Body: `{ chatRoomId, afterPosition, beforePosition, limit }`;
+Body: `{ chatRoomId, afterPosition, beforePosition, limit, seenSince }`;
 `afterPosition` defaults to 0, `limit` to 100 (max 200). `beforePosition`
 is optional, 1 or more: when it is given, the answer is the newest `limit`
 messages whose position is below it, and `afterPosition` is ignored (`400
@@ -1283,6 +1324,15 @@ Checks: the caller is a member (`403 not a member`).
 
 Answer: `200 { messages: [ { messageId, position, senderAnopodId, message,
 createdAt } ] }`, ascending by position, `position` as a number.
+
+With `seenSince` in the body (2026-11-24, section 29), a whole number from
+0 (`400 invalid seenSince` for another value, checked before the member
+check), the answer is `200 { messages, seen, seenSeq }`. `seen` is the
+members of the room whose seen position changed after that number, each as
+`{ anopodId, seenPosition }`; with `seenSince` 0 it is every member who
+has seen anything. `seenSeq` is the number to send as the next
+`seenSince`. Without `seenSince` the answer is `{ messages }`, as before.
+The steps are in 29.4.
 
 ### POST /send-message (setup)
 
@@ -11048,3 +11098,833 @@ plan left open and how it was decided:
   into `/tmp`, then `look` and `write` as the masterpod user) were tried
   the same way, with this Mac's own file server in place of the
   connection; none of them has run on a server.
+
+## 29. The chat list: only what is new (2026-11-24)
+
+Design settled 2026-11-23 in a talking chat and its planning (the plan is
+`~/Desktop/Z-TestNet/forclaude/chat-list-plan-1.md`, FINAL, 2026-11-24, on
+the user's word "Yes, final"). Why: a wallet asks `/list-chat-rooms` every
+5 seconds, on every page while a person is logged in, and got the whole
+list each time: every chat with the caller's wrapped key and every member.
+Counted from the form of the answer, that is 21.8 KB for a person with
+five chats of two people and 55 KB with nine such chats and a room of 100
+people, every 5 seconds. The user, 2026-11-23: "Usually the user's phone
+would check to see if there's new data it doesn't have and grab that." So
+this server now numbers every change of a chat list with one counter, and
+a wallet that sends the highest number it has gets only what changed after
+it. Two steps in order: this server (this section, step 1 of the plan: one
+schema block, one field more in the request of `/list-chat-rooms` and two
+in its answer, one field more in the request of `/list-messages` and two
+in its answer) and the wallet (its spec, step 2: the timer's read with
+`since`, the answer put into the list in memory, and the read positions
+from the open chat's read). With this server alone deployed nothing
+changes for anyone: a wallet of before sends no `since` and no `seenSince`
+and gets the answers of before, the first with two fields in front that it
+does not read. A wallet of step 2 against a server of before gets an
+answer with no `seq` and takes it as the whole list (the plan's section
+7). Inside this server's own deploy the order matters: the schema file
+goes onto the database before the new code runs (29.8). One schema block:
+one sequence, five columns on four tables, five functions and nine
+triggers. No table, no route, no env variable and no npm package. The
+validators, the doormen, the keyholders, the signing servers and the
+wallet's proxy are not touched: no request is added. Nothing above this
+section changes except the items in 29.6.
+
+### 29.1 The rule
+
+- The read of every 5 seconds is sent only what is new (the plan's
+  decision 1). The user: "Usually the user's phone would check to see if
+  there's new data it doesn't have and grab that."
+- The way is the one told on 2026-11-23 (decision 2): one counter in this
+  server's database, numbers that take the counter's next value when
+  something of a chat list changes, and `since` in the request. The user:
+  "that seems like a solid step in the right direction".
+- A page that is loaded again reads everything once (decision 3). The
+  user: "on a phone refresh it will grab all a new, that's okay for now".
+  So a request with no `since` gets everything, and this server keeps
+  nothing about what a wallet holds. The number travels in the request.
+- Keeping the list on the phone between two loads of the page is a later
+  subject (decision 4), and not in this section.
+- A chat is sent whole, as three fields, or not at all (the plan's 3.2).
+  Whole, when its people or its facts changed: the wallet then has every
+  member, every invited person, the picture's time and the listing again.
+  As three fields, `chatRoomId`, `lastMessage` and `lastPosition`, when
+  only a message came. Not at all otherwise.
+- An invite or a join request is sent when it was written after the
+  number the wallet sent.
+- What was taken away is not sent: a chat the caller left, an invite that
+  was answered, a request that was answered. Every answer says how many
+  chats, open invites and open requests the caller has now (`counts`). A
+  wallet that holds another number reads the whole list once.
+- How far each member has read leaves the read of every 5 seconds (the
+  plan's 3.4). Only the chat that is open draws it, and in a room of 100
+  people every message makes up to 99 positions move. The open chat's own
+  read, `/list-messages`, which a wallet makes every 3 seconds, hands them
+  out: every member's when the chat is opened, afterwards only the
+  positions that rose.
+- A chat that is sent whole still carries every member's read position,
+  as before (the plan's section 4, point 3). So a wallet that was not
+  updated works as before.
+- Triggers in the database set the numbers (the plan's 3.1). No route
+  that writes a chat changes, and the writes of a server that still runs
+  the code of before are numbered too.
+- What this server learns: nothing new. A number says that something
+  changed and after which other change it was numbered.
+- One gap is known and is left as it is (decision 5). It is told in 29.7.
+
+### 29.2 The counter, the five numbers and their triggers
+
+`db/schema.sql`, in two places. Inline in the `CREATE TABLE` of
+`chat_rooms`, `chat_room_members`, `chat_room_invites` and
+`chat_room_join_requests`, each new column the last of its table, for a
+database built from nothing (section 4). And in a new block, the last
+thing in the file, after the stickers block: "The chat change block
+(2026-11-24, spec section 29)", for a database that has the tables. The
+block without its comments:
+
+```sql
+CREATE SEQUENCE IF NOT EXISTS chat_change_seq;
+
+ALTER TABLE chat_rooms ADD COLUMN IF NOT EXISTS message_seq BIGINT NOT NULL DEFAULT 0 CHECK (message_seq >= 0);
+ALTER TABLE chat_rooms ADD COLUMN IF NOT EXISTS people_seq BIGINT NOT NULL DEFAULT 0 CHECK (people_seq >= 0);
+ALTER TABLE chat_room_invites ADD COLUMN IF NOT EXISTS change_seq BIGINT NOT NULL DEFAULT 0 CHECK (change_seq >= 0);
+ALTER TABLE chat_room_join_requests ADD COLUMN IF NOT EXISTS change_seq BIGINT NOT NULL DEFAULT 0 CHECK (change_seq >= 0);
+ALTER TABLE chat_room_members ADD COLUMN IF NOT EXISTS seen_seq BIGINT NOT NULL DEFAULT 0 CHECK (seen_seq >= 0);
+
+UPDATE chat_room_invites SET change_seq = nextval('chat_change_seq') WHERE change_seq = 0;
+UPDATE chat_room_join_requests SET change_seq = nextval('chat_change_seq') WHERE change_seq = 0;
+UPDATE chat_room_members SET seen_seq = nextval('chat_change_seq') WHERE seen_position > 0 AND seen_seq = 0;
+
+CREATE OR REPLACE FUNCTION set_change_seq()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  NEW.change_seq := nextval('chat_change_seq');
+  RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION set_seen_seq()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  NEW.seen_seq := nextval('chat_change_seq');
+  RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION set_room_message_seq()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  UPDATE chat_rooms SET message_seq = nextval('chat_change_seq') WHERE chat_room_id = NEW.chat_room_id;
+  RETURN NULL;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION set_room_people_seq()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    UPDATE chat_rooms SET people_seq = nextval('chat_change_seq') WHERE chat_room_id = OLD.chat_room_id;
+  ELSE
+    UPDATE chat_rooms SET people_seq = nextval('chat_change_seq') WHERE chat_room_id = NEW.chat_room_id;
+  END IF;
+  RETURN NULL;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION set_listing_rooms_people_seq()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  UPDATE chat_rooms SET people_seq = nextval('chat_change_seq') WHERE listing_id = NEW.listing_id;
+  RETURN NULL;
+END;
+$$;
+
+CREATE OR REPLACE TRIGGER chat_room_invites_set_change_seq
+  BEFORE INSERT ON chat_room_invites
+  FOR EACH ROW
+  EXECUTE FUNCTION set_change_seq();
+
+CREATE OR REPLACE TRIGGER chat_room_join_requests_set_change_seq
+  BEFORE INSERT ON chat_room_join_requests
+  FOR EACH ROW
+  EXECUTE FUNCTION set_change_seq();
+
+CREATE OR REPLACE TRIGGER chat_room_members_set_seen_seq
+  BEFORE UPDATE ON chat_room_members
+  FOR EACH ROW
+  WHEN (OLD.seen_position IS DISTINCT FROM NEW.seen_position)
+  EXECUTE FUNCTION set_seen_seq();
+
+CREATE OR REPLACE TRIGGER chat_room_messages_set_room_message_seq
+  AFTER INSERT ON chat_room_messages
+  FOR EACH ROW
+  EXECUTE FUNCTION set_room_message_seq();
+
+CREATE OR REPLACE TRIGGER chat_room_members_set_room_people_seq
+  AFTER INSERT OR DELETE ON chat_room_members
+  FOR EACH ROW
+  EXECUTE FUNCTION set_room_people_seq();
+
+CREATE OR REPLACE TRIGGER chat_room_invites_set_room_people_seq
+  AFTER INSERT OR DELETE ON chat_room_invites
+  FOR EACH ROW
+  EXECUTE FUNCTION set_room_people_seq();
+
+CREATE OR REPLACE TRIGGER chat_room_pictures_set_room_people_seq
+  AFTER INSERT ON chat_room_pictures
+  FOR EACH ROW
+  EXECUTE FUNCTION set_room_people_seq();
+
+CREATE OR REPLACE TRIGGER chat_room_pictures_set_room_people_seq_on_change
+  AFTER UPDATE ON chat_room_pictures
+  FOR EACH ROW
+  WHEN (OLD.* IS DISTINCT FROM NEW.*)
+  EXECUTE FUNCTION set_room_people_seq();
+
+CREATE OR REPLACE TRIGGER listings_set_listing_rooms_people_seq
+  AFTER UPDATE ON listings
+  FOR EACH ROW
+  WHEN (OLD.status IS DISTINCT FROM NEW.status)
+  EXECUTE FUNCTION set_listing_rooms_people_seq();
+```
+
+`chat_change_seq` is the one counter: a PostgreSQL sequence that begins at
+1. No route reads it; triggers take its next value. A number is never
+given twice, and a later write always gets a higher number than an
+earlier one: the sequence has the default cache of 1, so the numbers are
+handed out in the order they are asked for, whichever connection asks. A
+number that a failed write took is not given again and leaves a hole.
+Every number is a `BIGINT`, `NOT NULL`, default 0, never negative (the
+check). 0 means "never numbered".
+
+| Column | It takes the counter's next value when | The trigger |
+| ------ | -------------------------------------- | ----------- |
+| `chat_rooms.message_seq` | a message is written in the room | `chat_room_messages_set_room_message_seq`, after the insert of the message |
+| `chat_rooms.people_seq` | a member joins or leaves | `chat_room_members_set_room_people_seq`, after the insert or the delete of a member row |
+| | an invite to the room is made or answered | `chat_room_invites_set_room_people_seq`, after the insert or the delete of an invite |
+| | the room's picture is set | `chat_room_pictures_set_room_people_seq`, after the insert of the room's first picture, and `chat_room_pictures_set_room_people_seq_on_change`, after an update that changed the row |
+| | the room's listing is closed | `listings_set_listing_rooms_people_seq`, after an update that changed a listing's `status`: every room with that `listing_id`, each with a number of its own |
+| `chat_room_invites.change_seq` | the invite is written | `chat_room_invites_set_change_seq`, before the insert |
+| `chat_room_join_requests.change_seq` | the request is written | `chat_room_join_requests_set_change_seq`, before the insert |
+| `chat_room_members.seen_seq` | the member's `seen_position` changes | `chat_room_members_set_seen_seq`, before an update that changes it |
+
+What follows from the triggers:
+
+- A new room has a `people_seq` from its first moment: `/create-chat-room`
+  writes the room and its creator's member row in one transaction, and
+  the member row numbers the room.
+- An invite that is accepted numbers its room twice in one transaction,
+  for the new member row and for the invite's end. The room keeps the
+  higher number.
+- A join request numbers itself and not its room: a room's entry in the
+  list does not hold the requests. An approval numbers the room, by the
+  new member row. A request that is declined numbers nothing; the
+  creator's `counts` fall.
+- The same picture set again changes nothing in its row, so it numbers
+  nothing and `pictureAt` stays (section 27).
+- A report of a seen position that does not raise it changes nothing in
+  the row, so it numbers nothing.
+- An open invite's entry also shows its room's listing. It is not
+  numbered again when that listing is closed (the plan's section 7): the
+  wallet's Requests page draws the listing's side, quantity and currency,
+  and not whether it is open.
+- A member who leaves and is let in again starts with `seen_seq` 0, as
+  with `seen_position` 0 (21.5).
+- The triggers' writes of a room's row also move that row's `updated_at`
+  (`chat_rooms_set_updated_at`). Nothing reads it.
+- Two messages sent in one room at the same moment now wait for each
+  other: each writes the room's row, and the second waits until the first
+  is committed. Across rooms nothing waits.
+- No transaction locks two rooms' rows but the close of a listing, which
+  numbers the rooms of that one listing. So the triggers add no way for
+  two transactions to wait for each other in a circle (tried, 29.8).
+
+On its first run on a database of before, the block numbers once what is
+there: every open invite, every open join request, and every member row
+with a `seen_position` above 0. A room keeps 0 in both numbers until its
+next change. The three `UPDATE`s find nothing at a second run: a row
+written since the first run has its number from a trigger. The comments
+of the sequence and of the five columns are in the block only. No index:
+`message_seq` changes with every message, and nothing looks a row up by
+one of the numbers. The block is idempotent (`IF NOT EXISTS` and `OR
+REPLACE`), so the whole file applies to a live database and a second run
+changes nothing. The file makes 45 tables, as before.
+
+### 29.3 The changes of `/list-chat-rooms`
+
+**POST /list-chat-rooms** (setup; section 5), one field more in the body
+and two in the answer.
+
+Body: `{ since }`, optional. `since` is a whole number from 0 to
+9007199254740991, the largest whole number JavaScript keeps exact: the
+`seq` of the last answer the wallet put into its list. A body without
+`since`, or with `since` `null`, asks for everything. A `since` of 0 is a
+`since`.
+
+Checks, in order:
+
+1. The body is an object, else `400 bad request shape`. The session check
+   (section 3) has refused any other body before the route is reached.
+2. `since`, when it is there, is a whole number in that range, else `400
+   invalid since`.
+
+What the route then does:
+
+1. One statement reads the numbers of everything in the caller's list:
+   `message_seq` and `people_seq` of every room the caller is a member
+   of, and `change_seq` of every open invite to the caller and of every
+   open join request on a room the caller created. Each of its three
+   parts has the joins of its list, so it counts exactly the rows that
+   list hands out. It is one statement, so the numbers are the list at
+   one moment.
+2. `seq` is the highest of these numbers, 0 when there is none. It is
+   never the counter's own value: the counter also counts the changes of
+   everybody else. `counts` is how many rooms, invites and join requests
+   that statement saw.
+3. With no `since`: the three lists are read whole, by the three
+   statements of before.
+4. With `since`: a room whose `people_seq` is above `since` is read
+   whole. A room whose `people_seq` is not above it and whose
+   `message_seq` is, is read as three fields. An invite or a request
+   whose `change_seq` is above it is read as before. Each of these is one
+   statement for the ids that the first statement named, and a statement
+   with no id to read is not sent. When nothing is above `since`, the
+   route has asked the database once.
+
+The first statement decides, and what is sent is read after it. If one of
+the later statements sees something newer, the wallet's next read sends it
+again, which harms nothing. The other order could lose a change: a `seq`
+above a change that the lists did not yet hold. The read opens no
+transaction of its own.
+
+Answer: `200`, the same five keys with and without `since`:
+
+```json
+{
+  "seq": 9120,
+  "counts": { "rooms": 10, "invites": 0, "joinRequests": 0 },
+  "rooms": [],
+  "invites": [],
+  "joinRequests": []
+}
+```
+
+This is the answer when nothing is new, 105 bytes as it travels.
+
+- `seq`: the number to send as the next `since`, as a number.
+- `counts`: `{ rooms, invites, joinRequests }`, how many of each the
+  caller has now.
+- `rooms`: with no `since`, every room, each in the form of section 5.
+  With `since`, the rooms that changed, in the order of the whole list
+  (the newest room first). An entry is a whole room, in that same form,
+  or the three fields `{ chatRoomId, lastMessage, lastPosition }`, with
+  `lastMessage` and `lastPosition` as a whole room has them. A room is
+  never in the answer twice.
+- `invites` and `joinRequests`: with no `since`, all of them. With
+  `since`, the ones written after it, each in the form of section 5,
+  the oldest first.
+
+A room with a new message, as it travels (about 540 bytes with a short
+message):
+
+```json
+{
+  "seq": 9121,
+  "counts": { "rooms": 10, "invites": 0, "joinRequests": 0 },
+  "rooms": [
+    {
+      "chatRoomId": "<hex 32 bytes>",
+      "lastMessage": { "messageId": "<hex>", "position": 4711, "senderAnopodId": "<hex>", "message": "<base64>", "createdAt": "2026-11-24T18:25:48.652Z" },
+      "lastPosition": 4711
+    }
+  ],
+  "invites": [],
+  "joinRequests": []
+}
+```
+
+What a reader of the answer has to know:
+
+- `seq` can be lower than the `since` that was sent. That happens when
+  the entry that held the highest number is gone (the caller left that
+  room, or answered that invite, or the request was answered), and when
+  the database was put back from a backup. The plan has the wallet read
+  the whole list then (its section 4, point 4).
+- With `since`, `counts` can differ from what the wallet holds after it
+  put the answer in: something was taken away on another phone. The
+  wallet then reads the whole list once.
+- With no `since`, `counts` is what the first statement saw, and the
+  lists are read after it. A room that came in between is in `rooms` and
+  not yet in `counts.rooms`; its number is above `seq`, so the next read
+  with `since` sends it again.
+- A `since` of 0 is answered as a `since`: a room that still holds 0 in
+  both numbers is not sent. A wallet's first read after a page load or a
+  login therefore sends no `since` (the plan's 3.3).
+- Fields that the route does not know are passed over, as before.
+
+Nothing else of the route changes. A request with no `since` gets the
+answer of before, byte for byte, with `"seq":<n>,"counts":{...},` in
+front: about 60 bytes more.
+
+### 29.4 The changes of `/list-messages`
+
+**POST /list-messages** (setup; section 5), one field more in the body
+and, with it, two in the answer.
+
+Body: `{ chatRoomId, afterPosition, beforePosition, limit, seenSince }`.
+`seenSince` is optional: a whole number from 0 to 9007199254740991, the
+`seenSeq` of the last answer the wallet got for this room, or 0 when the
+room is opened. A body without it, or with `seenSince` `null`, gets the
+answer of before.
+
+Checks, in order: as before (`400 bad request shape`, `400 invalid
+chatRoomId`, `400 invalid afterPosition`, `400 invalid beforePosition`,
+`400 invalid limit`), then `seenSince`, when it is there, is a whole
+number in that range, else `400 invalid seenSince`; then the caller is a
+member of the room, else `403 not a member`.
+
+Answer without `seenSince`: `200 { messages }`, as before, byte for byte.
+
+Answer with `seenSince`: `200 { messages, seen, seenSeq }`.
+
+```json
+{
+  "messages": [],
+  "seen": [ { "anopodId": "<hex 32 bytes>", "seenPosition": 4711 } ],
+  "seenSeq": 9615
+}
+```
+
+- `messages`: as before. `afterPosition`, `beforePosition` and `limit`
+  mean what they meant.
+- `seen`: the members of the room whose `seen_seq` is above `seenSince`,
+  each as `{ anopodId, seenPosition }`, in the order of a room's members
+  (the first who joined first). The caller's own row is among them when
+  it changed. With `seenSince` 0 it is every member who has seen
+  anything; a member whose position is still 0 is left out.
+- `seenSeq`: the highest `seen_seq` of the room's members, 0 when no
+  member has seen anything. It is the number to send as the next
+  `seenSince`.
+
+One statement reads `seen` and `seenSeq`, so they are the room at one
+moment. It runs after the statement of the messages. `seenSeq` can be
+lower than the `seenSince` sent, when the member who held the highest
+number left the room; the next read then sends some positions again,
+which harms nothing. An entry of `seen` is about 100 bytes. A room of 100
+people in which 99 have read is 9.7 KB once, when the chat is opened;
+after that an answer with no new message and no new position is 40 bytes.
+
+Nothing else changes: not `/mark-messages-seen`, not `/send-message`, and
+not the `seenPosition` of each member in a room that `/list-chat-rooms`
+sends whole.
+
+### 29.5 What a wallet does with it
+
+The wallet's part is step 2 of the plan and is written in the wallet's
+spec. In short, as this server's answers are meant to be read (the plan's
+3.3, 3.4 and section 7):
+
+- The wallet keeps its list in memory, as before, and the number `seq`
+  beside it. The first read after a page load or a login has no `since`.
+  Every later read from the timer, and the read at the opening of the
+  Chat page, sends `since`.
+- What comes back is put into the list: a whole room takes the place of
+  the one the wallet has, or is added at the front; three fields change
+  that room's newest message; an invite or a request is added at the
+  end. Three fields for a room the wallet does not hold lead to a read of
+  the whole list.
+- Then the wallet counts its list. A number that differs from `counts`,
+  or a `seq` below the `since` it sent, leads to a read of the whole
+  list, once.
+- An answer is put in only if the wallet's number is still the `since`
+  the request was sent with. An answer with no `seq`, from a server that
+  still runs the code of before, is taken as the whole list.
+- The read after a person's own action (accept, decline, create, invite,
+  leave, set a picture, the marketplace's buttons) stays a read of the
+  whole list, once for each tap.
+- The open chat's read sends `seenSince`: 0 when the chat is opened, then
+  the `seenSeq` of the last answer. The positions are written into the
+  same list in memory, so "Seen" and "Seen by" are drawn by the code of
+  before.
+
+### 29.6 Files
+
+- `db/schema.sql`: the five columns in the four `CREATE TABLE`s; the chat
+  change block, new, at the end; and the file's opening comment, which
+  names the new block among the idempotent ALTERs.
+- `src/chat/chat.queries.js`: `listChangeNumbersFor`,
+  `listNewestMessagesFor` and `listSeenSince`, new; in `listRoomsFor`,
+  `listInvitesFor` and `listJoinRequestsForCreator` a second parameter,
+  the ids to keep, with one condition in each statement and a sentence in
+  each comment.
+- `src/chat/chat.service.js`: `listRooms`, which now takes the body;
+  `listRoomMessages`, the check of `seenSince` and the second form of the
+  answer; the comments of both; the three imports.
+- `src/chat/chat.handlers.js`: `listChatRooms` hands the body on.
+- Here: section 4 (`### chat_rooms`, `### chat_room_members, chat_hpke`
+  and `### chat_room_invites, chat_room_join_requests`: the new columns in
+  the SQL and a paragraph each), section 5 (`### POST /list-chat-rooms`:
+  the body, `seq` and `counts` in the JSON block and a dated paragraph;
+  `### POST /list-messages`: `seenSince` in the body and a dated
+  paragraph) and this section. `README.md`: the rows of
+  `/list-chat-rooms` and `/list-messages` in the Endpoints table, the
+  rows of the four tables in "Database tables", and a sentence on the
+  sequence above that table.
+
+Nothing else in existing code changes: no route that writes, not
+`src/chat/chat.router.js`, not `src/marketplace/`, not `src/app.js`, not
+`package.json`, not `.example.env`. One sequence, five columns, five
+functions and nine triggers; no table, no route, no env variable, no npm
+package.
+
+### 29.7 What is left as it is
+
+- The requests going up. Every signed request carries an ML-DSA-87
+  signature, 4,627 bytes sent as hex, so one request is 9.6 KB. A wallet
+  sends three every 5 seconds (`/list-notifications`,
+  `/check-anopod-status`, `/list-chat-rooms`): 28.9 KB up, before and
+  after this section (the plan's section 6).
+- `/list-notifications` answers the newest 100 notifications whole every
+  5 seconds. Not touched.
+- This server's work on a request. It still checks both signatures and
+  writes the nonce, and it reads one small row for each room of the
+  caller.
+- Reads of the whole list. A page load, a login and the read after a
+  person's own action still get everything, once each.
+- Keeping the list on the phone between two loads of the page.
+- The members leaving the chat list altogether, with a read that hands
+  out a room's members a page at a time: the wider way, named on
+  2026-11-22.
+- A room that is sent whole carries every member, also when one person
+  joined a room of 100: 16.4 KB, once for each such change and member.
+- One gap, on the after-production list on the user's word ("We can add
+  that one line to the after production list"). A write takes its number
+  first and is committed a moment later. If two writes happen within a
+  few milliseconds and are committed in the other order than their
+  numbers, a read that falls between the two commits can skip the one
+  with the lower number. A person then misses one change of one chat (a
+  dot, a line of the chat list, a name, a reader under "Seen by") until
+  that chat's next change or until the page is loaded again. Two writes
+  of one room cannot do it: each writes the room's row, so the second
+  waits for the first and gets the higher number (tried, 29.8). It needs
+  two writes of two rows: two rooms, or two members' read positions in
+  one room. A new room, a new invite or a new request that is skipped
+  this way is still found at the wallet's next read, by `counts`. The
+  open chat's read of new messages has the same trait since before this
+  section. The item's line is "chat: of two changes
+  written at the same instant, a phone can miss one" in
+  `~/Desktop/Z-TestNet/after_production_todos/things-to-do-after-production.md`.
+  The build did not try for it (the plan's section 7).
+
+### 29.8 Notes from the build
+
+#### Build 1, the masterpod (2026-11-24)
+
+Built from `~/Desktop/Z-TestNet/forclaude/chat-list-plan-1.md`, its
+sections 3.1, 3.2, 3.4 and 7 and step 1 of section 5, on main at 73f2551,
+the working tree clean. The plan holds no code, so all of the code is the
+build's. No new npm package, and no test script in the repo. The schema
+was not applied to any database of the network: the user applies the
+whole file as section 6 of `forclaude/masterpod-deploy-plan-1.md` says, on
+the leader, and then pulls and restarts the three servers, the leader
+last. The file goes on before the new code runs. On a database without
+the block the built code fails every `/list-chat-rooms`, the read every
+wallet makes every 5 seconds: the chat would be down for everybody until
+the block is there. The other order is safe: the code of before names its
+columns and never looks at the new ones, and the triggers number its
+writes. Both were tried (below). What the plan left open and how it was
+decided:
+
+- The number and the date. This section is 29, the next free number on
+  the build day. The date is 2026-11-24, the day of the build and of the
+  plan's FINAL.
+- The block's name, "The chat change block", is after the counter's name,
+  which is the plan's.
+- The columns are inline too. The plan says to follow the seen position
+  block, and that block has its column inline in the `CREATE TABLE` as
+  well, for a database built from nothing. Each new column is the last
+  of its table on both ways, so a database built from nothing and one
+  that got the block hold their columns in the same order. A column has
+  the form of `seen_position`: `BIGINT NOT NULL DEFAULT 0` with a check
+  that it is not negative. PostgreSQL names the five checks
+  `chat_rooms_message_seq_check`, `chat_rooms_people_seq_check`,
+  `chat_room_invites_change_seq_check`,
+  `chat_room_join_requests_change_seq_check` and
+  `chat_room_members_seen_seq_check` on both ways.
+- Five functions and nine triggers, each trigger named after its table
+  and its function, as `chat_rooms_set_updated_at` is. `set_change_seq`
+  serves the invites and the join requests, and `set_room_people_seq`
+  serves the member rows, the invites and the pictures. A picture has two
+  triggers, because a trigger's `WHEN` cannot name the old row at an
+  insert. The two that set a number on their own row fire before the
+  write; the ones that number a room fire after it.
+- "A changed row" of `chat_room_pictures` is read as the table's own
+  `updated_at` trigger reads it (`OLD.* IS DISTINCT FROM NEW.*`): the
+  same picture again numbers nothing. A listing numbers its rooms at any
+  change of `status`; today only `/close-listing` changes it, from `open`
+  to `closed`.
+- The first run's numbering is three plain `UPDATE`s that take the rows
+  whose number is still 0. No mark of a first run is kept anywhere: a
+  second run finds no such row.
+- The first statement of `/list-chat-rooms` is one `SELECT` over a `UNION
+  ALL` of three, with the joins of the three lists, so that `counts`
+  always equals the lengths of the three lists of a whole read made at
+  the same moment. It also gives the rooms' order, by `created_at DESC`
+  and then the id, as the whole list has it.
+- The order of `rooms` in an answer with `since`. The plan names none. It
+  is the order of the whole list, so a whole room and a room of three
+  fields stand as they stand in the list.
+- The numbers on their way out. PostgreSQL hands a `BIGINT` to the `pg`
+  library as text, and the code makes a number of it. That is exact up to
+  9007199254740991, the limit of `since`; at 1,000 changes a second the
+  counter reaches it in 285,000 years.
+- `since` and `seenSince` are read by `integerOption`, as `afterPosition`
+  is. So an absent one and `null` mean "none", and a negative number, a
+  fraction, a text, `true`, a list, an object and a number above the
+  limit are `400 invalid since` or `400 invalid seenSince`. `listRooms`
+  checks that the body is an object, in the manner of
+  `/list-public-chat-rooms`; over HTTP that check cannot refuse, because
+  the session check has refused such a body before.
+- The three list statements each got one condition, `($2::bytea[] IS NULL
+  OR <id> = ANY($2::bytea[]))`, and their functions a second parameter
+  that is `null` by default. With `null` a statement reads everything,
+  and PostgreSQL plans it as it planned the statement of before (tried).
+  This keeps one statement for a room's whole form, whether it is read
+  for a whole list or for one room that changed.
+- `listNewestMessagesFor` holds a copy of the lines of `listRoomsFor`
+  that make `lastMessage` and `lastPosition`. `listRoomsFor` keeps its
+  body but for the condition.
+- `/list-messages`. `seenSince` is checked after `limit`, with the other
+  values and before the member check, so a pod outside the room that
+  sends a bad one gets the `400`. The statement of the read positions
+  runs after the statement of the messages. `seenSeq` follows the rule of
+  `seq`: the highest number the statement saw, never the counter's own
+  value.
+- `db/schema.sql`, the file's opening comment. Its list of the blocks
+  whose ALTERs change a table that exists now ends "case chat, seen
+  position, first key blob and chat change blocks at the end". The plan
+  does not name the sentence; it would have been untrue with the new
+  block, and it sits in a file of this commit, so the build brought it
+  in line and said so in its report.
+- Here and in the README. In section 4 each new column stands in its
+  table's SQL as in the file, with one paragraph for it at the end of the
+  entry. In section 5 the body and the JSON block of `/list-chat-rooms`
+  and the body of `/list-messages` name the new fields, and each entry
+  ends with a dated paragraph. In the README the two rows of the
+  Endpoints table and the four rows of "Database tables" each gained a
+  clause, and a sentence above that table names the sequence.
+- Places the plan does not name that this step left out of date: none
+  that the build found. Read for it: every sentence of this file, of the
+  README and of `src` that names `/list-chat-rooms` or `/list-messages`.
+  The comment of `chat_room_members.seen_position` and 21.1 say that
+  `/list-chat-rooms` hands a member's position to every member of the
+  room; that is still so for a room that is sent whole. Sections 21 and
+  27 say what their own builds changed and stay as records.
+
+The checks. All of them ran from empty databases on the files as they
+were handed over. The tools are outside the repo, in the build chat's
+scratch folder, and none of them is kept in it.
+
+- The code. `node --check` on the three changed files, clean, on Node
+  24.22.0. One load of the app with no server and no database
+  (`createApp()` with made-up settings): 112 routes, sixteen of them the
+  chat's, as a copy of 73f2551 gave the same way. A type checker's read
+  of `src/app.js` (`tsc --checkJs`, TypeScript 6.0.3 from the wallet's
+  folder) named no unknown name, no wrong count of arguments and no
+  missing export or module, and in the three chat files no finding that
+  the same read of 73f2551 does not have, apart from "implicitly has an
+  'any' type", which it says of every parameter of this plain JavaScript.
+- The scratch PostgreSQL. A PostgreSQL 17.11 that was started for this
+  build alone: a data folder of its own in the build chat's scratch
+  folder, listening on 127.0.0.1 port 60731 and nowhere else, with no
+  socket file. This Mac's own PostgreSQL on port 5432 was not touched.
+  Every apply of a schema file ran as the deploy's line runs it: one
+  transaction after `SET ROLE masterpodsoftware`, into a database that
+  the role owns. Every tool that uses this server's pool stops before its
+  first query unless the pool's host and port are the scratch
+  PostgreSQL's.
+- A database as it is live today. The file of 73f2551 into an empty
+  database: 45 tables, no sequence of ours. It was then filled through
+  that commit's own routes, over HTTP with signed requests: seven pods
+  and, between them, a chat of two with messages and two read positions,
+  a group with an open invite and a third read position, a public room
+  with a picture and an open join request, a listing with a chat about
+  it and an open invite to its owner, a chat with an open invite, a chat
+  with no message, and a pod with nothing. 6 rooms, 12 messages, 10
+  member rows of which 3 hold a read position, 3 open invites, 1 open
+  join request.
+- The schema file. The new file on top of that database: 45 tables. One
+  md5 over every column, constraint, index, trigger, function, sequence,
+  comment and owner of the schema came from 1,190 lines before and from
+  1,222 after: the 32 new lines are the 5 columns, their 5 checks, the 5
+  functions, the 9 triggers, the sequence, its owner and the 6 comments,
+  and no line of before was changed or gone. The first run numbered
+  exactly what the plan says: the 3 open invites (1 to 3), the open join
+  request (4) and the 3 member rows with a read position (5 to 7). The 7
+  other member rows and all 6 rooms kept 0, and the counter stood at 7.
+  The new file once more: the same md5, the same number in every row and
+  the counter still at 7. The new file alone into a second empty
+  database, twice: 45 tables and that same md5, both times.
+- The two half-deployed states, each with the real app over HTTP and
+  signed requests. The built code on the tables of before:
+  `/list-chat-rooms` answered `500` with and without `since` (`column
+  r.message_seq does not exist` in the server's log), and `/list-messages`
+  with `seenSince` answered `500` (`column "seen_seq" does not exist`);
+  `/list-messages` with no `seenSince`, `/send-message`,
+  `/mark-messages-seen` and `/list-public-chat-rooms` answered. So the
+  schema line goes first. The code of 73f2551 on the new tables:
+  `/list-chat-rooms` answered the keys of before, and the same with a
+  `since` in the body, which that code does not know; `/list-messages`
+  with a `seenSince` answered the messages alone; and its writes were
+  numbered by the triggers: a message numbered its room (8), a read
+  position its member row (9), an invite itself and its room (10 and
+  11), and an accepted invite its room again (13).
+- A wallet of today. The code of 73f2551 and the built code were started
+  in one process on one database and asked the same as the same seven
+  pods. `/list-chat-rooms` with `{}`: the built code's answer is the
+  answer of before, byte for byte, with `"seq":<n>,"counts":{...},` in
+  front, 58 or 59 bytes more, and `counts` are the lengths of the three
+  lists. `/list-messages` with no `seenSince`, in three forms of the
+  request for each of 11 memberships: byte for byte the answer of before.
+  The wallet of today keeps the answer of `/list-chat-rooms` whole and
+  reads `rooms`, `invites` and `joinRequests` out of it
+  (`web_app/src/app/services/session.service.ts`, read, not changed), so
+  two fields more do nothing there.
+- The walk. The built code on the updated database, over HTTP with
+  signed requests, each pod with a wallet's number of its own. 85
+  results, none bad. With no `since`: everything, `seq` the highest of
+  the caller's own numbers and not the counter. Asked again with `since`:
+  nothing, 101 bytes. A message: that room as three fields to both
+  members, nothing to a pod outside it. An invite accepted: the room
+  whole to every member and to the new one, whose `counts` say one room
+  more and one invite fewer. An invite made: the invite to the invited
+  pod, the room whole to its members. An invite declined: nothing to the
+  pod that declined, with `counts` one lower than its wallet holds and
+  `seq` below its `since`. A join request: to the room's creator alone,
+  and the room's numbers did not move. The request approved: the room
+  whole to the creator, the members and the new one. The request
+  declined: nothing, `counts` one lower, `seq` below `since`. A member
+  who leaves: the room whole to the others, nothing to the one who left.
+  Another picture: the room whole with the new `pictureAt`; the same
+  picture again: nothing. The listing closed: its chat whole to its
+  member, and the open invite to that chat is not sent again. A message
+  and an invite in one room between two reads: the room once, whole.
+  Messages in two rooms: two entries of three fields, in the list's
+  order. `since` 0: every room with a number, and not the room that
+  still holds 0 and 0, which `counts` still counts. A `since` far above
+  every number: nothing, and `seq` below it. Seven bad values of `since`:
+  each `400 invalid since`; `null`: the whole list. `/list-messages`:
+  with no `seenSince` the messages alone; with 0 the members who had read
+  before the schema file, with those positions; asked again with the
+  `seenSeq`: nobody, `{"messages":[],"seen":[],"seenSeq":6}`; one member
+  reads on: that member alone and a higher `seenSeq`; a report of a
+  lower position: nobody; `beforePosition` with `seenSince`: both parts;
+  five bad values: each `400 invalid seenSince`; a pod outside the room:
+  `403 not a member`, and with a bad value the `400`. None of the read
+  positions reached `/list-chat-rooms`. A body with no signature and a
+  request signed for another path were refused as before. At the end no
+  number stood in two rows.
+- Made-up wallets. A script holds the plan's rules for a wallet (3.3 and
+  section 7) and tries whether this server's answers are enough to keep
+  a list right. It makes many random changes, one after the other, each
+  by its route's own service function: messages, read positions, new
+  rooms, invites and their answers, join requests and their answers,
+  members leaving, pictures, chats about a listing, listings closed.
+  After each change every pod's two wallets ask as a wallet will: one
+  after every change, with one chat "open" for its read positions, and
+  one only now and then, like a second phone. What a wallet then holds
+  is compared with a read of the whole list. Five rounds of 3,000 steps
+  with five seeds: 91,166 comparisons, none different, 75,208 of them
+  with an open chat's read positions; every new room, invite and request
+  was in the answer itself and none was left to `counts`; a wallet read
+  the whole list 4,473 times, 4,340 of them for a count that differed
+  and 133 for a `seq` below its `since`, and never for three fields of a
+  room it did not hold. Then one round with each of the nine triggers
+  taken away from the database: all nine rounds came out bad, so the
+  rounds notice a missing trigger, and each trigger is needed.
+- Writes at the same moment. Six bursts of 174 signed calls at once
+  through the app's own pool of ten connections: messages by several
+  people in the same rooms, read positions, invites answered, members
+  leaving, and a listing closed, twice at once, while messages were sent
+  in the four rooms about it. 1,044 calls: 992 answered `200` or `201`
+  and 52 a refusal of their route (`403 not a member`, `409 already
+  closed`); none `500`, no line in the server's log, PostgreSQL's own
+  count of deadlocks 0, no number in two rows. Each of eight wallets
+  that were away during a burst was right after one read with its
+  `since` of before.
+- Who waits for whom, with two transactions held open. A second message
+  in the same room waited for the first and, committed later, left the
+  higher number. An invite to a room waited for a message in it. A
+  message in another room did not wait, and neither did a second
+  member's read position in the same room. In the case of two rooms the
+  one committed second held the lower number: the condition of the gap
+  of 29.7, seen and left as it is.
+- What travels, with values of the real lengths (a wrapped key of 1661
+  bytes, a short message, the counter first set to 9000). A person with
+  five chats of two people: 21,462 bytes for the whole list, 104 with
+  `since` and nothing new, 540 with one new message. A person with nine
+  such chats and a room of 100 people: 54,690 bytes whole, 105 with
+  `since` and nothing new, 541 for a new message in the room of 100, and
+  16,364 when someone joins it (that room whole, 101 members). The read
+  positions of that room, by `/list-messages` with no new message:
+  9,741 bytes once when the chat is opened and 99 members have read, 40
+  bytes when nobody read further, 137 when one did.
+- Times, on this Mac, the database on the same machine and no PgBouncer
+  between, each the average of some hundred calls of the route's own
+  function. The person with ten rooms: 1.05 milliseconds for a whole
+  read and 0.29 with `since` and nothing new, which is one statement.
+  On a database with 20,000 rooms, 100,000 member rows and 300,000
+  messages, for a pod in 50 rooms of five people: the whole list is
+  233,195 bytes and took the code of 73f2551 1.58 milliseconds; the
+  built code's whole read took 2.60, because its first statement runs
+  before the three of before, which run side by side; a read with
+  `since` and nothing new is 105 bytes and took 0.99. Most of the first
+  statement's time there is one walk through `chat_rooms` for the rooms
+  the caller created: no index names a room's creator, and the statement
+  of before for the join requests walks the table the same way.
+  PostgreSQL planned the three list statements of a whole read exactly
+  as it planned them at 73f2551. A message sent, one after the other in
+  one chat: 0.13 milliseconds with the code of 73f2551 on the tables of
+  before and 0.16 with the built code and its trigger.
+- The schema file on many rows. On that database of 20,000 rooms the
+  file's first run, with 62,500 rows to number (2,000 invites, 500
+  requests, 60,000 member rows with a read position), took 0.56 seconds,
+  psql's start included, and a second run 0.08 seconds. For that time
+  the chat tables are held and requests wait.
+- The lines for the servers, in stand-in form on the scratch PostgreSQL,
+  with a copy of a local file in place of the download. Every line's
+  syntax was read by bash and by dash. The schema line carries the whole
+  hash of the new file and prints `OK`, 45, the apply's lines, 45, the
+  owner, 5 for the new columns and 9 for the new triggers; a second run
+  prints the same; with the file of before as the download it prints
+  `FAILED` and applies nothing. A look-only line prints the counter and
+  how many invites, requests and member rows hold a number, and refuses
+  a write. None of these lines has run on a server.
+- Not tried by the build. Nothing on a server, nothing on Linux, nothing
+  on PostgreSQL 16, which the servers run (the block uses `CREATE OR
+  REPLACE TRIGGER`, as the file does since its first version, and
+  nothing newer), and nothing through PgBouncer. `src/server.js` was not
+  booted: the app was started by `createApp()`. No wallet called the
+  routes: the wallet's part is step 2. The gap of 29.7 was not tried
+  for. Whether a wallet's two answers that arrive in the other order
+  than they were asked can leave an older read position in its list is
+  the wallet's to settle in step 2: this server sends each answer whole
+  and true for its moment.
+- Not touched: every route that writes, `src/chat/chat.router.js`,
+  `src/marketplace/`, `src/app.js`, every other feature folder,
+  `package.json`, `.example.env`, the scripts.
+- The numbers. `db/schema.sql` has 1824 lines, 158 more than before, and
+  its sha256 begins 0d713e9a. Before the step it had 1666 lines and its
+  sha256 began 9894ae57. It makes 45 tables, as before: the count that
+  the deploy's schema line prints does not change with this step, so
+  that line also counts the five new columns and the nine new triggers.
