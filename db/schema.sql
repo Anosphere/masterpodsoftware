@@ -7,8 +7,8 @@
 -- EXISTS, functions and triggers use OR REPLACE, comments just overwrite.
 -- It never alters a table that already exists, though, apart from the
 -- idempotent ALTERs of the appointments block and of the recovery,
--- attestation, marketplace, wallet memory, case chat, seen position and
--- first key blob blocks at the end.
+-- attestation, marketplace, wallet memory, case chat, seen position,
+-- first key blob and chat change blocks at the end.
 -- After changing this file, rebuild the local database from scratch with
 --
 --   npm run db:reset
@@ -465,6 +465,8 @@ CREATE TABLE IF NOT EXISTS chat_rooms (
   case_kind         TEXT        CHECK (case_kind IN ('trade', 'dispute', 'recovery')),
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  message_seq       BIGINT      NOT NULL DEFAULT 0 CHECK (message_seq >= 0),
+  people_seq        BIGINT      NOT NULL DEFAULT 0 CHECK (people_seq >= 0),
   CHECK ((type = 'public') = (name IS NOT NULL)),
   CONSTRAINT chat_rooms_case_check CHECK ((case_id IS NULL) = (case_kind IS NULL)
     AND (case_id IS NULL OR (type = 'private' AND listing_id IS NULL)))
@@ -498,6 +500,7 @@ CREATE TABLE IF NOT EXISTS chat_room_members (
   anopod_id    BYTEA       NOT NULL CHECK (octet_length(anopod_id) = 32),
   created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
   seen_position BIGINT NOT NULL DEFAULT 0 CHECK (seen_position >= 0),
+  seen_seq BIGINT NOT NULL DEFAULT 0 CHECK (seen_seq >= 0),
   PRIMARY KEY (chat_room_id, anopod_id)
 );
 CREATE INDEX IF NOT EXISTS chat_room_members_anopod_id_idx ON chat_room_members (anopod_id);
@@ -537,6 +540,7 @@ CREATE TABLE IF NOT EXISTS chat_room_invites (
   anopod_id_to   BYTEA       NOT NULL CHECK (octet_length(anopod_id_to) = 32),
   hpke_key       BYTEA       NOT NULL CHECK (octet_length(hpke_key) <= 4096),
   created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  change_seq     BIGINT      NOT NULL DEFAULT 0 CHECK (change_seq >= 0),
   UNIQUE (chat_room_id, anopod_id_to)
 );
 CREATE INDEX IF NOT EXISTS chat_room_invites_anopod_id_to_idx ON chat_room_invites (anopod_id_to);
@@ -554,6 +558,7 @@ CREATE TABLE IF NOT EXISTS chat_room_join_requests (
   chat_room_id    BYTEA       NOT NULL CHECK (octet_length(chat_room_id) = 32),
   anopod_id       BYTEA       NOT NULL CHECK (octet_length(anopod_id) = 32),
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  change_seq      BIGINT      NOT NULL DEFAULT 0 CHECK (change_seq >= 0),
   UNIQUE (chat_room_id, anopod_id)
 );
 
@@ -1664,3 +1669,156 @@ COMMENT ON COLUMN sticker_tags.set_name   IS 'The sticker''s set: stickers.set_n
 COMMENT ON COLUMN sticker_tags.number     IS 'The sticker''s number: stickers.number.';
 COMMENT ON COLUMN sticker_tags.tag        IS 'One tag: a word or several, in small letters, in any language, 1 to 100 characters. A sticker holds a tag once.';
 COMMENT ON COLUMN sticker_tags.created_at IS 'When the row was inserted. Set by default, never changed.';
+
+
+-- The chat change block (2026-11-24, spec section 29): one counter and five
+-- numbers, so that /list-chat-rooms can hand a wallet only what is new of
+-- its chat list, and /list-messages only the seen positions that rose.
+-- chat_change_seq is the counter, a sequence. chat_rooms.message_seq takes
+-- its next value when a message is written in the room. chat_rooms.people_seq
+-- takes it when a member joins or leaves, an invite to the room is made or
+-- answered, the room's picture is set or the room's listing is closed.
+-- chat_room_invites.change_seq and chat_room_join_requests.change_seq take
+-- it when the invite or the request is written, and
+-- chat_room_members.seen_seq when that member's seen_position changes.
+-- Triggers set all five: no statement of the server names one of them in a
+-- write, so the triggers also number the writes of a server that still
+-- runs the code of before. The five columns are also inline in the four
+-- CREATE TABLEs above, for a fresh database; their comments are here only.
+-- No index: message_seq changes with every message, and nothing looks a
+-- row up by one of the numbers. On its first run the block numbers once
+-- what is there: every open invite, every open join request and every
+-- member row with a seen_position above 0. A room keeps 0 in both numbers
+-- until its next change. Idempotent: IF NOT EXISTS, OR REPLACE, and three
+-- UPDATEs that find nothing the second time.
+
+CREATE SEQUENCE IF NOT EXISTS chat_change_seq;
+
+ALTER TABLE chat_rooms ADD COLUMN IF NOT EXISTS message_seq BIGINT NOT NULL DEFAULT 0 CHECK (message_seq >= 0);
+ALTER TABLE chat_rooms ADD COLUMN IF NOT EXISTS people_seq BIGINT NOT NULL DEFAULT 0 CHECK (people_seq >= 0);
+ALTER TABLE chat_room_invites ADD COLUMN IF NOT EXISTS change_seq BIGINT NOT NULL DEFAULT 0 CHECK (change_seq >= 0);
+ALTER TABLE chat_room_join_requests ADD COLUMN IF NOT EXISTS change_seq BIGINT NOT NULL DEFAULT 0 CHECK (change_seq >= 0);
+ALTER TABLE chat_room_members ADD COLUMN IF NOT EXISTS seen_seq BIGINT NOT NULL DEFAULT 0 CHECK (seen_seq >= 0);
+
+UPDATE chat_room_invites SET change_seq = nextval('chat_change_seq') WHERE change_seq = 0;
+UPDATE chat_room_join_requests SET change_seq = nextval('chat_change_seq') WHERE change_seq = 0;
+UPDATE chat_room_members SET seen_seq = nextval('chat_change_seq') WHERE seen_position > 0 AND seen_seq = 0;
+
+-- Gives a new invite or join request its number.
+CREATE OR REPLACE FUNCTION set_change_seq()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  NEW.change_seq := nextval('chat_change_seq');
+  RETURN NEW;
+END;
+$$;
+
+-- Gives a member row a new number when its seen_position changes.
+CREATE OR REPLACE FUNCTION set_seen_seq()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  NEW.seen_seq := nextval('chat_change_seq');
+  RETURN NEW;
+END;
+$$;
+
+-- Numbers the message_seq of the room a new message is in.
+CREATE OR REPLACE FUNCTION set_room_message_seq()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  UPDATE chat_rooms SET message_seq = nextval('chat_change_seq') WHERE chat_room_id = NEW.chat_room_id;
+  RETURN NULL;
+END;
+$$;
+
+-- Numbers the people_seq of the room that a member row, an invite or a
+-- room picture belongs to: the row's own chat_room_id, the old row's on a
+-- DELETE.
+CREATE OR REPLACE FUNCTION set_room_people_seq()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    UPDATE chat_rooms SET people_seq = nextval('chat_change_seq') WHERE chat_room_id = OLD.chat_room_id;
+  ELSE
+    UPDATE chat_rooms SET people_seq = nextval('chat_change_seq') WHERE chat_room_id = NEW.chat_room_id;
+  END IF;
+  RETURN NULL;
+END;
+$$;
+
+-- Numbers the people_seq of every room about a listing, each room with a
+-- number of its own.
+CREATE OR REPLACE FUNCTION set_listing_rooms_people_seq()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  UPDATE chat_rooms SET people_seq = nextval('chat_change_seq') WHERE listing_id = NEW.listing_id;
+  RETURN NULL;
+END;
+$$;
+
+CREATE OR REPLACE TRIGGER chat_room_invites_set_change_seq
+  BEFORE INSERT ON chat_room_invites
+  FOR EACH ROW
+  EXECUTE FUNCTION set_change_seq();
+
+CREATE OR REPLACE TRIGGER chat_room_join_requests_set_change_seq
+  BEFORE INSERT ON chat_room_join_requests
+  FOR EACH ROW
+  EXECUTE FUNCTION set_change_seq();
+
+CREATE OR REPLACE TRIGGER chat_room_members_set_seen_seq
+  BEFORE UPDATE ON chat_room_members
+  FOR EACH ROW
+  WHEN (OLD.seen_position IS DISTINCT FROM NEW.seen_position)
+  EXECUTE FUNCTION set_seen_seq();
+
+CREATE OR REPLACE TRIGGER chat_room_messages_set_room_message_seq
+  AFTER INSERT ON chat_room_messages
+  FOR EACH ROW
+  EXECUTE FUNCTION set_room_message_seq();
+
+CREATE OR REPLACE TRIGGER chat_room_members_set_room_people_seq
+  AFTER INSERT OR DELETE ON chat_room_members
+  FOR EACH ROW
+  EXECUTE FUNCTION set_room_people_seq();
+
+CREATE OR REPLACE TRIGGER chat_room_invites_set_room_people_seq
+  AFTER INSERT OR DELETE ON chat_room_invites
+  FOR EACH ROW
+  EXECUTE FUNCTION set_room_people_seq();
+
+-- A picture's first row, and a row that really changed: the same picture
+-- set again changes nothing and numbers nothing.
+CREATE OR REPLACE TRIGGER chat_room_pictures_set_room_people_seq
+  AFTER INSERT ON chat_room_pictures
+  FOR EACH ROW
+  EXECUTE FUNCTION set_room_people_seq();
+
+CREATE OR REPLACE TRIGGER chat_room_pictures_set_room_people_seq_on_change
+  AFTER UPDATE ON chat_room_pictures
+  FOR EACH ROW
+  WHEN (OLD.* IS DISTINCT FROM NEW.*)
+  EXECUTE FUNCTION set_room_people_seq();
+
+CREATE OR REPLACE TRIGGER listings_set_listing_rooms_people_seq
+  AFTER UPDATE ON listings
+  FOR EACH ROW
+  WHEN (OLD.status IS DISTINCT FROM NEW.status)
+  EXECUTE FUNCTION set_listing_rooms_people_seq();
+
+COMMENT ON SEQUENCE chat_change_seq IS 'The one counter of the changes of the chat lists (spec section 29). Triggers take its next value into chat_rooms.message_seq and people_seq, chat_room_invites.change_seq, chat_room_join_requests.change_seq and chat_room_members.seen_seq. A number is taken when the row is written, a moment before its transaction is committed. No route reads the counter itself.';
+COMMENT ON COLUMN chat_rooms.message_seq               IS 'The counter''s value (chat_change_seq) when a message was last written in the room (spec section 29); 0 until the first message after the column was added. Set by the chat_room_messages_set_room_message_seq trigger. /list-chat-rooms hands a room''s newest message to a wallet whose `since` is below it.';
+COMMENT ON COLUMN chat_rooms.people_seq                IS 'The counter''s value (chat_change_seq) when the room last changed in another way than by a message: a member joined or left, an invite to it was made or answered, its picture was set, its listing was closed (spec section 29); 0 until the first such change after the column was added. Set by triggers on chat_room_members, chat_room_invites, chat_room_pictures and listings. /list-chat-rooms hands the room whole to a wallet whose `since` is below it.';
+COMMENT ON COLUMN chat_room_invites.change_seq         IS 'The counter''s value (chat_change_seq) when the invite was written (spec section 29). Set by the chat_room_invites_set_change_seq trigger; an invite that was open when the column was added got its number then. /list-chat-rooms hands the invite to a wallet whose `since` is below it.';
+COMMENT ON COLUMN chat_room_join_requests.change_seq   IS 'The counter''s value (chat_change_seq) when the request was written (spec section 29). Set by the chat_room_join_requests_set_change_seq trigger; a request that was open when the column was added got its number then. /list-chat-rooms hands the request to a wallet whose `since` is below it.';
+COMMENT ON COLUMN chat_room_members.seen_seq           IS 'The counter''s value (chat_change_seq) when the member''s seen_position last changed (spec section 29); 0 while seen_position is 0. Set by the chat_room_members_set_seen_seq trigger; a row that held a seen_position when the column was added got its number then. /list-messages hands the member''s position to a wallet whose `seenSince` is below it.';

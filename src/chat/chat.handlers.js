@@ -66,7 +66,7 @@ export async function leaveChatRoom(req, res) {
 
 /** POST /list-chat-rooms */
 export async function listChatRooms(req, res) {
-  answer(res, await listRooms(req.anopod));
+  answer(res, await listRooms(req.anopod, req.body));
 }
 
 /** POST /list-public-chat-rooms */

@@ -28,12 +28,15 @@ import {
   inviteOpen,
   isMember,
   joinRequestOpen,
+  listChangeNumbersFor,
   listInvitesFor,
   listJoinRequestsForCreator,
   listMessages,
   listMessagesBefore,
+  listNewestMessagesFor,
   listPublicRooms as listPublicRoomsQuery,
   listRoomsFor,
+  listSeenSince,
   raiseSeenPosition,
   roomAboutListingBy,
   upsertRoomPicture,
@@ -366,14 +369,62 @@ export async function leave(anopod, body) {
   return ok(200, { chatRoomId: toHex(chatRoomId) });
 }
 
-/** POST /list-chat-rooms. The caller's rooms, open invites, and the join requests on rooms it created. */
-export async function listRooms(anopod) {
-  const [rooms, invites, joinRequests] = await Promise.all([
-    listRoomsFor(anopod.anopodId),
-    listInvitesFor(anopod.anopodId),
-    listJoinRequestsForCreator(anopod.anopodId),
+/**
+ * POST /list-chat-rooms. Body { since }, optional (2026-11-24, spec section
+ * 29). The caller's rooms, open invites, and the join requests on rooms it
+ * created, with `seq`, the highest change number among them, and `counts`,
+ * how many of each the caller has. With `since`, a number a wallet got as
+ * `seq` before, the answer holds only what changed after it: a room whose
+ * people, picture or listing changed whole, a room with only a new message
+ * as { chatRoomId, lastMessage, lastPosition }, and the invites and the
+ * join requests written since. Without `since` it holds everything.
+ */
+export async function listRooms(anopod, body) {
+  if (!isObject(body)) return refuse(400, BAD_SHAPE);
+  const since = integerOption(body.since, null, 0, Number.MAX_SAFE_INTEGER);
+  if (since === undefined) return refuse(400, 'invalid since');
+
+  // The first statement decides: `seq`, `counts` and what is above `since`
+  // come from one state of the database. What is sent is read after it. If
+  // those reads see something newer, the wallet's next read sends it again.
+  const numbers = await listChangeNumbersFor(anopod.anopodId);
+  let seq = 0;
+  for (const room of numbers.rooms) seq = Math.max(seq, room.messageSeq, room.peopleSeq);
+  for (const invite of numbers.invites) seq = Math.max(seq, invite.changeSeq);
+  for (const request of numbers.joinRequests) seq = Math.max(seq, request.changeSeq);
+  const counts = {
+    rooms: numbers.rooms.length,
+    invites: numbers.invites.length,
+    joinRequests: numbers.joinRequests.length,
+  };
+
+  if (since === null) {
+    const [rooms, invites, joinRequests] = await Promise.all([
+      listRoomsFor(anopod.anopodId),
+      listInvitesFor(anopod.anopodId),
+      listJoinRequestsForCreator(anopod.anopodId),
+    ]);
+    return ok(200, { seq, counts, rooms, invites, joinRequests });
+  }
+
+  const wholeIds = numbers.rooms.filter((room) => room.peopleSeq > since).map((room) => room.chatRoomId);
+  const newestIds = numbers.rooms
+    .filter((room) => room.peopleSeq <= since && room.messageSeq > since)
+    .map((room) => room.chatRoomId);
+  const inviteIds = numbers.invites.filter((invite) => invite.changeSeq > since).map((invite) => invite.inviteId);
+  const joinRequestIds = numbers.joinRequests
+    .filter((request) => request.changeSeq > since)
+    .map((request) => request.joinRequestId);
+  const [whole, newest, invites, joinRequests] = await Promise.all([
+    wholeIds.length === 0 ? [] : listRoomsFor(anopod.anopodId, wholeIds),
+    newestIds.length === 0 ? [] : listNewestMessagesFor(anopod.anopodId, newestIds),
+    inviteIds.length === 0 ? [] : listInvitesFor(anopod.anopodId, inviteIds),
+    joinRequestIds.length === 0 ? [] : listJoinRequestsForCreator(anopod.anopodId, joinRequestIds),
   ]);
-  return ok(200, { rooms, invites, joinRequests });
+  // One list, in the order of the whole list: an entry is a whole room or the three fields.
+  const entries = new Map([...whole, ...newest].map((room) => [room.chatRoomId, room]));
+  const rooms = numbers.rooms.map((room) => entries.get(toHex(room.chatRoomId))).filter((room) => room !== undefined);
+  return ok(200, { seq, counts, rooms, invites, joinRequests });
 }
 
 /**
@@ -431,8 +482,11 @@ export async function getRoomPicture(body) {
 
 /**
  * POST /list-messages. Body { chatRoomId, afterPosition, beforePosition,
- * limit }. Members only. With `beforePosition` the answer is the newest
- * `limit` messages below it and `afterPosition` is ignored.
+ * limit, seenSince }. Members only. With `beforePosition` the answer is the
+ * newest `limit` messages below it and `afterPosition` is ignored. With
+ * `seenSince` (2026-11-24, spec section 29), a number a wallet got as
+ * `seenSeq` before, or 0, the answer also holds `seen`, the members whose
+ * seen position changed after it, and `seenSeq`, the next `seenSince`.
  */
 export async function listRoomMessages(anopod, body) {
   if (!isObject(body) || typeof body.chatRoomId !== 'string') return refuse(400, BAD_SHAPE);
@@ -444,13 +498,17 @@ export async function listRoomMessages(anopod, body) {
   if (beforePosition === undefined) return refuse(400, 'invalid beforePosition');
   const limit = integerOption(body.limit, MESSAGES_DEFAULT_LIMIT, 1, MESSAGES_MAX_LIMIT);
   if (limit === undefined) return refuse(400, 'invalid limit');
+  const seenSince = integerOption(body.seenSince, null, 0, Number.MAX_SAFE_INTEGER);
+  if (seenSince === undefined) return refuse(400, 'invalid seenSince');
   if (!(await isMember(chatRoomId, anopod.anopodId))) return refuse(403, 'not a member');
 
   const messages =
     beforePosition === null
       ? await listMessages(chatRoomId, afterPosition, limit)
       : await listMessagesBefore(chatRoomId, beforePosition, limit);
-  return ok(200, { messages });
+  if (seenSince === null) return ok(200, { messages });
+  const { seen, seenSeq } = await listSeenSince(chatRoomId, seenSince);
+  return ok(200, { messages, seen, seenSeq });
 }
 
 /** POST /send-message. Body { chatRoomId, message }, the ciphertext base64. Members only. */
