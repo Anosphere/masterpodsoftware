@@ -25,6 +25,19 @@ function optionalInteger(name, fallback) {
 }
 
 /**
+ * An optional variable that must be 0 or a positive integer when set;
+ * `fallback` when it is not set.
+ */
+function optionalCount(name, fallback) {
+  const value = process.env[name];
+  if (value === undefined || value === '') return fallback;
+  if (!/^(0|[1-9][0-9]*)$/.test(value)) {
+    throw new Error(`${name} must be 0 or a positive integer, got "${value}"`);
+  }
+  return Number(value);
+}
+
+/**
  * An optional percent: a positive integer of at most `max` when set;
  * `fallback` when it is not set.
  */
@@ -100,6 +113,8 @@ function optionalChoice(name, choices, fallback) {
  * The settings of Joy, the wallet's AI (src/joy/, spec section 30). With
  * ANTHROPIC_API_KEY set Joy is on. Without it Joy is off: /ask-joy says
  * so, and nothing is sent to Anthropic. No error ever prints the key.
+ * The last two are her web search's (spec section 32): each may be 0,
+ * and 0 in either switches web search off.
  */
 function readJoy() {
   return Object.freeze({
@@ -108,6 +123,8 @@ function readJoy() {
     effort: optionalChoice('JOY_EFFORT', ['low', 'medium', 'high'], 'medium'),
     maxTokens: optionalInteger('JOY_MAX_TOKENS', 16_000),
     dailyMessages: optionalInteger('JOY_DAILY_MESSAGES', 300),
+    maxSearches: optionalCount('JOY_MAX_SEARCHES', 3),
+    dailySearches: optionalCount('JOY_DAILY_SEARCHES', 100),
   });
 }
 
@@ -194,6 +211,9 @@ export const env = Object.freeze({
   // (without it Joy is off); the model that writes her answers; how hard
   // the model thinks before it answers (low, medium or high); the most
   // tokens one request to Anthropic may write, thinking included; and how
-  // many messages one pod may send her in one day (UTC).
+  // many messages one pod may send her in one day (UTC). Her web search
+  // (spec section 32): the most web searches for one message; and from
+  // how many web searches in one day (UTC) a pod's further messages go
+  // out without web search. 0 in either switches web search off.
   joy: readJoy(),
 });
