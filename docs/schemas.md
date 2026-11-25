@@ -387,6 +387,21 @@ security alerts, `transferWaiting`, `recoveryMoveWaiting`,
 `db/schema.sql` drops and adds `notifications_kind_check` with the same
 twenty-one kinds.
 
+`seq` (added 2026-11-25, section 34) is the notification's running number:
+a `BIGINT`, `NOT NULL`, whose default takes the next value of the counter
+`notification_seq` when the row is written. It is not in the `CREATE TABLE`
+above. The notification number block at the end of `db/schema.sql` makes
+the counter and adds the column, on a database built from nothing too,
+because the column's default names the counter. It is the table's last
+column on both ways. On its first run on a live database the block numbers
+once the rows that are there, the oldest first. A second index,
+`notifications_anopod_id_seq_idx` on `(anopod_id, seq)`, and the comments
+of the counter and of the column are in that block as well. Since that day
+/list-notifications hands a pod's rows out in the order of `seq`, the
+highest first, and no longer by the index on `(anopod_id, created_at
+DESC)`, which stays: the counts of the security alerts (section 25) read a
+pod's rows by their time. The block is in 34.2.
+
 ### security_images and security_info
 
 ```sql
@@ -969,18 +984,39 @@ since 2026-11-10, 16.7); the wallet's Stake for list reads it.
 
 ### POST /list-notifications (session)
 
-Body: `{ unreadOnly, limit }`, both optional; `unreadOnly` defaults to
-false, `limit` to 100 (max 500).
+Body: `{ unreadOnly, limit, since, before, kinds }`, all optional;
+`unreadOnly` defaults to false, `limit` to 100 (max 500). `since`,
+`before` and `kinds` are of 2026-11-25 (section 34).
 
 Answer: `200 { notifications: [ { notificationNumber, kind, referenceId,
-read, createdAt } ] }`, newest first.
+read, createdAt, seq } ], seq, count, unread }`, newest first.
+
+Since 2026-11-25 (section 34) every row carries `seq`, its running number,
+and every answer carries `seq`, `count` and `unread`: the highest `seq` of
+the caller's rows (0 when the caller has none), how many notifications the
+caller has, and how many of them are unread, whatever the body asks for.
+The rows come in the order of `seq`, the highest first; for the rows that
+were there that day this is the order of before. `since` asks for the rows
+with a `seq` above it and is a whole number from 0 (`400 invalid since`
+for another value). `before` asks for the rows with a `seq` below it and
+is a whole number from 1 (`400 invalid before`). A body that names both is
+refused (`400 bad request shape`). `kinds` asks for rows of these kinds
+only: a list of 1 to 21 of the kind names of section 6, each of them once
+(`400 invalid kinds`). A body with none of the three gets the rows it got
+before, the newest 100. The checks in their order and the two statements
+are in 34.3.
 
 ### POST /mark-notifications-read (session)
 
-Body: `{ notificationNumbers: [ ... ] }`, 1 to 500 ids.
+Body: `{ notificationNumbers: [ ... ] }`, 1 to 500 ids, or, since
+2026-11-25 (section 34), `{ upTo }`, a whole number from 0 (`400 invalid
+upTo` for another value). A body names one of the two: one that names
+both, or neither, is refused (`400 bad request shape`).
 
 Writes: `UPDATE notifications SET read_at = now() WHERE anopod_id = caller
-AND notification_number = ANY(...) AND read_at IS NULL`.
+AND notification_number = ANY(...) AND read_at IS NULL`. With `upTo` it is
+the same statement with `seq <= upTo` in the place of the ids: every
+unread notification of the caller up to that number (34.4).
 
 Answer: `200 { marked }`, the number of rows changed.
 
@@ -1743,6 +1779,14 @@ reports. The phone polls `/list-notifications` and marks what it has shown.
 Since 2026-11-21 the last four also go out by email and to the phone, to
 every confirmed email and every phone on the pod's list of security alerts
 (section 25).
+Since 2026-11-25 (section 34) every notification has a running number,
+`seq`, from the moment it is written. With it the phone can ask
+`/list-notifications` for the rows above a number it holds, in the place
+of the whole list, and can mark everything up to a number read with one
+request. The twenty-one kind names of this table are also a list in the
+code since that day, `KINDS` in `src/notifications/notifications.service.js`,
+against which `kinds` of `/list-notifications` is checked: a new kind is
+added there too.
 
 ## 7. Client crypto
 
@@ -1927,6 +1971,9 @@ thing was chosen and is recorded here; nothing above was changed.
   the caller included; `/list-notifications` newest first, ties by
   notification number; `/get-chat-public-keys` in id order;
   `/list-security-records` and `/list-vouch-requests` oldest first.
+  (Since 2026-11-25, section 34, `/list-notifications` goes by each
+  row's `seq`, the highest first. For the rows of before that day it
+  is the same order.)
 - The JSON body limit is `ceil(MAX_IMAGES_PER_REQUEST * MAX_IMAGE_BYTES *
   1.4) + 1 MiB` bytes.
 - The genesis script exits 2 on a malformed id and 1 on an unknown one;
@@ -15001,3 +15048,702 @@ itself is as it was (`JSON_LIMIT_BYTES` in `src/app.js`, not touched).
 No line of code and no other sentence changed, so no check was run
 again but the trial of the commit line, which is the same text for the
 same eleven files.
+
+## 34. The notifications: only what is new (2026-11-25)
+
+Design settled 2026-11-25 in a talking chat and its planning (the plan is
+`~/Desktop/Z-TestNet/forclaude/notifications-page-plan-1.md`, FINAL,
+2026-11-25, on the user's word "Yes, final"). Why: a wallet asks
+`/list-notifications` every 5 seconds, on every page while a person is
+logged in, and got the newest 100 notifications whole each time, the read
+ones too: 24.6 KB every 5 seconds for a person with 100 or more. The user,
+2026-11-25: "I don't think we ever fixed it so that it won't ask the
+masterpod for every single notification every time. It should only be
+asking for new ones." The same plan gives the wallet's Notifications page
+a new look, with filters over the list, "Show older" under it, and
+everything marked read when the page opens. So every notification now
+gets a running number. A wallet that sends the highest number it holds
+gets only the rows above it, a page can ask for older rows and for the
+rows of some kinds, and one request marks everything up to a number. Two
+steps in order: this server (this section, step 1 of the plan: one schema
+block, three fields more in the request of `/list-notifications`, one
+more in each row of its answer and three more in the answer, and a second
+form of the body of `/mark-notifications-read`) and the wallet (its spec,
+step 2: the timer's read with `since`, the list in memory with its three
+numbers, and the page). With this server alone deployed nothing changes
+for anyone: a wallet of before sends none of the new fields and gets the
+rows of before, each with one field more that it does not read, and three
+fields more in the answer. Inside this server's own deploy the order
+matters: the schema file goes onto the database before the new code runs
+(34.8). One schema block: one sequence, one column and one index. No
+table, no route, no trigger, no env variable and no npm package. The
+validators, the doormen, the keyholders, the signing servers and the
+wallet's own server program are not touched: no request is added and none
+changes its path. Nothing above this section changes except the items in
+34.6.
+
+### 34.1 The rule
+
+Decided by the user (the plan's section 2):
+
+- The read of every 5 seconds brings only what is new (decision 1). The
+  user: "It should only be asking for new ones."
+- The way is the one told on 2026-11-25 (decision 2): a number on each
+  notification, `since` in the request, and `seq`, `count` and `unread`
+  in the answer. The user: "1. Yes".
+- The rows are marked read when the page opens, and the wallet's button
+  goes (decision 3). The user: "Marked when the page opens and no
+  button". Opening the page marks everything read with one request, so
+  the mark route takes a second form of its body, `upTo` (the plan's
+  section 4, point 1; the user's "Yes, final", asked whether the plan is
+  final with everything marked read when the page opens).
+- Filters over the list, and "Show older" under it (decisions 4 and 5).
+  The page's own read for them has `limit`, `before` and `kinds`
+  (decision 8; the user: "Yes, write the plan"). Which kinds make a
+  filter's group is the wallet's list. This server knows no groups: it
+  gets kind names.
+- Keep it simple (decision 10). The user: "I feel like you're making
+  things more complicated than it needs to be, keep it simple". A build
+  adds nothing that the plan does not name.
+
+What follows for this server:
+
+- A request with none of the new fields gets what it got before. This
+  server keeps nothing about what a wallet holds: the numbers travel in
+  the request.
+- A notification is never deleted, as before, and nothing but the mark
+  changes a row. So a pod's list changes in two ways only: a new row, and
+  `read_at` set.
+- None of the fifteen places that write a notification changes.
+  `notify()` names its four columns, and the new column's default gives
+  the number.
+- What this server learns: nothing new.
+
+### 34.2 The counter, the number and the index
+
+`db/schema.sql`, one new block, the last thing in the file, after the Joy
+picture block: "The notification number block (2026-11-25, spec section
+34)". The block without its comments:
+
+```sql
+CREATE SEQUENCE IF NOT EXISTS notification_seq;
+
+ALTER TABLE notifications ADD COLUMN IF NOT EXISTS seq BIGINT;
+
+WITH numbered AS MATERIALIZED (
+  SELECT oldest_first.notification_number, nextval('notification_seq') AS seq
+  FROM (SELECT notification_number FROM notifications WHERE seq IS NULL
+        ORDER BY created_at, notification_number DESC) AS oldest_first
+)
+UPDATE notifications SET seq = numbered.seq
+FROM numbered
+WHERE notifications.notification_number = numbered.notification_number;
+
+ALTER TABLE notifications ALTER COLUMN seq SET DEFAULT nextval('notification_seq');
+ALTER TABLE notifications ALTER COLUMN seq SET NOT NULL;
+
+CREATE INDEX IF NOT EXISTS notifications_anopod_id_seq_idx ON notifications (anopod_id, seq);
+```
+
+`notification_seq` is the counter: a PostgreSQL sequence of its own that
+begins at 1. It is not the chat lists' counter of section 29. No route
+reads it. `notifications.seq` takes its next value, by the column's
+default, when a row is written. A number is never given twice, and a
+later write always gets a higher number than an earlier one: the sequence
+has the default cache of 1, so the numbers are handed out in the order
+they are asked for, whichever connection asks. A number that a failed
+write took is not given again and leaves a hole. A number is taken when
+the row is written, a moment before its transaction is committed; 34.3
+says what follows from that.
+
+- No trigger. `notify()` names the four columns it writes, so the default
+  fills `seq`, also for a server that still runs the code of before.
+- The column is in this block only, and not inline in the `CREATE TABLE`
+  of section 4 as the columns of section 29 are. Its default names the
+  sequence, which is made in the block, far below the table. On a
+  database built from nothing the block adds the column to the empty
+  table, so a database built from nothing and a live one hold the same
+  columns in the same order, `seq` last.
+- On its first run on a database of before, the block numbers once the
+  rows that are there, the oldest first: in the order of `created_at`,
+  and rows of one moment by `notification_number` from the highest down.
+  Rows of one moment exist: two notifications written in one transaction
+  carry the same `created_at` (`vouchApproved` and `vouched` of an
+  approval, for one). For the rows that are there the order of `seq`
+  from the highest down is then the order `/list-notifications` had
+  before, `created_at DESC, notification_number`. Without that rule a
+  page could end between two rows of one moment, and "Show older", which
+  goes by `seq`, could skip one.
+- The numbering is one statement. The rows in their order, each with the
+  counter's next value, are kept in a materialized `WITH`, so that every
+  number is taken exactly once, in that order, however PostgreSQL then
+  joins them to the table. At a second run the statement finds no row
+  without a number.
+- After the numbering the column gets its default and `NOT NULL`. Both
+  change nothing on a column that has them.
+- The numbering changes every row that was there, once. So the table's
+  own trigger moves each such row's `updated_at` to the moment of that
+  first run. Nothing reads that column; `read_at` and `created_at` stay.
+- One index, `notifications_anopod_id_seq_idx` on `(anopod_id, seq)`: a
+  pod's rows in the order of their numbers. The read walks it from the
+  highest number down. The index on `(anopod_id, created_at DESC)` stays
+  (section 4).
+- The comments of the sequence and of the column are in the block. The
+  block is idempotent, so the whole file applies to a live database and
+  a second run changes nothing. The file makes 47 tables, as before.
+
+### 34.3 The changes of `/list-notifications`
+
+**POST /list-notifications** (session; section 5): three fields more in
+the body, one more in each row and three more in the answer.
+
+Body: `{ unreadOnly, limit, since, before, kinds }`, all optional. A
+field that is absent, or `null`, is not named.
+
+| Field | What it asks for |
+| ----- | ---------------- |
+| `unreadOnly` | as before: `true` for the unread rows only; `false` when not named |
+| `limit` | as before: the most rows an answer holds, 1 to 500; 100 when not named |
+| `since` | the rows with a `seq` above it: a whole number from 0 to 9007199254740991, the largest whole number JavaScript keeps exact. A `since` of 0 is a `since` |
+| `before` | the rows with a `seq` below it: a whole number from 1 to 9007199254740991 |
+| `kinds` | only rows of these kinds: a list of 1 to 21 kind names, each one of the twenty-one kinds of section 6, and each of them once |
+
+Checks, in order:
+
+1. The body is an object, and it does not name both `since` and
+   `before`, else `400 bad request shape`. The session check (section 3)
+   has refused a body that is no object before the route is reached.
+2. `unreadOnly`, when it is named, is `true` or `false`, else `400
+   invalid unreadOnly`.
+3. `limit`, when it is named, is a whole number from 1 to 500, else `400
+   invalid limit`.
+4. `since`, when it is named, is a whole number in its range, else `400
+   invalid since`.
+5. `before`, when it is named, is a whole number in its range, else `400
+   invalid before`.
+6. `kinds`, when it is named, is such a list, else `400 invalid kinds`.
+
+What the route then does:
+
+1. One statement reads three numbers of the caller: the highest `seq` of
+   the caller's rows, how many notifications the caller has, and how many
+   of them are unread.
+2. A second statement reads the rows: the caller's rows that fit
+   `unreadOnly`, `since`, `before` and `kinds`, in the order of `seq`
+   from the highest down, at most `limit`, and none above the highest
+   `seq` of point 1.
+3. The answer holds the rows, each as before with its own `seq` added,
+   and the three numbers as `seq`, `count` and `unread`.
+
+The first statement decides: the three numbers come from one state of the
+database, and the rows are read after it and never above that `seq`. A
+row that is written between the two statements is not in the answer and
+comes with the next read. The other order could lose a row: a `seq` above
+a row that the list did not yet hold. The read opens no transaction of
+its own. Both statements run for every request, also when nothing is
+above `since`; the second then finds nothing through the index.
+
+Answer: `200`, the same four keys whatever the body names:
+
+```json
+{
+  "notifications": [
+    { "notificationNumber": "<hex 32 bytes>", "kind": "joinRequest", "referenceId": "<hex 32 bytes>",
+      "read": false, "createdAt": "2026-11-25T22:16:08.104Z", "seq": 813 }
+  ],
+  "seq": 813,
+  "count": 58,
+  "unread": 3
+}
+```
+
+- `notifications`: the rows, the highest `seq` first. Each row is as
+  before, with `seq`, the row's own number, as its last field.
+- `seq`: the highest `seq` of the caller's rows, as a number, 0 when the
+  caller has none. It is the number to send as the next `since`. It is
+  never the counter's own value: the counter also counts everybody
+  else's notifications.
+- `count`: how many notifications the caller has.
+- `unread`: how many of them are unread.
+
+`count` and `unread` are of all the caller's rows, whatever `unreadOnly`,
+`since`, `before` and `kinds` say, and whatever `limit` leaves out.
+
+The answer when nothing is new, 52 bytes as it travels:
+
+```json
+{ "notifications": [], "seq": 812, "count": 57, "unread": 2 }
+```
+
+What a wallet sends, by the plan (its 3.2): `{ "limit": 30 }` for the
+first read after a login or a page load; `{ "since": 812 }` every 5
+seconds; `{ "limit": 30, "kinds": [...] }` for a tap on a filter; and
+`{ "limit": 30, "before": 771 }` for a tap on "Show older", with `kinds`
+when a filter is on.
+
+What a reader of the answer has to know:
+
+- With `since`, an answer still holds at most `limit` rows, the ones with
+  the highest numbers. When more rows than that are above `since`,
+  `count` tells: it is more than the count the wallet had plus the rows
+  that came.
+- A write takes its number first and is committed a moment later. When
+  two writes for one pod are committed in the other order than their
+  numbers, a read that falls between the two commits sees the higher
+  number alone, and the row with the lower number is then no longer above
+  the wallet's `since`. `count` tells here too: at the wallet's next
+  read it is one more than the wallet expects. The plan has the wallet
+  read the first page again then, once (its 3.3). What a mark that is
+  sent in between does to that row is in 34.7.
+- `seq` is lower than the `since` that was sent only when the database
+  was put back from a backup: a row is never deleted. The plan has the
+  wallet read the first page again then too.
+- A row's `read` is true to the moment of the answer. A row that another
+  phone marks later is not sent again; `unread` tells how many are left.
+- The order is the order of `seq`, for every request. For the rows that
+  were there on 2026-11-25 this is the order of before. Two rows that
+  are written in one transaction from then on stand in the order they
+  were written, the later one first; before, their order went by their
+  ids.
+- A read with `before` or `kinds` carries the same three numbers. They
+  are the caller's whole list at that moment, not the page's.
+- The answer to a page's read can hold a row that the timer's next read
+  brings again: a row that was written after the wallet's last read on
+  the timer is above its `since` and can already be on a filter's first
+  page. 34.5 has what a wallet does about it.
+- A wallet of before sends `{ "unreadOnly": false }` and reads
+  `notifications` alone. It gets the rows of before, about 10 bytes more
+  for each row: 25.7 KB in the place of 24.6 KB for 100 rows.
+- Fields that the route does not know are passed over, as before.
+
+### 34.4 The changes of `/mark-notifications-read`
+
+**POST /mark-notifications-read** (session; section 5): a second form of
+the body.
+
+Body: `{ notificationNumbers: [ ... ] }`, 1 to 500 ids, as before, or
+`{ upTo }`: a whole number from 0 to 9007199254740991, the `seq` up to
+which everything is marked. A field that is absent, or `null`, is not
+named.
+
+Checks, in order:
+
+1. The body is an object that names `upTo` or `notificationNumbers`, one
+   of the two, else `400 bad request shape`: for a body that names both
+   and for one that names neither.
+2. With `upTo`: it is a whole number in its range, else `400 invalid
+   upTo`.
+3. With `notificationNumbers`, as before: it is a list, else `400 bad
+   request shape`; it holds 1 to 500 entries and each is an id, else `400
+   invalid notificationNumbers`.
+
+Writes, with `upTo`: `UPDATE notifications SET read_at = now() WHERE
+anopod_id = caller AND seq <= upTo AND read_at IS NULL`. It is the
+statement of before with `seq <= upTo` in the place of the ids. So it
+marks every unread notification of the caller whose `seq` is `upTo` or
+lower, and no row of another pod.
+
+Answer: `200 { marked }`, the number of rows changed, as before.
+
+- A notification that was written after the wallet's last read has a
+  higher `seq` than the number the wallet sends, so it is not marked. It
+  comes with the wallet's next read, as a new row. One row is not
+  covered by that: a row with a lower number that is committed after
+  the wallet's read (34.3). A mark that is sent before the wallet's next
+  read marks it too. That gap is left as it is (34.7).
+- `{ "upTo": 0 }` marks nothing and answers `{ "marked": 0 }`.
+- The same `upTo` again answers `{ "marked": 0 }`. Two marks at the same
+  moment mark each row once between them.
+- The form with ids stays as it was, for a wallet that was not updated.
+
+### 34.5 What a wallet does with it
+
+The wallet's part is step 2 of the plan and is written in the wallet's
+spec. In short, as this server's answers are meant to be read (the plan's
+3.3, 3.4, 3.5 and section 7):
+
+- The wallet keeps its list in memory, as before, and three numbers
+  beside it: `seq`, `count` and `unread`. The first read after a login or
+  a page load is `{ "limit": 30 }`. Every later read from the timer is
+  `{ "since": seq }`, and the rows that come back go on top of the list.
+- Then the wallet compares. A `count` that is not the count it had plus
+  the rows that came, or a `seq` below the `since` it sent, leads to a
+  read of the first page, once.
+- The number in the wallet's menu and on Home is `unread`.
+- The page's own reads, a filter's with `kinds` and an older page's with
+  `before`, bring rows for the page. They change neither the list's `seq`
+  nor its `count`.
+- Marking: `{ "upTo": seq }` with the list's `seq`, when the page opens
+  and when a row arrives while it is open, and nothing while `unread` is
+  0. After the answer every row in the wallet's list is read and
+  `unread` is 0.
+- An answer with no `seq`, from a server that still runs the code of
+  before, is taken as the first page. A mark with `upTo` is refused by
+  such a server with `400 bad request shape`. The plan builds nothing
+  more for it: the wallet's step is deployed when this step runs on all
+  three servers.
+- One thing the build's trial found for the wallet's step (34.8). The
+  plan's section 7 puts the rows of a filter's group that the timer
+  brings on top of the filter's list. Taken to the letter, that shows a
+  row twice when the filter's first page already held it, and can put an
+  older row above a newer one. A made-up wallet that puts on top only
+  the rows with a `seq` above the highest `seq` of the filter's list
+  kept every list right.
+
+### 34.6 Files
+
+- `db/schema.sql`: the notification number block, new, at the end; and,
+  after the build's report, the file's opening comment, which names the
+  new block among the idempotent ALTERs.
+- `src/notifications/notifications.queries.js`: `numbersFor` and
+  `markReadUpTo`, new; `listFor`, which now takes the caller and one
+  object, orders by `seq`, hands out each row's `seq` and has the four
+  new conditions; `notify` and `markRead` are as they were.
+- `src/notifications/notifications.service.js`: `list`, the checks of the
+  three new fields and the three numbers in its answer; `mark`, the
+  second form of the body; the list `KINDS` and three small helpers, new.
+- Here: section 4 (`### notifications`, a paragraph for the column, its
+  counter and its index), section 5 (`### POST /list-notifications`: the
+  body, the answer and a dated paragraph; `### POST
+  /mark-notifications-read`: the body and the write), section 6 (a dated
+  sentence), this section and, after the build's report, a dated sentence
+  in section 11. `README.md`: the rows of the two routes in the Endpoints
+  table, the row of `notifications` in "Database tables" and, after the
+  build's report, the sentence on the sequences above that table.
+
+Nothing else in existing code changes: not
+`src/notifications/notifications.handlers.js`, not
+`src/notifications/notifications.router.js`, none of the fifteen places
+that call `notify()`, not `src/app.js`, not `package.json`, not
+`.example.env`. One sequence, one column and one index; no table, no
+route, no trigger, no env variable, no npm package.
+
+### 34.7 What is left as it is
+
+- The requests going up. Every signed request carries an ML-DSA-87
+  signature and is 9.6 KB. A wallet sends three every 5 seconds once an
+  anoPod's setup is done, and two before that: 28.9 KB up, or 19.3 KB,
+  before and after this section (the plan's section 6).
+- What a notification says, and who it names. No name of a person or a
+  room (the plan's decision 6).
+- New kinds of notification. A transfer that is written still tells
+  nobody; that is the item "notifications" on the after-production list.
+- Sound and push. Only the four security alerts reach a wallet that is
+  closed, as before (section 25).
+- This server's work on a request. It still checks both signatures and
+  writes the nonce. New: on every read it counts the caller's
+  notifications, one small row each (the first statement of 34.3).
+- Old rows. A notification is never deleted, as before.
+- Until the wallet's step is live, a wallet still asks for the newest 100
+  whole every 5 seconds, and gets them.
+- One gap, which marking up to a number leaves open. A write takes its
+  number first and is committed a moment later. When two notifications
+  for one pod are written within a few milliseconds and are committed in
+  the other order than their numbers, and the wallet's read on the timer
+  falls between the two commits, the wallet holds the higher number and
+  not yet the row below it (34.3). A mark with `upTo` that the wallet
+  sends before its next read, because the page is open or is opened in
+  those seconds, marks that row too. The row then comes with the first
+  page, in its place and already read: it never had its dot, and it was
+  never counted in the number. The form with ids cannot do this. The
+  plan's 3.5 says that a notification written after the wallet's last
+  read "has a higher `seq`, so it is not marked", which holds for every
+  row but this one. It takes two writes for one pod at the same instant,
+  the wallet's read in the gap between their commits, and the page open.
+  Seen in the build's trial (34.8) and left as it is; the chat list has a
+  gap of the same kind (29.7).
+
+### 34.8 Notes from the build
+
+#### Build 1, the masterpod (2026-11-25)
+
+Built from `~/Desktop/Z-TestNet/forclaude/notifications-page-plan-1.md`,
+its sections 3.1, 3.2, 3.5 and 7 and step 1 of section 5, on main at
+f6348af, the working tree clean. The plan holds no code, so all of the
+code is the build's. No new npm package, and no test script in the repo.
+The schema was not applied to any database of the network: the user
+applies the whole file as section 6 of
+`forclaude/masterpod-deploy-plan-1.md` says, on the leader, and then
+pulls and restarts the three servers, the leader last. The file goes on
+before the new code runs. On a database without the block the built code
+fails every `/list-notifications`, the read every wallet makes every 5
+seconds. The other order is safe: the code of before names its columns
+and never looks at the new one, and the default numbers its writes. Both
+were tried (below). The user's word for the build was "keep it simple":
+where the plan left a choice of code open, the build took the smallest
+one. What the plan left open and how it was decided:
+
+- The number and the date. This section is 34, the next free number on
+  the build day. The date is 2026-11-25, the day of the build and of the
+  plan's FINAL.
+- The block's name, "The notification number block".
+- The column is in the block only (34.2). The plan says "one dated block
+  at the end". The block of section 29, which it names as the form, also
+  has its columns inline in their `CREATE TABLE`s; this column cannot
+  stand there without the sequence being made above the table as well.
+- Nothing more on the column than the plan names: no check that it is
+  not negative, no unique constraint, and the sequence is not tied to the
+  column as its owner. The index is a plain one.
+- The numbering as one statement with a materialized `WITH` (34.2), and
+  not three plain `UPDATE`s as in section 29: there the order of the
+  numbers did not matter, and here it does.
+- `updated_at` of the rows that are there moves at the first run (34.2).
+  The plan does not speak of it. Nothing reads the column, so the build
+  did nothing against it.
+- The top of `since`, `before` and `upTo`, 9007199254740991. The plan
+  says "a whole number from" 0 or 1 and names no top. It is the top that
+  `since` of `/list-chat-rooms` has (29.3): above it JavaScript no
+  longer keeps a whole number exact.
+- "Named" means there and not `null`, as `unreadOnly` and `limit` are
+  read since the first build.
+- The refusal of a body with both `since` and `before`, and of a mark's
+  body with both forms or neither. The plan says 400 and names no words.
+  Both are `400 bad request shape`, the words a mark's body with neither
+  got before, and both are checked first, with the body's shape. No new
+  phrase.
+- The four new phrases: `invalid since`, `invalid before`, `invalid
+  kinds` and `invalid upTo`, in the form of `invalid limit`.
+- The twenty-one kind names as a list in the code, `KINDS` in
+  `notifications.service.js`. Until now the names stood in the table's
+  check alone. `kinds` has to be checked before the database is asked, so
+  the list is needed; a new kind is added there too (section 6 says so).
+  A kind that is in the table's check and not in the list is still
+  handed out by every read that names no `kinds`; only its name in
+  `kinds` is refused.
+- `listFor` takes the caller and one object, in the place of three
+  values, and is one statement for every request: each of the three new
+  fields is one condition of the form `($n IS NULL OR ...)`, as the
+  statements of section 29 have it.
+- Two statements for every read, as the plan's 3.2 words it, also when
+  nothing is above `since`.
+- Where the new fields stand. `seq` is a row's last field. In the answer
+  `notifications` comes first and then `seq`, `count` and `unread`, as in
+  the plan's example.
+- The numbers on their way out. PostgreSQL hands a `BIGINT` and a count
+  to the `pg` library as text, and the code makes numbers of them.
+- Here and in the README: as 34.6 lists them. An older sentence that
+  named the body or the answer of one of the two routes was brought up to
+  date in its place, with a dated paragraph or sentence beside it.
+- Places the plan does not name that this step leaves out of date. The
+  build left them as they were and named them to the user in its report,
+  and they were brought in line the same day, on the user's word (below):
+  the opening comment of `db/schema.sql`, whose list of the blocks that
+  alter a table which exists lacked this block; the sentence above the
+  table of "Database tables" in `README.md`, "there is one sequence"; and
+  in section 11 here, "`/list-notifications` newest first, ties by
+  notification number". 29.7 says that `/list-notifications` answers the
+  newest 100 whole every 5 seconds and was not touched: that is a record
+  of its section, and it is still so for a wallet of before.
+
+The checks. All of them ran from empty databases on the files as they
+were handed over. The tools are outside the repo, in the build chat's
+scratch folder, and none of them is kept in it.
+
+- The code. `node --check` on the two changed files, clean, on Node
+  24.22.0. One load of the app with no server and no database
+  (`createApp()` with made-up settings): 117 routes, as a copy of f6348af
+  gave the same way. A type checker's read of `src/app.js` (`tsc
+  --checkJs`, TypeScript 6.0.3 from the wallet's folder) named no unknown
+  name, no wrong count of arguments and no missing export or module, and
+  in the notifications files nothing but "implicitly has an 'any' type",
+  which it says of every parameter of this plain JavaScript.
+- The scratch PostgreSQL. A PostgreSQL 17.11 that was started for this
+  build alone: a data folder of its own in the build chat's scratch
+  folder, listening on 127.0.0.1 port 61831 and nowhere else, with no
+  socket file. This Mac's own PostgreSQL on port 5432 was not touched.
+  Every apply of a schema file ran as the deploy's line runs it: one
+  transaction after `SET ROLE masterpodsoftware`, into a database that
+  the role owns. Every tool that uses this server's pool stops before its
+  first query unless the pool's host and port are the scratch
+  PostgreSQL's.
+- A database as it is live today. The file of f6348af into an empty
+  database: 47 tables. It was filled through that commit's own routes,
+  over HTTP with signed requests, and by SQL for rows of chosen times:
+  ten pods and 439 notifications of all twenty-one kinds, 129 of them
+  unread, among them 250 rows in 125 groups of one pod and one moment. A
+  super seed approved one vouch request (`vouchApproved` and `vouched`
+  in one transaction) and declined one; a chat invite was accepted and
+  one declined; a join request was approved and one declined; four rows
+  were marked read by their ids.
+- The schema file. The new file on top of that database: 47 tables. Of
+  the 1,280 lines that describe every column, constraint, index, trigger,
+  function, sequence, comment and owner of the schema, none was changed
+  or gone, and six are new: the column, the index, the sequence, its
+  owner and the two comments. The first run numbered the 439 rows 1 to
+  439, each row's number its place by `created_at` and then
+  `notification_number` from the highest down, and the counter stood at
+  439. Every row kept its id, pod, kind, reference, `read_at` and
+  `created_at`. Every pod's rows in the order of `seq` from the highest
+  down were its rows in the order of before. `updated_at` moved on all
+  439 rows. The new file once more: the same schema, the same number and
+  the same `updated_at` in every row, the counter still at 439. A row
+  written afterwards, with four columns named as `notify()` names them,
+  got 440. The new file alone into a second empty database, twice: the
+  same schema both times, and `pg_dump --schema-only` of it and of the
+  updated database gave the same 5,248 lines. With the planner allowed
+  to join by a nested loop only, the numbering came out the same. On a
+  database where the block had stopped after its second statement and
+  two rows had come since, the file numbered all 441 rows in their
+  order. The file of f6348af on top of the new tables changed nothing.
+- The two half-deployed states, each with the real app over HTTP and
+  signed requests. The built code on the tables of before:
+  `/list-notifications` answered `500` with and without `since` (`column
+  "seq" does not exist` in the server's log), and so did
+  `/mark-notifications-read` with `upTo`; the mark with ids, a route that
+  writes a notification and `/check-anopod-status` answered. So the
+  schema line goes first. The code of f6348af on the new tables:
+  `/list-notifications` answered the one key of before with rows of
+  before, also with a `since` in the body, which that code does not
+  know; the mark with ids marked; a mark with `upTo` was refused with
+  `400 bad request shape`; and a notification that this code wrote got
+  its number from the default.
+- A wallet of today. The code of f6348af and the built code were started
+  in one process on one database and asked the same as the same ten
+  pods, in seven forms of today's request (`{}`, `unreadOnly` true and
+  false, three limits): 70 pairs of answers. Each new answer is the old
+  one, byte for byte, with every row's `seq` added at its end and `seq`,
+  `count` and `unread` after the list: the same rows in the same order.
+  For 100 rows that is 25,651 bytes in the place of 24,617, and for a
+  pod with no notification 49 in the place of 20. Seven bodies of the
+  mark with ids, bad ones among them, got from the built code the answer
+  of before.
+- The walk. The built code on the updated database, over HTTP with
+  signed requests: 52 results, none bad. The first read `{ "limit": 30
+  }`: the 30 rows with the highest numbers, 7,723 bytes. `{ since }`
+  with nothing new: 54 bytes. A join request written by the built code:
+  `{ since }` brought that one row, 307 bytes. A second one written by
+  the code of before, on the same database: numbered, and both came, the
+  newer first. `since` 0: the newest 100 of 236, and `count` says 236.
+  A `since` far above every number: nothing. With `unreadOnly` and with
+  `kinds` beside it: the rows that fit both. `before`, page after page,
+  in pages of 30, 7, 1 and 100: every one of 236 rows once, in the order
+  of the whole list, none skipped, the three numbers in every answer.
+  `kinds`, for each of the wallet's four groups, with pages of 30: only
+  rows of the group, all of them, and the four groups together every row
+  once; all twenty-one kinds named gave the answer of `{}`. `upTo` with
+  the `seq` of a read: the pod's 14 unread rows marked, a notification
+  written after that read left unread, the same again `{ "marked": 0 }`,
+  and another pod's 31 unread rows with lower numbers untouched; `upTo`
+  0 marked nothing and `upTo` 9007199254740991 everything. 58 bodies for
+  the refusals: each answered as 34.3 and 34.4 say. A body with no
+  signature and a request signed for the other path were refused as
+  before. A row written between the two statements of a read was not in
+  that answer and came with the next. A write that was committed after a
+  later-numbered one, with a read between the two commits: that read
+  brought the higher-numbered row alone, the next read no row and a
+  `count` one higher, and the first page read again held the late row,
+  unread. The same with a mark with `upTo` sent before that next read:
+  the late row was marked too, which is the gap of 34.7.
+- Made-up wallets. A script holds the plan's rules for a wallet (3.3,
+  3.4, 3.5 and section 7) and tries whether this server's answers are
+  enough to keep a list right. It makes many random changes, one after
+  the other, by the built code's own functions: notifications written
+  one, two or up to 130 at a time, a write that is committed after a
+  later-numbered one, reads on the timer, marks with `upTo`, marks from
+  a second phone with ids and with `upTo`, "Show older", filters and
+  older pages under one, and page loads. After every read on the timer
+  the wallet's list, its list under a filter and its three numbers are
+  compared with the table. Five rounds of 3,000 steps with five seeds:
+  31,365 notifications written, 731 times a write committed after a
+  later-numbered one, 6,795 comparisons, none different. A wallet read
+  its first page again 530 times, every time for a `count` that
+  differed. The same round with a wallet that does not compare `count`:
+  637 of 1,396 comparisons bad, so the rounds notice a missed row and
+  `count` is needed. With a wallet that puts every row of a filter's
+  group that the timer brings on top of the filter's list, as the plan's
+  section 7 words it: 47 comparisons bad, a row twice. With one that
+  leaves out the rows whose ids the list holds: 4 bad, an older row
+  above a newer one. The rule the five rounds ran with is the last point
+  of 34.5.
+- Requests at the same moment. Twelve bursts through the app's own pool
+  of ten connections, for one pod: seven new notifications, three marks
+  with `upTo` and five reads at once, and in the first burst a mark with
+  ids too. 181 calls, each answered `200` or `201`; in every burst the
+  marks together marked each unread row once; a read with the `seq` of
+  before then brought the seven new rows; no number in two rows,
+  PostgreSQL's own count of deadlocks 0, no line in the server's log.
+- Many rows. 100,000 notifications of 2,000 pods on the tables of
+  before, written in a scattered order: the file's first run took about
+  one second (0.9 and 1.1 in two tries), psql's start included, and
+  numbered every row to its place; a second run took 0.09 seconds. With
+  1,000,000 rows: 16.5 seconds and 0.25. For that time the table is held
+  and requests wait. Until PostgreSQL's own cleanup has run, the table
+  is about half again as large as before (38 MB to 59 MB with 100,000
+  rows): every row was written once more. On the table of 100,000, for
+  the pod with the most rows, about 8,000: a read took about 1.3
+  milliseconds on average, in every form of the request, against 0.25
+  for today's read by the code of f6348af; most of it is the first
+  statement, which reads that pod's rows to count them. For a pod with
+  27 rows: 0.11 milliseconds for a read with `since` and nothing new
+  and 0.17 for today's read, against 0.11 by the code of f6348af.
+  PostgreSQL walks the new index backward for the rows, with `since` as
+  a condition of the index, and reads the count through the same index.
+  A mark with `upTo` of about 5,400 unread rows took 0.03 seconds in one
+  try and 0.22 in another, and the same again, with nothing left to
+  mark, 1.1 milliseconds. On this Mac, the database on the same machine
+  and no PgBouncer between.
+- The lines for the servers, in stand-in form on the scratch PostgreSQL,
+  with a copy of a local file in place of the download. Every line's
+  syntax was read by bash and by dash, and no line holds a dollar sign.
+  The schema line carries the whole hash of the new file and prints `OK`,
+  47, the number of notifications, the apply's 598 lines, 47, the owner,
+  1 for the new column and one line that says how many notifications
+  there are, how many are without a number (0) and the highest number; a
+  second run prints the same; with the file of before as the download it
+  prints `FAILED` and applies nothing. The pull-and-restart line on a
+  made-up server, a clone that stood at f6348af with a bare repository
+  in the scratch folder as GitHub: five files. Then that server's own
+  `src/server.js` was started on the new code and the database that the
+  schema line had made, and it answered a wallet of today and the new
+  fields over HTTP, signed. None of these lines has run on a server.
+- A second reader. After the trial a fresh reader, read only, compared
+  the change with the plan's sections 3.1, 3.2, 3.5 and 7 and with the
+  sentences written about it. It named no place where the code does
+  another thing than the plan says. It named the gap of 34.7, which the
+  walk then showed, and one loose sentence in the block's own comment,
+  which was put right before the hand-over.
+- Not tried by the build. Nothing on a server, nothing on Linux, nothing
+  on PostgreSQL 16, which the servers run (the block uses `WITH ... AS
+  MATERIALIZED`, which PostgreSQL has since version 12, and nothing
+  newer), and nothing through PgBouncer or the doormen. No wallet called
+  the routes: the wallet's part is step 2, and a wallet of today was
+  played by requests of its form. How many notifications the live
+  database holds is not known to the build; the schema line prints it.
+- Not touched: `notifications.handlers.js`, `notifications.router.js`,
+  every route that writes a notification, every other feature folder,
+  `src/app.js`, `package.json`, `.example.env`, the scripts.
+- The numbers. `db/schema.sql` has 1996 lines, 47 more than before, and
+  its sha256 begins ccc25354. Before the step it had 1949 lines and its
+  sha256 began 58586402. It makes 47 tables, as before: the count that
+  the deploy's schema line prints does not change with this step, so
+  that line also looks for the new column and for a row without a
+  number.
+
+#### After the build's report, the same day (2026-11-25)
+
+The build's report named three sentences that this step had left out of
+date and that the plan does not name, and asked whether to bring them in
+line before the commit. The user: "Yes, fix them". So, before the commit:
+
+- `db/schema.sql`: the file's opening comment names the notification
+  number block among the blocks whose idempotent ALTERs change a table
+  that exists.
+- `README.md`: the sentence above the table of "Database tables" names
+  both sequences, `chat_change_seq` and `notification_seq`.
+- Section 11 here: beside "`/list-notifications` newest first, ties by
+  notification number" stands a dated sentence. Since this section the
+  route goes by each row's `seq`.
+
+No line of code changed, and no statement of the schema file: the change
+there is in a comment. The file's sha256, which began 4abd02c3 when the
+report went out, begins ccc25354 since, and the numbers above name the
+file as it is committed. The whole trial was run again from empty
+databases on the files as they are committed, with the results of
+before, and the deploy's schema line was made again with the new check
+number and tried again in stand-in form.
+
+The report named two more things, and the user's yes was for neither. A
+sentence of the same kind in `scripts/setup-db.sh`, "it never changes a
+table that already exists", was out of date before this step and is not
+this step's: it is as it was. And the gap of 34.7 was told with the offer
+of a line on the after-production list.
