@@ -8,7 +8,8 @@
 -- It never alters a table that already exists, though, apart from the
 -- idempotent ALTERs of the appointments block and of the recovery,
 -- attestation, marketplace, wallet memory, case chat, seen position,
--- first key blob, chat change and message edit blocks at the end.
+-- first key blob, chat change, message edit and Joy search blocks at the
+-- end.
 -- After changing this file, rebuild the local database from scratch with
 --
 --   npm run db:reset
@@ -1860,6 +1861,7 @@ CREATE TABLE IF NOT EXISTS joy_usage (
   cache_write_tokens BIGINT      NOT NULL DEFAULT 0 CHECK (cache_write_tokens >= 0),
   created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  searches           INTEGER     NOT NULL DEFAULT 0 CHECK (searches >= 0),
   PRIMARY KEY (anopod_id, day)
 );
 
@@ -1869,7 +1871,7 @@ CREATE OR REPLACE TRIGGER joy_usage_set_updated_at
   WHEN (OLD.* IS DISTINCT FROM NEW.*)
   EXECUTE FUNCTION set_updated_at();
 
-COMMENT ON TABLE  joy_usage                    IS 'One row per pod and day (UTC): how many messages the pod sent Joy that day and the tokens Anthropic counted for them (spec section 30). Holds no text of a message. The daily limit is read from it.';
+COMMENT ON TABLE  joy_usage                    IS 'One row per pod and day (UTC): how many messages the pod sent Joy that day, the tokens Anthropic counted for them (spec section 30) and, since spec section 32, the web searches Anthropic made for them. Holds no text of a message. The daily limit of messages and the daily number of searches are read from it.';
 COMMENT ON COLUMN joy_usage.anopod_id          IS 'The pod.';
 COMMENT ON COLUMN joy_usage.day                IS 'The day, in UTC.';
 COMMENT ON COLUMN joy_usage.messages           IS 'The messages the pod sent Joy that day. Counted when /ask-joy takes a message, before Anthropic is called, so a message that then fails is counted too.';
@@ -1912,3 +1914,19 @@ CREATE INDEX IF NOT EXISTS chat_room_messages_target_message_id_idx ON chat_room
 
 COMMENT ON COLUMN chat_room_messages.kind              IS 'What the row is (spec section 31): null on a message, edit on a row that gives a message a new text, delete on a row that takes a message away. Set at the insert, by /edit-message and /delete-message, and never changed.';
 COMMENT ON COLUMN chat_room_messages.target_message_id IS 'The message an edit or a delete is about (spec section 31): the message_id of a message of the same room, 32 raw bytes. Null on a message. Once a later row of the room names a message, /list-messages hands the earlier rows about it out without their ciphertext.';
+
+
+-- The Joy search block (2026-11-24, spec section 32): Joy looks things up
+-- on the web. joy_usage.searches counts the web searches that Anthropic
+-- made for a pod's messages of a day. The column is also inline in the
+-- CREATE TABLE above, as the table's last column, for a fresh database;
+-- its comment is here only, after the column exists on a live one. A row
+-- that was written before the column holds 0. No index: the column is
+-- read with its own row, by the statement that counts a message. The
+-- code of before this block names its columns in both of its statements
+-- on joy_usage, so it runs on a database that has the block. Idempotent:
+-- IF NOT EXISTS.
+
+ALTER TABLE joy_usage ADD COLUMN IF NOT EXISTS searches INTEGER NOT NULL DEFAULT 0 CHECK (searches >= 0);
+
+COMMENT ON COLUMN joy_usage.searches IS 'The web searches Anthropic made for the messages the pod sent Joy that day (usage.server_tool_use.web_search_requests), summed (spec section 32); 0 on a day without one. From JOY_DAILY_SEARCHES on, the pod''s further messages of that day go out without web search.';

@@ -13,10 +13,12 @@ import { addTokens, countMessage, findMemory, upsertMemory } from './joy.queries
  *
  * What this server keeps: the member's memory file, as one blob under the
  * pod's encryption key, which this server cannot open (joy_memories); and
- * a count of messages and tokens for each pod and day (joy_usage). It
- * keeps nothing of a conversation. The wallet sends the conversation and
- * the opened memory file with every message; both pass through this
- * server's memory on their way to Anthropic and are written nowhere.
+ * a count of messages, tokens and web searches for each pod and day
+ * (joy_usage). It keeps nothing of a conversation. The wallet sends the
+ * conversation and the opened memory file with every message; both pass
+ * through this server's memory on their way to Anthropic and are written
+ * nowhere. Nothing of a web search is written either: no query, no page
+ * and no source (spec section 32).
  *
  * Each function runs its route's checks in the spec's order and returns
  * ok(status, body) or refuse(status, reason).
@@ -57,6 +59,19 @@ export async function setJoyMemory(anopod, body) {
 }
 
 /**
+ * Whether a message may search the web (spec section 32), from the web
+ * searches the pod's row of the day held when the message was counted:
+ * 'off' when JOY_MAX_SEARCHES or JOY_DAILY_SEARCHES is 0; 'used' when
+ * the row has reached JOY_DAILY_SEARCHES; 'on' otherwise. The row is
+ * read before the message's own searches, so a pod can end a day over
+ * the number: by up to 2 when one message may make 3 searches.
+ */
+function searchFor(searches) {
+  if (env.joy.maxSearches === 0 || env.joy.dailySearches === 0) return 'off';
+  return searches >= env.joy.dailySearches ? 'used' : 'on';
+}
+
+/**
  * The checks of POST /ask-joy (setup), before anything is sent to
  * Anthropic. Body { messages, memory }: `messages` is the conversation,
  * oldest first, each { role: 'user' | 'assistant', text }, the member's
@@ -68,9 +83,11 @@ export async function setJoyMemory(anopod, body) {
  * Joy is on; and the pod's count of the day, which this call raises by
  * one unless it has reached JOY_DAILY_MESSAGES.
  *
- * Returns ok(200, { history, memory, day }) for the handler, which
- * answers as a stream, or a refusal. `day` is the row of joy_usage the
- * message was counted on.
+ * Returns ok(200, { history, memory, day, search }) for the handler,
+ * which answers as a stream, or a refusal. `day` is the row of joy_usage
+ * the message was counted on. `search` is whether the message may search
+ * the web: 'on', 'off' or 'used' (searchFor). It is never a refusal: a
+ * message that may not search is answered without searching.
  */
 export async function prepareAsk(anopod, body) {
   if (!isObject(body) || !Array.isArray(body.messages) || typeof body.memory !== 'string') return refuse(400, BAD_SHAPE);
@@ -90,13 +107,13 @@ export async function prepareAsk(anopod, body) {
 
   if (!joyIsOn()) return refuse(503, 'joy is off');
 
-  const day = await countMessage(anopod.anopodId, env.joy.dailyMessages);
-  if (day === null) return refuse(429, 'daily limit reached');
-  return ok(200, { history, memory: body.memory, day });
+  const counted = await countMessage(anopod.anopodId, env.joy.dailyMessages);
+  if (counted === null) return refuse(429, 'daily limit reached');
+  return ok(200, { history, memory: body.memory, day: counted.day, search: searchFor(counted.searches) });
 }
 
-/** Writes the tokens of one message onto the pod's row of `day`. Nothing is written when Anthropic counted none. */
+/** Writes the tokens and the web searches of one message onto the pod's row of `day`. Nothing is written when Anthropic counted none. */
 export async function recordTokens(anopod, day, tokens) {
-  if (tokens.input + tokens.output + tokens.cacheRead + tokens.cacheWrite === 0) return;
+  if (tokens.input + tokens.output + tokens.cacheRead + tokens.cacheWrite + tokens.searches === 0) return;
   await addTokens(anopod.anopodId, day, tokens);
 }
