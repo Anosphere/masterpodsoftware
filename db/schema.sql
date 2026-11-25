@@ -8,7 +8,7 @@
 -- It never alters a table that already exists, though, apart from the
 -- idempotent ALTERs of the appointments block and of the recovery,
 -- attestation, marketplace, wallet memory, case chat, seen position,
--- first key blob and chat change blocks at the end.
+-- first key blob, chat change and message edit blocks at the end.
 -- After changing this file, rebuild the local database from scratch with
 --
 --   npm run db:reset
@@ -578,17 +578,21 @@ CREATE TABLE IF NOT EXISTS chat_room_messages (
   chat_room_id     BYTEA       NOT NULL CHECK (octet_length(chat_room_id) = 32),
   sender_anopod_id BYTEA       NOT NULL CHECK (octet_length(sender_anopod_id) = 32),
   position         BIGINT      GENERATED ALWAYS AS IDENTITY,
-  message          BYTEA       NOT NULL CHECK (octet_length(message) <= 65536),
-  created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+  message          BYTEA       CHECK (octet_length(message) <= 65536),
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  kind             TEXT        CHECK (kind IN ('edit', 'delete')),
+  target_message_id BYTEA      CHECK (octet_length(target_message_id) = 32),
+  CONSTRAINT chat_room_messages_edit_delete_check CHECK ((kind IS NULL) = (target_message_id IS NULL)
+    AND (message IS NULL) = (kind IS NOT DISTINCT FROM 'delete'))
 );
 CREATE INDEX IF NOT EXISTS chat_room_messages_room_position_idx ON chat_room_messages (chat_room_id, position);
 
-COMMENT ON TABLE  chat_room_messages                  IS 'Messages, ciphertext under the room key. The sender is the verified caller; there is no per-message signature.';
+COMMENT ON TABLE  chat_room_messages                  IS 'Messages, ciphertext under the room key, and since spec section 31 the edits and the deletes of a message, each a row of its own (kind, target_message_id). No row is ever updated or deleted. The sender is the verified caller; there is no per-message signature.';
 COMMENT ON COLUMN chat_room_messages.message_id       IS 'Random id, 32 raw bytes.';
 COMMENT ON COLUMN chat_room_messages.chat_room_id     IS 'The room.';
 COMMENT ON COLUMN chat_room_messages.sender_anopod_id IS 'The member who sent it.';
-COMMENT ON COLUMN chat_room_messages.position         IS 'Counts up with every message written, across all rooms. Orders a room''s messages and drives afterPosition.';
-COMMENT ON COLUMN chat_room_messages.message          IS 'Ciphertext of the UTF-8 text (iv || ciphertext || tag), at most 65536 bytes.';
+COMMENT ON COLUMN chat_room_messages.position         IS 'Counts up with every row written, across all rooms: a message and, since spec section 31, an edit or a delete of one. Orders a room''s rows and drives afterPosition.';
+COMMENT ON COLUMN chat_room_messages.message          IS 'Ciphertext of the UTF-8 text (iv || ciphertext || tag), at most 65536 bytes: a message''s text, or an edit''s new text. Null on a delete and nowhere else (chat_room_messages_edit_delete_check, spec section 31).';
 COMMENT ON COLUMN chat_room_messages.created_at       IS 'When the row was inserted. Set by default, never changed.';
 
 
@@ -1412,7 +1416,7 @@ COMMENT ON COLUMN added_passkeys.created_at                   IS 'When the row w
 
 ALTER TABLE chat_room_members ADD COLUMN IF NOT EXISTS seen_position BIGINT NOT NULL DEFAULT 0 CHECK (seen_position >= 0);
 
-COMMENT ON COLUMN chat_room_members.seen_position IS 'The highest message position the member has seen in the room (spec section 21), 0 until the member''s wallet reports one. Raised by /mark-messages-seen, never lowered, never above the room''s newest message. /list-chat-rooms hands it to every member of the room.';
+COMMENT ON COLUMN chat_room_members.seen_position IS 'The highest message position the member has seen in the room (spec section 21), 0 until the member''s wallet reports one. Raised by /mark-messages-seen, never lowered, never above the room''s newest row, which since spec section 31 can be an edit or a delete of a message. /list-chat-rooms hands it to every member of the room.';
 
 
 -- The first key blob block (2026-11-20, spec section 22):
@@ -1675,7 +1679,8 @@ COMMENT ON COLUMN sticker_tags.created_at IS 'When the row was inserted. Set by 
 -- numbers, so that /list-chat-rooms can hand a wallet only what is new of
 -- its chat list, and /list-messages only the seen positions that rose.
 -- chat_change_seq is the counter, a sequence. chat_rooms.message_seq takes
--- its next value when a message is written in the room. chat_rooms.people_seq
+-- its next value when a message is written in the room, and since spec
+-- section 31 when an edit or a delete of one is. chat_rooms.people_seq
 -- takes it when a member joins or leaves, an invite to the room is made or
 -- answered, the room's picture is set or the room's listing is closed.
 -- chat_room_invites.change_seq and chat_room_join_requests.change_seq take
@@ -1817,7 +1822,7 @@ CREATE OR REPLACE TRIGGER listings_set_listing_rooms_people_seq
   EXECUTE FUNCTION set_listing_rooms_people_seq();
 
 COMMENT ON SEQUENCE chat_change_seq IS 'The one counter of the changes of the chat lists (spec section 29). Triggers take its next value into chat_rooms.message_seq and people_seq, chat_room_invites.change_seq, chat_room_join_requests.change_seq and chat_room_members.seen_seq. A number is taken when the row is written, a moment before its transaction is committed. No route reads the counter itself.';
-COMMENT ON COLUMN chat_rooms.message_seq               IS 'The counter''s value (chat_change_seq) when a message was last written in the room (spec section 29); 0 until the first message after the column was added. Set by the chat_room_messages_set_room_message_seq trigger. /list-chat-rooms hands a room''s newest message to a wallet whose `since` is below it.';
+COMMENT ON COLUMN chat_rooms.message_seq               IS 'The counter''s value (chat_change_seq) when a message, or since spec section 31 an edit or a delete of one, was last written in the room (spec section 29); 0 until the first such row after the column was added. Set by the chat_room_messages_set_room_message_seq trigger. /list-chat-rooms hands a room''s newest message to a wallet whose `since` is below it.';
 COMMENT ON COLUMN chat_rooms.people_seq                IS 'The counter''s value (chat_change_seq) when the room last changed in another way than by a message: a member joined or left, an invite to it was made or answered, its picture was set, its listing was closed (spec section 29); 0 until the first such change after the column was added. Set by triggers on chat_room_members, chat_room_invites, chat_room_pictures and listings. /list-chat-rooms hands the room whole to a wallet whose `since` is below it.';
 COMMENT ON COLUMN chat_room_invites.change_seq         IS 'The counter''s value (chat_change_seq) when the invite was written (spec section 29). Set by the chat_room_invites_set_change_seq trigger; an invite that was open when the column was added got its number then. /list-chat-rooms hands the invite to a wallet whose `since` is below it.';
 COMMENT ON COLUMN chat_room_join_requests.change_seq   IS 'The counter''s value (chat_change_seq) when the request was written (spec section 29). Set by the chat_room_join_requests_set_change_seq trigger; a request that was open when the column was added got its number then. /list-chat-rooms hands the request to a wallet whose `since` is below it.';
@@ -1874,3 +1879,36 @@ COMMENT ON COLUMN joy_usage.cache_read_tokens  IS 'Input tokens read from Anthro
 COMMENT ON COLUMN joy_usage.cache_write_tokens IS 'Input tokens written to Anthropic''s prompt cache (usage.cache_creation_input_tokens), summed.';
 COMMENT ON COLUMN joy_usage.created_at         IS 'When the row was inserted. Set by default, never changed.';
 COMMENT ON COLUMN joy_usage.updated_at         IS 'When the row last changed. Maintained by the joy_usage_set_updated_at trigger.';
+
+
+-- The message edit block (2026-11-24, spec section 31): a person edits and
+-- deletes their own chat messages. An edit or a delete is a new row of
+-- chat_room_messages, with a position of its own; no row is ever updated
+-- or deleted. chat_room_messages.kind says what a row is, edit or delete,
+-- and is null on a message. chat_room_messages.target_message_id is the
+-- message an edit or a delete is about, and is null on a message. message
+-- becomes nullable: an edit carries the new text's ciphertext and a delete
+-- carries none. chat_room_messages_edit_delete_check holds the three kinds
+-- of row: the two new columns are set together or not at all, and message
+-- is null on a delete and nowhere else. The two columns, the nullable
+-- message and the check are also inline in the CREATE TABLE above, for a
+-- fresh database; the index and the comments of the two columns are here
+-- only, after the columns exist on a live one. The index is on
+-- target_message_id, for the rows that have one: /list-messages and
+-- /list-chat-rooms look up the rows that name a message. No trigger and no
+-- counter of its own: an edit or a delete is an insert, so
+-- chat_room_messages_set_room_message_seq numbers its room as it does for
+-- a message. All idempotent: IF NOT EXISTS, a DROP NOT NULL that changes
+-- nothing on a nullable column, and a drop-and-add of the named check
+-- under its one name.
+
+ALTER TABLE chat_room_messages ADD COLUMN IF NOT EXISTS kind TEXT CHECK (kind IN ('edit', 'delete'));
+ALTER TABLE chat_room_messages ADD COLUMN IF NOT EXISTS target_message_id BYTEA CHECK (octet_length(target_message_id) = 32);
+ALTER TABLE chat_room_messages ALTER COLUMN message DROP NOT NULL;
+ALTER TABLE chat_room_messages DROP CONSTRAINT IF EXISTS chat_room_messages_edit_delete_check;
+ALTER TABLE chat_room_messages ADD CONSTRAINT chat_room_messages_edit_delete_check
+  CHECK ((kind IS NULL) = (target_message_id IS NULL) AND (message IS NULL) = (kind IS NOT DISTINCT FROM 'delete'));
+CREATE INDEX IF NOT EXISTS chat_room_messages_target_message_id_idx ON chat_room_messages (target_message_id) WHERE target_message_id IS NOT NULL;
+
+COMMENT ON COLUMN chat_room_messages.kind              IS 'What the row is (spec section 31): null on a message, edit on a row that gives a message a new text, delete on a row that takes a message away. Set at the insert, by /edit-message and /delete-message, and never changed.';
+COMMENT ON COLUMN chat_room_messages.target_message_id IS 'The message an edit or a delete is about (spec section 31): the message_id of a message of the same room, 32 raw bytes. Null on a message. Once a later row of the room names a message, /list-messages hands the earlier rows about it out without their ciphertext.';

@@ -149,7 +149,9 @@ export async function isMember(chatRoomId, anopodId, db = pool) {
  * Raises `anopodId`'s seen position in the room on `client` to
  * `position`, never above the room's newest message and never below
  * what the row holds, and returns what the row holds afterwards, as a
- * number; null when `anopodId` is not in the room.
+ * number; null when `anopodId` is not in the room. The room's newest
+ * message here is its newest row: since spec section 31 that can be an
+ * edit or a delete of a message.
  */
 export async function raiseSeenPosition(client, chatRoomId, anopodId, position) {
   const { rows } = await client.query(
@@ -308,49 +310,118 @@ export async function insertMessage(client, { messageId, chatRoomId, senderAnopo
 }
 
 /**
- * The room's messages after `afterPosition`, ascending, at most `limit`,
- * each in wire form: { messageId, position, senderAnopodId, message, createdAt }
- * with the ciphertext base64.
+ * The message `messageId` of the room, locked for the rest of the
+ * transaction on `client` (SELECT ... FOR UPDATE), or null (2026-11-24,
+ * spec section 31): { senderAnopodId, editTimeOver }. Only a message is
+ * found, a row with no kind: an edit and a delete are not. `editTimeOver`
+ * is true when the database's clock, the one that stamped the message's
+ * created_at, is more than `editMinutes` minutes past it. /edit-message
+ * and /delete-message lock the message before they look for a delete of
+ * it, so two requests about one message go one after the other.
  */
-export async function listMessages(chatRoomId, afterPosition, limit) {
-  const { rows } = await pool.query(
-    `SELECT message_id, position, sender_anopod_id, message, created_at
+export async function lockMessage(client, chatRoomId, messageId, editMinutes) {
+  const { rows } = await client.query(
+    `SELECT sender_anopod_id, now() > created_at + make_interval(mins => $3::int) AS edit_time_over
      FROM chat_room_messages
-     WHERE chat_room_id = $1 AND position > $2
-     ORDER BY position
-     LIMIT $3`,
-    [chatRoomId, afterPosition, limit],
+     WHERE message_id = $2 AND chat_room_id = $1 AND kind IS NULL
+     FOR UPDATE`,
+    [chatRoomId, messageId, editMinutes],
   );
-  return rows.map((row) => ({
-    messageId: toHex(row.message_id),
-    position: Number(row.position),
-    senderAnopodId: toHex(row.sender_anopod_id),
-    message: row.message.toString('base64'),
-    createdAt: row.created_at.toISOString(),
-  }));
+  return rows.length === 0 ? null : { senderAnopodId: rows[0].sender_anopod_id, editTimeOver: rows[0].edit_time_over };
+}
+
+/** True when a delete of the room names the message `messageId` (2026-11-24, spec section 31). */
+export async function messageDeleted(chatRoomId, messageId, db = pool) {
+  const { rows } = await db.query(
+    `SELECT EXISTS (SELECT 1 FROM chat_room_messages
+                     WHERE target_message_id = $2 AND chat_room_id = $1 AND kind = 'delete') AS deleted`,
+    [chatRoomId, messageId],
+  );
+  return rows[0].deleted;
 }
 
 /**
- * The room's newest messages below `beforePosition`, at most `limit`, in
+ * Writes an edit or a delete of a message on `client` and returns its
+ * position, as a number (2026-11-24, spec section 31). It is a row of its
+ * own: `kind` is 'edit' or 'delete', `targetMessageId` the message it is
+ * about, and `message` the new text's ciphertext for an edit and null for
+ * a delete. The message's own row is not changed.
+ */
+export async function insertMessageChange(
+  client,
+  { messageId, chatRoomId, senderAnopodId, kind, targetMessageId, message },
+) {
+  const { rows } = await client.query(
+    `INSERT INTO chat_room_messages (message_id, chat_room_id, sender_anopod_id, message, kind, target_message_id)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     RETURNING position`,
+    [messageId, chatRoomId, senderAnopodId, message, kind, targetMessageId],
+  );
+  return Number(rows[0].position);
+}
+
+/**
+ * The columns of a row of a room, read from chat_room_messages as `m`, and
+ * the wire form they make: { messageId, position, senderAnopodId, message,
+ * createdAt, kind, targetMessageId }. `kind` and `targetMessageId` are
+ * there since 2026-11-24 (spec section 31): `kind` is null on a message and
+ * 'edit' or 'delete' on a row about one, and `targetMessageId` is the
+ * message such a row is about, null on a message. `message` is the
+ * ciphertext base64, or null: a row goes out without it once a later row
+ * of the room names the same message (a message is named by its own id, an
+ * edit and a delete name their target), and a delete has none.
+ */
+const MESSAGE_ROW_COLUMNS = `m.message_id, m.position, m.sender_anopod_id, m.created_at, m.kind, m.target_message_id,
+            CASE WHEN EXISTS (SELECT 1 FROM chat_room_messages later
+                               WHERE later.target_message_id = COALESCE(m.target_message_id, m.message_id)
+                                 AND later.chat_room_id = m.chat_room_id
+                                 AND later.position > m.position)
+                 THEN NULL ELSE m.message END AS message`;
+
+function messageFromRow(row) {
+  return {
+    messageId: toHex(row.message_id),
+    position: Number(row.position),
+    senderAnopodId: toHex(row.sender_anopod_id),
+    message: row.message === null ? null : row.message.toString('base64'),
+    createdAt: row.created_at.toISOString(),
+    kind: row.kind,
+    targetMessageId: toHex(row.target_message_id),
+  };
+}
+
+/**
+ * The room's rows after `afterPosition`, ascending, at most `limit`, each
+ * in the wire form of messageFromRow: the messages and, since 2026-11-24
+ * (spec section 31), the edits and the deletes.
+ */
+export async function listMessages(chatRoomId, afterPosition, limit) {
+  const { rows } = await pool.query(
+    `SELECT ${MESSAGE_ROW_COLUMNS}
+     FROM chat_room_messages m
+     WHERE m.chat_room_id = $1 AND m.position > $2
+     ORDER BY m.position
+     LIMIT $3`,
+    [chatRoomId, afterPosition, limit],
+  );
+  return rows.map(messageFromRow);
+}
+
+/**
+ * The room's newest rows below `beforePosition`, at most `limit`, in
  * ascending order, each in the wire form of listMessages: how a room opens
  * at its newest messages and loads older ones.
  */
 export async function listMessagesBefore(chatRoomId, beforePosition, limit) {
   const { rows } = await pool.query(
-    `SELECT message_id, position, sender_anopod_id, message, created_at
-     FROM chat_room_messages
-     WHERE chat_room_id = $1 AND position < $2
-     ORDER BY position DESC
+    `SELECT ${MESSAGE_ROW_COLUMNS}
+     FROM chat_room_messages m
+     WHERE m.chat_room_id = $1 AND m.position < $2
+     ORDER BY m.position DESC
      LIMIT $3`,
     [chatRoomId, beforePosition, limit],
   );
-  return rows.reverse().map((row) => ({
-    messageId: toHex(row.message_id),
-    position: Number(row.position),
-    senderAnopodId: toHex(row.sender_anopod_id),
-    message: row.message.toString('base64'),
-    createdAt: row.created_at.toISOString(),
-  }));
+  return rows.reverse().map(messageFromRow);
 }
 
 // ---------------------------------------------------------------------------
@@ -379,6 +450,58 @@ function listingFromRow(row) {
     price: trimDecimal(row.price),
     status: row.status,
     owner: { anopodId: toHex(row.owner_anopod_id), username: row.owner_username },
+  };
+}
+
+/**
+ * The columns and the joins that make a room's `lastMessage` and
+ * `lastPosition`, for a statement that has the room's member row as `cm`,
+ * and the object they make (2026-11-24, spec section 31; until then
+ * `lastMessage` was the room's newest row). `lastMessage` is the room's
+ * newest message as it stands now, never an edit or a delete: { messageId,
+ * position, senderAnopodId, message, createdAt, editPosition, deleted },
+ * null for a room without a message. The first three and `createdAt` are
+ * the message's own. `message` is the ciphertext base64 of the newest edit
+ * when the message was edited, its own when it was not, and null when it
+ * was deleted. `editPosition` is the position of the newest edit, null for
+ * a message that was never edited; `deleted` is true when a delete names
+ * it. `last_position` is the highest position of any row of the room, null
+ * when it has none: listRoomsFor and listNewestMessagesFor hand it out as
+ * `lastPosition`.
+ */
+const LAST_MESSAGE_COLUMNS = `lm.message_id AS last_message_id, lm.position AS last_message_position,
+            lm.sender_anopod_id AS last_sender_anopod_id, lm.created_at AS last_created_at,
+            CASE WHEN ld.deleted THEN NULL ELSE COALESCE(le.message, lm.message) END AS last_message,
+            le.position AS last_edit_position, ld.deleted AS last_deleted, hp.position AS last_position`;
+
+const LAST_MESSAGE_JOINS = `LEFT JOIN LATERAL (SELECT max(any_row.position) AS position
+                          FROM chat_room_messages any_row
+                         WHERE any_row.chat_room_id = cm.chat_room_id) hp ON true
+     LEFT JOIN LATERAL (SELECT msg.message_id, msg.position, msg.sender_anopod_id, msg.message, msg.created_at
+                          FROM chat_room_messages msg
+                         WHERE msg.chat_room_id = cm.chat_room_id AND msg.kind IS NULL
+                         ORDER BY msg.position DESC
+                         LIMIT 1) lm ON true
+     LEFT JOIN LATERAL (SELECT edit.position, edit.message
+                          FROM chat_room_messages edit
+                         WHERE edit.target_message_id = lm.message_id
+                           AND edit.chat_room_id = cm.chat_room_id AND edit.kind = 'edit'
+                         ORDER BY edit.position DESC
+                         LIMIT 1) le ON true
+     LEFT JOIN LATERAL (SELECT EXISTS (SELECT 1 FROM chat_room_messages del
+                                        WHERE del.target_message_id = lm.message_id
+                                          AND del.chat_room_id = cm.chat_room_id AND del.kind = 'delete') AS deleted) ld ON true`;
+
+function lastMessageFromRow(row) {
+  if (row.last_message_id === null) return null;
+  return {
+    messageId: toHex(row.last_message_id),
+    position: Number(row.last_message_position),
+    senderAnopodId: toHex(row.last_sender_anopod_id),
+    message: row.last_message === null ? null : row.last_message.toString('base64'),
+    createdAt: row.last_created_at.toISOString(),
+    editPosition: row.last_edit_position === null ? null : Number(row.last_edit_position),
+    deleted: row.last_deleted,
   };
 }
 
@@ -433,8 +556,10 @@ export async function listChangeNumbersFor(anopodId) {
  * The rooms `anopodId` is a member of, newest first, each with the caller's
  * own wrapped key, the members (id, username and, since 2026-11-19,
  * `seenPosition`), the people invited who have not answered yet (oldest
- * first), the newest message in the wire form of listMessages (null when
- * the room has none) with its position as lastPosition (0 when none)
+ * first), the newest message as it stands now (lastMessageFromRow; null
+ * when the room has none; since 2026-11-24, spec section 31, never an edit
+ * or a delete) with the highest position of any row of the room as
+ * lastPosition (0 when none)
  * and, for a room about a listing
  * (chat_rooms.listing_id: a private room made with a listingId, or an old
  * marketplace room), its listing id and the listing as listingFromRow
@@ -452,9 +577,7 @@ export async function listRoomsFor(anopodId, chatRoomIds = null) {
   const { rows } = await pool.query(
     `SELECT r.chat_room_id, r.type, r.name, r.creator_anopod_id, r.created_at, h.hpke_key,
             r.listing_id, ${ROOM_LISTING_COLUMNS}, r.case_id, r.case_kind, rp.updated_at AS picture_at,
-            lm.message_id AS last_message_id, lm.position AS last_position,
-            lm.sender_anopod_id AS last_sender_anopod_id, lm.message AS last_message,
-            lm.created_at AS last_created_at,
+            ${LAST_MESSAGE_COLUMNS},
             (SELECT COALESCE(json_agg(json_build_object('anopodId', encode(m.anopod_id, 'hex'),
                                                          'username', ma.username,
                                                          'seenPosition', m.seen_position)
@@ -474,11 +597,7 @@ export async function listRoomsFor(anopodId, chatRoomIds = null) {
      LEFT JOIN listings l ON l.listing_id = r.listing_id
      LEFT JOIN anopods la ON la.anopod_id = l.anopod_id
      LEFT JOIN chat_room_pictures rp ON rp.chat_room_id = r.chat_room_id
-     LEFT JOIN LATERAL (SELECT msg.message_id, msg.position, msg.sender_anopod_id, msg.message, msg.created_at
-                          FROM chat_room_messages msg
-                         WHERE msg.chat_room_id = r.chat_room_id
-                         ORDER BY msg.position DESC
-                         LIMIT 1) lm ON true
+     ${LAST_MESSAGE_JOINS}
      WHERE cm.anopod_id = $1
        AND ($2::bytea[] IS NULL OR r.chat_room_id = ANY($2::bytea[]))
      ORDER BY r.created_at DESC, r.chat_room_id`,
@@ -497,16 +616,7 @@ export async function listRoomsFor(anopodId, chatRoomIds = null) {
     hpkeKey: toHex(row.hpke_key),
     members: row.members,
     invited: row.invited,
-    lastMessage:
-      row.last_message_id === null
-        ? null
-        : {
-            messageId: toHex(row.last_message_id),
-            position: Number(row.last_position),
-            senderAnopodId: toHex(row.last_sender_anopod_id),
-            message: row.last_message.toString('base64'),
-            createdAt: row.last_created_at.toISOString(),
-          },
+    lastMessage: lastMessageFromRow(row),
     lastPosition: row.last_position === null ? 0 : Number(row.last_position),
     createdAt: row.created_at.toISOString(),
   }));
@@ -516,35 +626,21 @@ export async function listRoomsFor(anopodId, chatRoomIds = null) {
  * The newest message of each of the given rooms (ids as Buffers) that
  * `anopodId` is a member of (2026-11-24, spec section 29): { chatRoomId,
  * lastMessage, lastPosition }, the three fields of listRoomsFor that a
- * message changes, in its forms. A room the pod is not in is left out.
+ * message changes, in its forms, and, since spec section 31, an edit and a
+ * delete too. A room the pod is not in is left out.
  */
 export async function listNewestMessagesFor(anopodId, chatRoomIds) {
   const { rows } = await pool.query(
     `SELECT cm.chat_room_id,
-            lm.message_id AS last_message_id, lm.position AS last_position,
-            lm.sender_anopod_id AS last_sender_anopod_id, lm.message AS last_message,
-            lm.created_at AS last_created_at
+            ${LAST_MESSAGE_COLUMNS}
      FROM chat_room_members cm
-     LEFT JOIN LATERAL (SELECT msg.message_id, msg.position, msg.sender_anopod_id, msg.message, msg.created_at
-                          FROM chat_room_messages msg
-                         WHERE msg.chat_room_id = cm.chat_room_id
-                         ORDER BY msg.position DESC
-                         LIMIT 1) lm ON true
+     ${LAST_MESSAGE_JOINS}
      WHERE cm.anopod_id = $1 AND cm.chat_room_id = ANY($2::bytea[])`,
     [anopodId, chatRoomIds],
   );
   return rows.map((row) => ({
     chatRoomId: toHex(row.chat_room_id),
-    lastMessage:
-      row.last_message_id === null
-        ? null
-        : {
-            messageId: toHex(row.last_message_id),
-            position: Number(row.last_position),
-            senderAnopodId: toHex(row.last_sender_anopod_id),
-            message: row.last_message.toString('base64'),
-            createdAt: row.last_created_at.toISOString(),
-          },
+    lastMessage: lastMessageFromRow(row),
     lastPosition: row.last_position === null ? 0 : Number(row.last_position),
   }));
 }

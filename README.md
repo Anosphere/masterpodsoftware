@@ -142,12 +142,14 @@ are base64 / base64url as the browser produces them.
 | `/approve-join`                 | setup   | The creator lets the requester in with the wrapped key                                   |
 | `/decline-join`                 | setup   | Drops the join request                                                                   |
 | `/leave-chat-room`              | setup   | Leaves a room; the creator cannot                                                        |
-| `/list-chat-rooms`              | setup   | The caller's rooms (members, each with how far they have read, invited, own wrapped key, newest message, the listing a room is about with its owner, the case a room is about with its kind, and `pictureAt`, when the room's picture was last set), open invites (each with its listing and its case too), join requests on its rooms; every answer with `seq` and `counts`, and with `since` in the request only what changed after that number: a room whole, or its newest message alone (2026-11-24, section 29) |
+| `/list-chat-rooms`              | setup   | The caller's rooms (members, each with how far they have read, invited, own wrapped key, newest message, the listing a room is about with its owner, the case a room is about with its kind, and `pictureAt`, when the room's picture was last set), open invites (each with its listing and its case too), join requests on its rooms; every answer with `seq` and `counts`, and with `since` in the request only what changed after that number: a room whole, or its newest message alone (2026-11-24, section 29); since section 31 the newest message is given as it stands now, with `editPosition` and `deleted`: an edited one with its newest text, a deleted one without text |
 | `/list-public-chat-rooms`       | setup   | Public rooms, the ones with the most members first; `search` narrows them by name (2026-11-22); each with `pictureAt`, when its picture was last set; paged |
 | `/set-chat-room-picture`        | setup   | The creator of a public room gives it a picture, or another in place of the one it has (2026-11-22, section 27): at most 320 pixels wide and high and 100,000 bytes |
 | `/get-chat-room-picture`        | setup   | A public room's picture, for any pod at this level: it is as public as the room's name   |
-| `/list-messages`                | setup   | A room's messages after a position, or the newest ones before a position, members only; with `seenSince` in the request also the members whose seen position rose after that number (2026-11-24, section 29) |
+| `/list-messages`                | setup   | A room's messages after a position, or the newest ones before a position, members only; with `seenSince` in the request also the members whose seen position rose after that number (2026-11-24, section 29); since section 31 the edits and the deletes of a message are rows among them, each row has `kind` and `targetMessageId`, and a row goes out without its ciphertext once a later row names the same message |
 | `/send-message`                 | setup   | Stores a ciphertext message, members only                                                |
+| `/edit-message`                 | setup   | A member gives a message of their own a new text, until 15 minutes after it was sent (2026-11-24, section 31): a new row that names the message, and no row is changed; off in a room about a listing, in an old marketplace room and in a room about an attestor case |
+| `/delete-message`               | setup   | A member deletes a message of their own, at any time (2026-11-24, section 31): a new row that names the message, with no ciphertext, and no row is removed; off in the same three kinds of room |
 | `/mark-messages-seen`           | setup   | Records how far the caller has read in a room, members only                              |
 | `/get-chat-public-keys`         | setup   | The chat public keys of up to 50 pods that completed setup                               |
 | `/list-stickers`                | setup   | The stickers of the wallet's chat (2026-11-23, section 28): every set in the order of the row, each with its stickers in their order, each sticker with its two-digit number and its tags; text only, no picture |
@@ -283,12 +285,12 @@ tables, and no route reads the counter itself.
 | `notifications`           | What the phone polls; read, never deleted; twenty-one kinds, the newest the four of the security alerts (2026-11-21) |
 | `security_images`         | Encrypted images of both buckets, each with the id of its bucket key; append-only |
 | `security_info`           | Encrypted texts of bucket two, each with the id of its bucket key; append-only |
-| `chat_rooms`              | Private, public and old marketplace rooms; `listing_id` when a room is about a listing, `case_id` and `case_kind` when it is about an attestor case; `message_seq` and `people_seq`, the counter's value at the room's last message and at its last other change (section 29) |
+| `chat_rooms`              | Private, public and old marketplace rooms; `listing_id` when a room is about a listing, `case_id` and `case_kind` when it is about an attestor case; `message_seq` and `people_seq`, the counter's value at the room's last message, or since section 31 edit or delete of one, and at its last other change (section 29) |
 | `chat_room_members`       | Who is in which room, and how far each has read; `seen_seq`, the counter's value when that last changed (section 29) |
 | `chat_hpke`               | Each member's wrapped room key                                         |
 | `chat_room_invites`       | Open invites, carrying the wrapped key; `change_seq`, the counter's value when the invite was written (section 29) |
 | `chat_room_join_requests` | Open join requests; `change_seq`, the counter's value when the request was written (section 29) |
-| `chat_room_messages`      | Ciphertext messages, numbered by `position`                            |
+| `chat_room_messages`      | Ciphertext messages, numbered by `position`; since section 31 also the edits and the deletes of a message, each a row of its own with `kind` and `target_message_id`, a delete without ciphertext; no row is ever changed or removed |
 | `chat_room_pictures`      | The picture of a public room (section 27): at most one per room, in the clear like the room's name, set by the room's creator |
 | `sticker_sets`            | The sets of stickers of the wallet's chat (section 28), each with its place in the row of sets; written by `npm run stickers` alone |
 | `stickers`                | One row per sticker: its set, its two-digit number, its place in the set and its picture, a WebP of at most 150,000 bytes; in the clear, the same for everybody |
@@ -411,7 +413,7 @@ src/
   appointments/      the appointments table's queries (section 16): who holds a live appointment as a moderator or an attestor, or as a pod that may stake for validator or masterPod; written only by scripts/appoint.js and scripts/revoke.js
   notifications/     /list-notifications, /mark-notifications-read; notify() for every feature
   security/          the three bucket routes
-  chat/              the sixteen chat routes
+  chat/              the eighteen chat routes
   stickers/          /list-stickers and GET /sticker-picture/:set/:number (section 28); the three sticker tables' queries, the reads of the routes and the reads and writes of scripts/stickers.js; sticker-rules.js, the form of a set's name and of a sticker's number and the limits of a picture and of a tag
   marketplace/       /create-listing, /close-listing, /list-listings
   anos-accounts/     /create-anos-account, /mark-anos-account-submitted, /list-anos-accounts, /store-first-key-blob, /get-anos-account
