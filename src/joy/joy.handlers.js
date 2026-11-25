@@ -34,6 +34,11 @@ export async function setJoyMemoryHandler(req, res) {
  *
  *   { "text": "..." }      a piece of Joy's answer, as she writes it
  *   { "searching": true }  Joy starts a web search (spec section 32)
+ *   { "drawing": true }    Joy starts on a picture (spec section 33)
+ *   { "picture": { "type", "data", "description" } }
+ *                          a picture that OpenAI made for her: its content
+ *                          type, its bytes as base64, and the description
+ *                          she wrote for it. One long line
  *   { "done": true, "stop": "end" | "length" | "refused", "memory": "<the file>" | null, "sources": [{ "title", "url" }] }
  *                          the last line of an answer that ended
  *   { "error": "<reason>" }  the last line of an answer that failed
@@ -44,20 +49,23 @@ export async function setJoyMemoryHandler(req, res) {
  * list when she cited none.
  *
  * When the wallet goes away before the end, the call to Anthropic is
- * stopped. The tokens and the web searches Anthropic counted are written
- * either way.
+ * stopped, and so is a request to OpenAI that is under way. The tokens
+ * and the web searches Anthropic counted, and a picture that OpenAI
+ * made, are written either way.
  */
 export async function askJoyHandler(req, res) {
   const prepared = await prepareAsk(req.anopod, req.body);
   if (!prepared.ok) return answer(res, prepared);
-  const { history, memory, day, search } = prepared.body;
+  const { history, memory, day, search, picture } = prepared.body;
 
   let stream = null; // the request to Anthropic that is under way
+  const leaving = new AbortController(); // stops a request to OpenAI that is under way
   let gone = false; // the wallet's connection closed before the answer ended
   let ended = false;
   res.on('close', () => {
     if (ended) return;
     gone = true;
+    leaving.abort();
     if (stream !== null) stream.abort();
   });
 
@@ -68,15 +76,20 @@ export async function askJoyHandler(req, res) {
   };
   const beat = setInterval(() => write('\n'), BEAT_MS);
 
-  const tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, searches: 0 };
+  const tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, searches: 0, pictures: 0 };
   try {
     const out = await askAnthropic({
       history,
       memory,
       search,
+      picture,
+      anopodId: req.anopod.anopodId,
       tokens,
+      leaving: leaving.signal,
       onText: (text) => write(`${JSON.stringify({ text })}\n`),
       onSearch: () => write(`${JSON.stringify({ searching: true })}\n`),
+      onDrawing: () => write(`${JSON.stringify({ drawing: true })}\n`),
+      onPicture: (made) => write(`${JSON.stringify({ picture: made })}\n`),
       onStream: (started) => {
         stream = started;
         if (gone) started.abort();
@@ -98,6 +111,6 @@ export async function askJoyHandler(req, res) {
   try {
     await recordTokens(req.anopod, day, tokens);
   } catch (err) {
-    console.error('joy: the tokens and the web searches of a message were not written:', err.message);
+    console.error('joy: the tokens, the web searches and the pictures of a message were not written:', err.message);
   }
 }

@@ -1810,10 +1810,16 @@ Keys live in RAM and die with the tab. Nothing secret is stored on the phone.
 | `JOY_DAILY_MESSAGES` | `300` | How many messages one pod may send Joy in one day (UTC) |
 | `JOY_MAX_SEARCHES` | `3` | The most web searches for one message to Joy; `0` switches web search off (section 32, 2026-11-24) |
 | `JOY_DAILY_SEARCHES` | `100` | From how many web searches in one day (UTC) a pod's further messages go out without web search; `0` switches web search off |
+| `OPENAI_API_KEY` | none: Joy makes no picture | OpenAI's API key (section 33, 2026-11-25) |
+| `JOY_PICTURE_MODEL` | `gpt-image-2.6-flare` | OpenAI's image model |
+| `JOY_PICTURE_QUALITY` | `low` | The quality of a picture: `low`, `medium` or `high` |
+| `JOY_PICTURE_SIZE` | `1024x1024` | The width and the height of a picture, in pixels |
+| `JOY_PICTURE_FORMAT` | `jpeg` | The file format of a picture: `jpeg`, `png` or `webp` |
+| `JOY_DAILY_PICTURES` | `30` | From how many pictures in one day (UTC) a pod's further messages go out without the picture tool; `0` switches pictures off |
 
 All have defaults, so the existing `.env` keeps working. The JSON body
-limit is computed from the last two: `MAX_IMAGES_PER_REQUEST *
-MAX_IMAGE_BYTES * 1.4 + 1 MB`.
+limit is computed from `MAX_IMAGES_PER_REQUEST` and `MAX_IMAGE_BYTES`:
+`MAX_IMAGES_PER_REQUEST * MAX_IMAGE_BYTES * 1.4 + 1 MB`.
 
 `WEB_ORIGIN` became a list and `RECOVERY_POD_URL_BASE` was added in section
 12.7 (2026-10-26).
@@ -1829,6 +1835,10 @@ default: without it Joy is off and this server runs as before (30.8).
 (Since 2026-11-24, section 32, the two after those five are the settings
 of Joy's web search. Both have a default, so no line has to be added to
 `.env`, and 0 in either switches web search off, 32.6.)
+(Since 2026-11-25, section 33, the six after those two are the settings
+of Joy's pictures. The first, OpenAI's key, has no default: without it
+Joy makes no picture and this server runs as before. The other five have
+a default, and 0 in the last switches pictures off, 33.7.)
 
 ## 9. Genesis
 
@@ -12057,7 +12067,8 @@ Kept, in the database:
 - For each pod and each day, the number of messages sent to Joy and the
   tokens Anthropic counted for them (`joy_usage`). No text. (Since
   2026-11-24, section 32, also the number of web searches that
-  Anthropic made for them, 32.4.)
+  Anthropic made for them, 32.4.) (Since 2026-11-25, section 33, also
+  the number of pictures that OpenAI made for them, 33.5.)
 
 Passing through, kept nowhere:
 
@@ -12068,11 +12079,19 @@ Passing through, kept nowhere:
   pages of a web search pass through too: from Anthropic, back to it
   when a message takes a further request, and the cited pages' titles
   and addresses on to the wallet. No query, no page and no source is
-  written into a table or a log, 32.4.)
+  written into a table or a log, 32.4.) (Since 2026-11-25, section 33, a
+  picture passes through as well: the description that Joy wrote for
+  it, on its way to OpenAI, and the picture itself, from OpenAI on to
+  the wallet. No picture and no description is written into a table or
+  a log, 33.5.)
 
 So this is the one place where something a pod keeps private reaches
 this server readable. It has to: Anthropic's model reads the text.
-The wallet says so to the member on the Joy tab (its spec).
+The wallet says so to the member on the Joy tab (its spec). (Since
+2026-11-25, section 33, a part of it can go on to a second company:
+for a picture, the description that Joy wrote from the conversation
+goes to OpenAI, with a hash of the pod's id. The conversation and the
+memory file do not, 33.3.)
 
 ### 30.3 Tables
 
@@ -12096,7 +12115,8 @@ The wallet says so to the member on the Joy tab (its spec).
 | `cache_read_tokens` | `BIGINT` | `usage.cache_read_input_tokens`, summed |
 | `cache_write_tokens` | `BIGINT` | `usage.cache_creation_input_tokens`, summed |
 | `created_at`, `updated_at` | `TIMESTAMPTZ` | As every table |
-| `searches` | `INTEGER` | Since 2026-11-24, section 32: the web searches Anthropic made for the pod's messages of that day, `usage.server_tool_use.web_search_requests`, summed; 0 or more. The table's last column (32.4) |
+| `searches` | `INTEGER` | Since 2026-11-24, section 32: the web searches Anthropic made for the pod's messages of that day, `usage.server_tool_use.web_search_requests`, summed; 0 or more. The table's last column (32.4) until section 33 |
+| `pictures` | `INTEGER` | Since 2026-11-25, section 33: the pictures OpenAI made for the pod's messages of that day; 0 or more. The table's last column (33.5) |
 
 Both have the `set_updated_at` trigger and a `COMMENT ON` for the table
 and every column. No foreign keys, as everywhere.
@@ -12189,6 +12209,14 @@ pages Joy cited, an empty list when she cited none: `{ "done": true,
 Anthropic counted are added to the pod's row of the day with the tokens.
 32.3 and 32.4 have all three.)
 
+(Since 2026-11-25, section 33, the stream has two more kinds of line:
+`{ "drawing": true }`, written each time Joy starts a call of her
+picture tool, and `{ "picture": { "type", "data", "description" } }`,
+one long line with a picture that OpenAI made for her. When the wallet's
+connection closes, a request to OpenAI that is under way is stopped too.
+A picture that OpenAI made is added to the pod's row of the day with the
+tokens. 33.4 and 33.5.)
+
 ### 30.5 The request to Anthropic
 
 Through Anthropic's own package, `@anthropic-ai/sdk` (1.14.0 at the
@@ -12211,6 +12239,10 @@ tool, `{ type: "web_search_20250305", name: "web_search", max_uses:
 JOY_MAX_SEARCHES }`, after Joy's two. It is left out when web search is
 switched off or the pod has used its searches of the day, and then one
 sentence in the second system part, after the date, tells Joy so. 32.2.)
+(Since 2026-11-25, section 33, `tools` also holds Joy's third tool,
+`make_picture`, as its last entry. It is left out when pictures are
+switched off or the pod has made its pictures of the day, and then one
+more sentence in the second system part tells Joy so. 33.2.)
 
 The model's thinking is left as the model has it (adaptive, on by
 default) and is not shown. No `temperature`, `top_p` or `top_k` is sent:
@@ -12241,13 +12273,20 @@ they were through all rounds of one message. Text that is written after
 a round begins a new paragraph in the stream. (Since 2026-11-24, section
 32, a request also follows each pause of a web search, inside the same
 four, and the first text after a web search begins a new paragraph too.
-32.2 and 32.3.)
+32.2 and 32.3.) (Since 2026-11-25, section 33, a call of `make_picture`
+is such a round too, so a picture takes two of the four. That tool's
+outcome does not come at once: this server sends one request to OpenAI
+between the two requests to Anthropic, and waits up to 150 seconds for
+its answer. 33.2 and 33.3.)
 
 A request is given up when Anthropic sends nothing for 120 seconds
 while it is under way. The package's own time limit does not end an
 answer that stops in the middle while the connection stays open (tried,
 30.11), and the empty lines of 30.4 keep the wallet's side waiting, so
-without this an answer that stalls would never end.
+without this an answer that stalls would never end. (Since 2026-11-25,
+section 33: this watch runs while a request to Anthropic is under way,
+not between two of them, which is where a picture is made. The request
+to OpenAI has a time limit of its own, 33.3.)
 
 How a request's end is read (`stop_reason`): `refusal` ends with `stop:
 "refused"`; `max_tokens` ends with `stop: "length"`; in both, tools the
@@ -12288,6 +12327,11 @@ of files and makes the model look into the folder before it answers.
 Joy has one file, and it is in every request already, so two small tools
 of our own are the shorter way.
 
+(Since 2026-11-25, section 33, Joy has a third tool of this server's
+own, `make_picture`, which changes nothing in the memory file. It is in
+`src/joy/joy.pictures.js`, without `eager_input_streaming`, and its
+outcome is a few words too. 33.2.)
+
 ### 30.7 The shared memory file
 
 `joy/shared-memory.md`, at the repository's root: who Joy is, how she
@@ -12306,7 +12350,11 @@ she never asks for a passkey, recovery details, a key or a password.
 (Since 2026-11-24, section 32, the file no longer says that she cannot
 look anything up. A new part, "Looking things up", tells her when to
 search the web and when not, and she is told not to search the web for
-how the wallet works. The file has 33 lines now. 32.5.)
+how the wallet works. The file has 33 lines now. 32.5.) (Since
+2026-11-25, section 33, a second new part, "Making pictures", stands
+after "Looking things up". It tells her that she can have a picture
+made and how. She still cannot see one. The file has 43 lines now.
+33.6.)
 
 A shortcut that fits a file of about twenty lines: a change to it is a
 commit and this server's update on the three servers. When the file
@@ -12325,6 +12373,8 @@ can be changed without an update. That is not built.
 
 (Since 2026-11-24, section 32, there are two more, `JOY_MAX_SEARCHES`
 with the default 3 and `JOY_DAILY_SEARCHES` with the default 100. 32.6.)
+(Since 2026-11-25, section 33, there are six more, for her pictures:
+`OPENAI_API_KEY`, which has no default, and five that have one. 33.7.)
 
 This server boots and runs without any of them. Without the key,
 `/ask-joy` answers `503 joy is off`, nothing is sent to Anthropic and
@@ -12374,7 +12424,9 @@ Left as it is:
 - Joy cannot look anything up on the internet, and takes no pictures or
   files. (Since 2026-11-24, section 32, she can search the web. She
   still takes no pictures or files, and she cannot open a link that a
-  member pastes.)
+  member pastes.) (Since 2026-11-25, section 33, she can have a picture
+  made. She still takes none: she sees no picture, not even one she
+  made.)
 - She knows nothing of the wallet. The shared memory file tells her to
   say so.
 - The memory file is the last one written. A member who writes to Joy
@@ -12385,7 +12437,8 @@ Left as it is:
   last line only.
 - Nothing reads `joy_usage` but the daily limit. A look at the numbers
   is a psql line. (Since 2026-11-24, section 32, the daily number of
-  web searches is read from it too, 32.4.)
+  web searches is read from it too, 32.4.) (Since 2026-11-25, section
+  33, the daily number of pictures as well, 33.5.)
 
 ### 30.11 Notes from the build
 
@@ -13390,7 +13443,8 @@ with a message when it sends a paused answer back, or when its last
 message holds nothing but the outcomes of Joy's own tools. Joy decides
 when to search. Anthropic runs the search and hands Joy the pages inside
 the same request. Nothing else is set on the entry: no location, and no
-list of sites.
+list of sites. (Since 2026-11-25, section 33, Joy's third tool,
+`make_picture`, stands after this entry when pictures are on, 33.2.)
 
 **When the tool is left out.** Whether a message may search is one of
 three, decided in `src/joy/joy.service.js` (`searchFor`) and handed to
@@ -13418,6 +13472,12 @@ Such a message is answered and counted like any other. Nothing is
 refused, and the wallet is told nothing: its last line has an empty list
 of sources, as every answer without a search has.
 
+(Since 2026-11-25, section 33: without the web search tool, `tools` is
+Joy's two and, when pictures are on, `make_picture`. And a second
+sentence of the same kind can stand in the second system part, for a
+request without `make_picture`. It stands after the one for the search,
+as a paragraph of its own. 33.2.)
+
 **The same tools in every request of one message.** `tools` is built
 once for a message. Anthropic refuses a request that goes on with a web
 search when the web search tool is no longer in it.
@@ -13438,7 +13498,9 @@ loop of 30.5 does what Anthropic asks for there, with no change: the
 answer goes back as it came, followed by one message that holds nothing
 but the outcomes of her tools. Anthropic runs the search at the start of
 the next request, whose answer begins with the pages (a
-`web_search_tool_result` block).
+`web_search_tool_result` block). (Since 2026-11-25, section 33,
+`make_picture` is one of her own tools in this sense. The picture is
+then made before the search runs. 33.2.)
 
 **A search that fails** is no failure of the request. Inside a `200`,
 the block that would hold the pages holds one object with an
@@ -13504,6 +13566,9 @@ A wallet of before this section passes both additions over: a line it
 does not know, and a field of the last line it does not read (tried,
 32.10).
 
+(Since 2026-11-25, section 33, the stream has two more kinds of line,
+`{ "drawing": true }` and `{ "picture": { … } }`, 33.4.)
+
 ### 32.4 What this server keeps
 
 One column on `joy_usage` (30.3), the table's last:
@@ -13519,7 +13584,9 @@ Joy search block", which adds it with `ALTER TABLE joy_usage ADD COLUMN
 IF NOT EXISTS` to a database that has the table, and holds the column's
 `COMMENT ON`. The column is the table's last on both ways. A row that
 was written before the column holds 0. The file's opening comment names
-the new block among the idempotent ALTERs.
+the new block among the idempotent ALTERs. (Since 2026-11-25, section
+33, the table's last column is `pictures`, after `searches`, and the
+file's last block is "The Joy picture block", 33.5.)
 
 How it is counted. Each answer of Anthropic's names its searches in
 `usage.server_tool_use.web_search_requests`. They are added up over the
@@ -13538,7 +13605,9 @@ message is `used` (32.2). The number is read before the message's own
 searches, so a pod can end a day over it: by up to 2 with the defaults
 (a message that begins at 99 can make 3), and by more only when several
 messages of one pod are under way at the same instant. A new day, by the
-clock of UTC, is a new row.
+clock of UTC, is a new row. (Since 2026-11-25, section 33, the same
+statement hands back the row's `pictures` too, and the statement that
+writes the tokens and the searches also writes the pictures, 33.5.)
 
 Nothing else is kept. No search query, no page and no source is written
 into a table or into the log. The pages a search found pass through this
@@ -13588,6 +13657,11 @@ web tells how this wallet works."
 
 The file's words are the plan's (its 3.5), word for word. The two
 sentences for a request without the tool are in 32.2.
+
+(Since 2026-11-25, section 33, a further part, "Making pictures", stands
+between "Looking things up" and "What you cannot do yet". The point on
+how the wallet keeps a chat has a like point there, for an earlier
+answer that had a picture. 33.6.)
 
 ### 32.6 Environment variables
 
@@ -14003,3 +14077,927 @@ the six is a line of code, a log text; no other line of code changed.
   its sha256 begins fe4676b1, where it began 05bed35e. No deploy line
   had been handed with the old hash. One commit carries the build and
   this: the same ten files, by the same commit line.
+
+## 33. Joy has pictures made (2026-11-25)
+
+Design settled 2026-11-25 in a planning chat, by a trial of the Download
+button on simulated phones and by one real call that the user ran on
+prod1 that day (the plan is
+`~/Desktop/Z-TestNet/forclaude/joy-pictures-plan-1.md`, FINAL,
+2026-11-25, on the user's word "Final"; what the real call printed and
+the four pictures it made are kept beside it, in
+`joy-pictures-plan-1-tools/real-call/`). What it is: a member asks Joy,
+the wallet's AI of section 30, for a picture. Joy does not draw. She
+writes a description, and a model of the company OpenAI makes the
+picture from it. The user: "I suppose my server can just route image
+creation request to chat gpt." Joy gets a third tool of this server's
+own, `make_picture`. When she calls it, this server sends one request to
+OpenAI's Image API, hands the picture on to the wallet as a line of the
+stream of `/ask-joy`, and tells Joy what came of it, so that she can say
+a sentence with it. Two steps in order: this server (this section, step
+1 of the plan: the tool and how a call is carried out, the request to
+OpenAI, two lines in the stream, one column and six settings) and the
+wallet (its spec, step 2: the words while a picture is made, the picture
+in an answer and in the kept chat, the Download button, and a note in
+front of an earlier answer that had a picture). The plan deploys both
+after the wallet's step, the wallet first, and puts OpenAI's key into
+the three servers last (33.1). So this step ends with its commit and is
+not deployed by itself. Inside this server's own deploy the order
+matters: the schema file goes onto the database before the new code runs
+(33.11). One column, six env variables, one new file of code and new
+words in `joy/shared-memory.md`. No table, no route and no npm package:
+the request to OpenAI is Node's own `fetch`. The validators, the
+keyholders, the signing servers, the doormen and the wallet's own server
+program are not touched. Nothing above this section changes except the
+items in 33.9.
+
+### 33.1 The rules
+
+Decided by the user:
+
+- Joy gets pictures made by OpenAI, planned as a piece of its own. The
+  user: "That could be fun, and it doesn't sound crazy expensive. People
+  could download the images/ photos they make."
+- The mechanism of this section. The user: "Well, I like your 4", to the
+  message that told it. The request that the wallet sends keeps its
+  form, so a later message carries an earlier answer as words alone.
+- OpenAI's model `gpt-image-2.6-flare`, 1024 by 1024 pixels, JPEG, each
+  of them a setting. The quality is low at the start, about 2.5 cents a
+  picture. The user, after looking at the four pictures of the real
+  call: "Let's start with low."
+- One picture for one message, and 30 pictures a day for one pod. The
+  user: "I would but the limit at 30 images per day right now."
+- OpenAI gets a SHA-256 hash of the pod's id as `safety_identifier`,
+  never the id itself.
+- What a member sees, which is the wallet's part: "Joy is making a
+  picture…" while one is made, then the picture in Joy's answer with a
+  button under it, which is named Download and never Save, and a refusal
+  in Joy's own words with no red line.
+
+The plan's own points (its section 4), each put to the user to object
+to; none was. As far as they are this server's:
+
+- The wallet's note. For an earlier answer that had a picture, the
+  wallet sends a line in square brackets with Joy's description in front
+  of her words (its spec). So this server gets no new field, and builds
+  no call of Joy's again from one. The real call tried whether Joy then
+  still calls her tool: on "Make the hat red." she did, in four of four
+  tries.
+- Past the 30 it is Joy who says so, in her own words. This server
+  refuses nothing: the message is answered, only the tool is away.
+- A picture is counted when OpenAI made it. A refused one and a failed
+  one are not.
+- Joy writes the description in the language she chooses.
+- The key goes in last. Both steps can be deployed before it: without
+  the key no picture is made, and Joy says that pictures are switched
+  off. With the key in and a wallet of before the wallet's step, Joy
+  would talk about a picture and none would show (tried, 33.11).
+- Nothing is built for members under 18. OpenAI asks more of a service
+  that serves them (its page "Under-18 guidance").
+- OpenAI's safety check stays at its default: the request has no
+  `moderation` field.
+- Four requests to Anthropic for one message stay the limit, and a
+  picture takes two of them.
+- OpenAI's own JPEG stays as it comes: the request has no
+  `output_compression`. In the real call the picture with it was the
+  heaviest of the four.
+- The time limit for OpenAI is 150 seconds. A picture took 8 to 9
+  seconds in the real call; OpenAI's page names two minutes as the
+  longest case.
+- Two sentences of what Joy is told were shortened after the real call
+  (33.6). They have not been in a real call.
+
+### 33.2 The request to Anthropic
+
+The request of 30.5 and 32.2, with these things new.
+
+**The tool.** `tools` holds one entry more, its last:
+
+```
+{ "name": "make_picture",
+  "description": "Make one picture for this member and show it in the chat. …",
+  "input_schema": { "type": "object",
+    "properties": { "description": { "type": "string",
+      "description": "The whole picture in words, as one paragraph of at most 1000 characters." } },
+    "required": ["description"] } }
+```
+
+So the order is `remember`, `update_memory`, `web_search`,
+`make_picture`: the order the real call sent. The tool's words are the
+plan's (its 3.6), word for word, and stand in `src/joy/joy.pictures.js`
+(`MAKE_PICTURE_TOOL`). In short: call it when a member asks for a
+picture, a drawing, an illustration or the like, or asks for a change of
+one; describe the whole picture, since the picture service knows nothing
+of the chat; for a change, write the whole description again; put
+nothing from the memory file into it unless the member asks for it; one
+call for each message. The entry has no `eager_input_streaming` (30.6):
+the plan's tool has none, and the real call sent it so. Joy decides when
+to call it.
+
+**When the tool is left out.** Whether a message may have a picture made
+is one of three, decided in `src/joy/joy.service.js` (`pictureFor`) and
+handed to `src/joy/joy.anthropic.js` as `picture`, as `search` is
+(32.2):
+
+| `picture` | When | The request |
+| --------- | ---- | ----------- |
+| `off` | this server holds no `OPENAI_API_KEY`, or `JOY_DAILY_PICTURES` is 0 | without the tool, with the first sentence below |
+| `used` | the pod's row of the day holds `JOY_DAILY_PICTURES` pictures or more (33.5) | without the tool, with the second sentence below |
+| `on` | otherwise | with the tool |
+
+The switch is looked at first. Without the tool, one sentence stands in
+the second system part, as a paragraph of its own after the date, after
+the sentence of 32.2 when that one stands there too, and before the
+sentences on the memory file:
+
+- For the switch: "Making pictures is switched off right now, so you
+  cannot make one. Say so if the member asks you for a picture."
+- For the daily number: "This member has made the pictures of today, so
+  you cannot make one for them until the day ends, by the clock of UTC.
+  Say so if they ask you for a picture."
+
+The shared memory file, which says that she can make a picture, is in
+such a request as in every other (33.6): the sentence is what tells her
+that she cannot right now. Such a message is answered and counted like
+any other. Nothing is refused, and the wallet is told nothing. So on a
+server without the key, which is every server between this step's deploy
+and the key (33.1), every request holds the sentence for the switch.
+
+Should the model call `make_picture` in a request that does not hold it,
+the call is answered as any call of a tool that is not there: "there is
+no tool named make_picture", as an error (30.6). Nothing goes to OpenAI
+and no line is written for it.
+
+**How a call is carried out.** In the loop of 30.5. When a request to
+Anthropic has ended with `stop_reason: "tool_use"`, the calls of her own
+tools in that answer are carried out one after the other, in the order
+they stand in it. A call of `make_picture` is carried out by
+`makePicture()` of `src/joy/joy.pictures.js`, which checks the
+description and sends the one request to OpenAI (33.3). The loop waits
+for it. Then every outcome goes into ONE `user` message of tool results,
+in the order of the calls, a memory tool's and the picture's alike, and
+the next request to Anthropic brings Joy's sentence. So a picture takes
+two of the four requests of one message. A picture that OpenAI made is
+handed to the wallet at once, before that next request (33.4), and
+counted (33.5).
+
+**One request to OpenAI for one message.** It is counted across the
+requests that one message takes. Once a request has gone to OpenAI for a
+message, whatever came of it, a further call of `make_picture` in that
+message is answered "one picture for each message: this one was not
+made", and nothing goes to OpenAI for it: a second call in the same
+answer, and a call in a later answer. A call that was answered without a
+request to OpenAI, because its description was empty or too long, does
+not use the message's one request up: Joy may call again, and that call
+is carried out.
+
+**The description.** The spaces and line breaks around it are taken off.
+One that is empty then, or that is no text at all, is answered "the
+description is empty". One of more than 1,000 characters, as JavaScript
+counts them, is answered "a description is at most 1000 characters".
+Both without a request to OpenAI.
+
+**What Joy is told**, as the content of the call's `tool_result`:
+
+| Outcome | When | `is_error` |
+| ------- | ---- | ---------- |
+| `made` | OpenAI made the picture | no |
+| `refused: the picture service does not make this picture` | OpenAI's safety check refused the description | yes |
+| `failed: the picture could not be made right now` | anything else went wrong (33.3) | yes |
+| `one picture for each message: this one was not made` | a request has gone to OpenAI for this message already | yes |
+| `the description is empty` | see above | yes |
+| `a description is at most 1000 characters` | see above | yes |
+
+Joy is not told why a picture was refused or why one failed. For a
+refusal that is OpenAI's own advice, and a failure's reason is in this
+server's log (33.3).
+
+**The rest of 30.5 and 32.2 holds.** The same `tools` and the same
+system parts stand in every request of one message. A search and
+`make_picture` in one answer work in both forms that such an answer can
+have: a search that Anthropic ran before her call, with its pages in the
+answer; and a search that Anthropic holds back as it does for `remember`
+(32.2), where the picture is made first and the search runs at the start
+of the next request. An answer that is refused or cut off at the
+model's limit can end in the middle of the call's input, so its call is
+not carried out. The fourth request is the last: a call in its answer is
+still carried out, and the answer ends there, with the picture and no
+sentence after it.
+
+**No watch on silence between two requests.** The watch of 30.5 runs
+while a request to Anthropic is under way. A picture is made between two
+of them, where nothing watches but the request's own time limit (33.3).
+The empty lines of 30.4 go out all the while.
+
+### 33.3 The request to OpenAI
+
+One request for one picture, in `src/joy/joy.pictures.js` (`askOpenAI`),
+with Node's own `fetch`, as the call to the email company is made
+(25.6):
+
+```
+POST https://api.openai.com/v1/images/generations
+Authorization: Bearer <OPENAI_API_KEY>
+Content-Type: application/json
+
+{ "model": "gpt-image-2.6-flare", "prompt": "<Joy's description>",
+  "size": "1024x1024", "quality": "low", "output_format": "jpeg",
+  "n": 1, "safety_identifier": "<64 hex characters>" }
+```
+
+- `model`, `quality`, `size` and `output_format` are the four settings
+  of 33.7. `n` is always 1.
+- `prompt` is the description that Joy wrote, without the spaces around
+  it, and nothing else.
+- `safety_identifier` is the SHA-256 hash of the pod's id, taken over
+  its 32 raw bytes, in hex. OpenAI asks for a stable identifier of the
+  end user that says nothing about the person; with it OpenAI can stop
+  one member in the place of the whole account.
+- What leaves for OpenAI is these seven fields and the key. Not the
+  conversation, not the memory file, not the pod's id and not the
+  username.
+- Nothing else is set: no `moderation`, no `output_compression`, no
+  `background`, no `user`. The address is a constant of the code. A
+  redirect is not followed.
+- The request is sent once. This server never sends it a second time,
+  whatever comes back.
+- The time limit is 150 seconds, for the whole answer, its body
+  included. When it runs out the request is closed here.
+- When the wallet's connection closes, the request is stopped: the
+  handler of `/ask-joy` holds an `AbortController` for it, beside the
+  stream to Anthropic that it stops already (30.4). No further request
+  goes to Anthropic then, and nothing is written into the log.
+
+What comes back:
+
+| OpenAI answers | Joy is told | What else |
+| -------------- | ----------- | --------- |
+| a status of 200 to 299 with a picture in it | `made` | the picture's line goes into the stream (33.4), and the count goes up by one (33.5) |
+| the status 400 with `error.code` `moderation_blocked` | `refused: …` | nothing is counted, and nothing is written into the log |
+| anything else | `failed: …` | nothing is counted, and one line is written into the log |
+
+"Anything else" is: a key that OpenAI refuses (401), an organization
+that is not verified (403), no credit, a spend limit or too many
+requests in a minute (429 with `credit_balance_exhausted`,
+`organization_spend_limit_exceeded`, `project_spend_limit_exceeded`,
+`organization_usage_limit_exceeded` or `rate_limit_exceeded`), a request
+that OpenAI does not take (400 with another code, such as a size it does
+not make), a failure at OpenAI (500 and above), a redirect, a connection
+that fails or is cut, no answer in 150 seconds, and an answer with no
+picture in it.
+
+**What is taken for a picture.** The answer's `data[0].b64_json` is
+decoded. Its bytes must begin as a JPEG, a PNG or a WebP file does and
+name a width and a height: `imageSize` of `src/util/images.js`, the
+reader of a picture's header that looks into a selfie (section 11). The
+type that is handed on is the one of the bytes, not the one that was
+asked for, and the bytes are encoded again, as plain base64 with its
+padding. OpenAI's count of tokens (`usage`) is not read.
+
+**The log's line** for a failure begins `joy picture failed:` and holds
+one of:
+
+- `status <n> <name>`: the status and OpenAI's own `error.code`, such as
+  `status 401 invalid_api_key` or `status 429
+  credit_balance_exhausted`; where OpenAI gives no code, its
+  `error.type`, such as `status 403 invalid_request_error`. The name is
+  cut at 60 characters.
+- `status <n>`: an answer that is no JSON, or that names neither.
+- `status 200 with no picture in the answer`.
+- `no answer in 150 seconds`.
+- The words of `fetch` for a connection that failed, with Node's code
+  for it, such as `fetch failed UND_ERR_SOCKET`.
+
+Never the key and never the description. Never OpenAI's own message
+either: for a refused key it holds a part of the key.
+
+### 33.4 The stream of `/ask-joy`
+
+The request is the one of 30.4, `{ messages, memory }`. Nothing in it
+changes, and the checks before the stream are the six of 30.4. The
+answer is the stream of 30.4 and 32.3 with two more kinds of line:
+
+```
+{ "drawing": true }                     Joy starts a call of make_picture
+{ "picture": { "type": "image/jpeg", "data": "<base64>",
+               "description": "<Joy's description>" } }
+                                        a picture that OpenAI made
+```
+
+- `drawing` is written when the block of her call begins in Anthropic's
+  stream (`content_block_start` of a `tool_use` block named
+  `make_picture`): before she has written the description, and before
+  OpenAI is asked. One line for each call that she starts, also for one
+  that brings no picture: a refused one, a failed one, a second call, a
+  description that is empty or too long, an answer that is cut off in
+  the middle of the call. The line says that she asked, not that a
+  picture comes. So a `drawing` line can stand with no `picture` line
+  after it, and what ends the wait then is her next words or the
+  answer's last line.
+- `picture` is ONE line, written when OpenAI has answered and before
+  Joy's sentence is asked of Anthropic. `type` is `image/jpeg`,
+  `image/png` or `image/webp`. `data` is the picture's bytes as base64.
+  `description` is the description as it went to OpenAI. The three stand
+  in that order, and the line holds nothing else. An answer has one such
+  line at most.
+- The line is long: about four thirds of the file. The real picture at
+  low quality, 158,249 bytes, makes a line of 211,165 characters. The
+  four pictures of the real call, 158 to 219 KB as files, make 210 to
+  290 KB. This server sets no ceiling: a picture of 1.5 MB made one line
+  of 2 MB (tried, 33.11).
+- The picture is in no other line. The last line is the one of 32.3,
+  unchanged.
+- The order in an answer with a picture: her words before the call, if
+  she wrote any (in the real call she called at once); `drawing`;
+  `picture`; then her sentence, which begins a new paragraph when words
+  stood before it (30.5).
+- When the answer fails after the picture, the picture's line has gone
+  out already, and the last line is the `error` line.
+
+A wallet of before this section passes both lines over, the long one
+too (tried, 33.11).
+
+### 33.5 What this server keeps
+
+One column on `joy_usage` (30.3), the table's last:
+
+| Column | Type | Notes |
+| ------ | ---- | ----- |
+| `pictures` | `INTEGER` | Not null, default 0, 0 or more. The pictures OpenAI made for the pod's messages of that day |
+
+`db/schema.sql` has it in two places, as `searches` has (32.4): inline
+in the `CREATE TABLE` of `joy_usage`, after `searches`, for a database
+built from nothing; and in a new block, the last thing in the file, "The
+Joy picture block", which adds it with `ALTER TABLE joy_usage ADD COLUMN
+IF NOT EXISTS` to a database that has the table, and holds the column's
+`COMMENT ON`. The column is the table's last on both ways. A row that
+was written before the column holds 0. The file's opening comment names
+the new block among the idempotent ALTERs, and the comment of the table
+`joy_usage` names the pictures beside the messages, the tokens and the
+searches.
+
+How it is counted. A picture that OpenAI made adds one, in the object
+that holds a message's token counts (`tokens.pictures`), at the moment
+it is handed to the wallet. It is written onto the pod's row of the day
+with the tokens and the searches, in the same statement, after the
+answer's last line: whether the answer ended, failed later, or the
+wallet went away after the picture had come. Before this section
+nothing was written for a message for which Anthropic counted nothing; a
+picture is now a reason to write too. A refused picture, a failed one
+and one whose request was stopped add nothing.
+
+The daily number. The statement that counts a message (check 6 of 30.4)
+hands back the row's `pictures` beside its `searches`: the pictures of
+the pod's earlier messages of the day. When that has reached
+`JOY_DAILY_PICTURES`, the message is `used` (33.2). The number is read
+before the message's own picture, so a pod that writes from two devices
+at the same moment can end a day one over it (tried, 33.11). A new day,
+by the clock of UTC, is a new row.
+
+Nothing else is kept. No picture and no description is written into a
+table or into the log. A picture passes through this server's memory,
+from OpenAI's answer into the stream's line. What OpenAI counted for a
+picture is not kept either: its own Usage page has it.
+
+### 33.6 What Joy is told
+
+`joy/shared-memory.md` (30.7) stands at the start of every request,
+whether the tool is in it or not. A new part stands after "Looking
+things up" and before "What you cannot do yet": "Making pictures", with
+seven points.
+
+1. She can make a picture for a member, and when: when a member asks for
+   a picture, a drawing, an illustration or the like. She does not draw
+   it herself: a picture service makes it from her description alone.
+   The wallet shows it above her next words, with a Download button.
+2. She cannot see a picture, not even one she made. After the tool
+   answered "made" she says in one short sentence what the picture is
+   of, and offers to change it. She does not say her description back
+   and describes no details she cannot know.
+3. One picture for each message. Only when a member asks for several at
+   once does she say that each further one takes a message of its own.
+4. To change a picture she calls the tool again with the whole
+   description and the change in it. That is a new picture, other things
+   in it can come out differently, and she says so.
+5. After "refused" she says so in her own words, kindly and without a
+   lecture, offers something close, and does not send the same
+   description again. After "failed" she says that the member can ask
+   again later.
+6. The picture stays in the member's browser with the chat, and New chat
+   takes it away. Download keeps it.
+7. How the wallet keeps a chat: only the words of her answers. Where an
+   earlier answer had a picture, the wallet puts one line in square
+   brackets in front of her words, which begins "Note from the wallet:"
+   and holds her description. She never writes such a line herself, and
+   never says that she made or changed a picture unless the tool
+   answered "made" in the same answer.
+
+The seventh is to pictures what the sixth point of "Looking things up"
+is to searches (32.5): a later message carries an earlier answer as
+words alone. The note is the wallet's to write (its spec). This server
+neither writes nor reads it: an earlier answer is a text to it.
+
+The real call of 2026-11-25 sent these words to Anthropic's model from
+prod1, with her two tools, the web search tool and `make_picture`, in
+eight requests that were not streamed. She called the tool at once for a
+first picture, with a description of 291 characters in English and no
+words before it. With the note in front of her earlier answer she called
+it again on "Make the hat red." in four of four tries, with her whole
+description and the one word changed. Asked what colour the hat is, she
+called nothing and said that she cannot see the picture. After "refused"
+she said so in her own words and offered three things close to it. In
+that call the second and the third point read differently. She then
+said her whole description back to the member, who has the picture above
+her words, and added that each further picture takes a message of its
+own, though one had been asked for. Both points were shortened after
+it, to the words above. The shortened words have not been in a real
+call.
+
+The file's words are the plan's (its 3.6), word for word, as the tool's
+description and the two sentences of 33.2 are. "What you cannot do yet"
+is as it was: she still cannot see pictures or files.
+
+### 33.7 Environment variables
+
+| Variable | Default | Description |
+| -------- | ------- | ----------- |
+| `OPENAI_API_KEY` | none: pictures are off | OpenAI's API key |
+| `JOY_PICTURE_MODEL` | `gpt-image-2.6-flare` | OpenAI's image model |
+| `JOY_PICTURE_QUALITY` | `low` | `low`, `medium` or `high`; anything else stops the boot |
+| `JOY_PICTURE_SIZE` | `1024x1024` | The width and the height in pixels, with an x between them; anything of another form stops the boot |
+| `JOY_PICTURE_FORMAT` | `jpeg` | `jpeg`, `png` or `webp`; anything else stops the boot |
+| `JOY_DAILY_PICTURES` | `30` | From how many pictures in one day (UTC) a pod's further messages go out without the tool. 0 switches pictures off |
+
+Five have a default, so no line has to be added to `.env` for them. The
+key has none. Without it this server boots and runs as before: Joy
+answers, searches and saves, no request goes to OpenAI, and one sentence
+tells her that pictures are switched off (33.2). So this step can be
+deployed before the key is set, and the key is what switches pictures
+on. The key is read in `src/config/env.js` like every setting; its form
+is not checked there, and no error prints it. A boot that stops names
+the variable. Which sizes and which model OpenAI takes is OpenAI's to
+say: a setting that it does not take makes every picture fail, with the
+log's line `status 400` and OpenAI's code. OpenAI's request also knows
+the qualities `xhigh`, `max` and `auto`; this server takes the three of
+the plan. All six are read once, when the server starts.
+
+### 33.8 What it costs
+
+At the prices on OpenAI's pages on 2026-11-25, by the formula of
+OpenAI's own calculator (the plan's 3.7). What OpenAI counted for the
+four pictures of the real call was not pasted, so the numbers are not
+checked against a real count.
+
+- A picture at low, 1024 by 1024: 823 output tokens at $30 a million,
+  2.5 cents. Medium is 4.3 cents and high 5.3 cents. Joy's description
+  adds about a twentieth of a cent.
+- At Anthropic a picture's message takes two requests in the place of
+  one: about a tenth of a cent. The new words add about 600 input tokens
+  to every request, in its cached beginning.
+- With the 30: one pod costs at most $0.74 a day. If 400 members all
+  made 30 pictures on one day, that day would cost $296.
+- The real stops are in the account at OpenAI: the prepaid credit with
+  auto-reload off, and the hard monthly limit. When either is reached a
+  picture fails, the log names OpenAI's code for it, and Joy says that
+  it could not be made right now.
+- A picture is paid once. A later message carries Joy's description as
+  words.
+- Not stated on OpenAI's pages: whether a refused picture is billed.
+
+### 33.9 Files
+
+- `src/joy/joy.pictures.js`, new: `MAKE_PICTURE_TOOL`, the six outcomes,
+  `askOpenAI` and `makePicture`.
+- `src/joy/joy.anthropic.js`: `NO_PICTURE`, new. `memberPart` takes
+  `picture` and adds the sentence. `askAnthropic` takes `picture`,
+  `anopodId`, `leaving`, `onDrawing` and `onPicture`; builds `tools`
+  with the new entry; listens for the start of a call of `make_picture`;
+  and carries the calls of one answer out in a loop that waits for a
+  picture, where it mapped over them. The file's opening comment and the
+  comment of `MAX_ROUNDS`.
+- `src/joy/joy.handlers.js`: the two new lines of the stream, the
+  `AbortController` that stops a request to OpenAI when the wallet goes
+  away, the pod's id and `pictures` handed on, the handler's comment,
+  and the log text of a write that failed, which now names the pictures.
+- `src/joy/joy.service.js`: `pictureFor`, new. `prepareAsk` hands
+  `picture` on. `recordTokens` also looks at the pictures before it
+  writes. The file's opening comment.
+- `src/joy/joy.queries.js`: `countMessage` hands back `pictures` too.
+  `addTokens` adds them. The comments of both and of the file.
+- `src/config/env.js`: `optionalSize`, new; six lines in `readJoy`; and
+  two comments.
+- `db/schema.sql`: the column in the `CREATE TABLE` of `joy_usage`; the
+  Joy picture block, new, at the end; the file's opening comment; and
+  the comment of the table `joy_usage`.
+- `joy/shared-memory.md`: the new part of 33.6.
+- `.example.env`: the six variables, each as a comment line.
+- `README.md`: the row of `/ask-joy` in the Endpoints table, the row of
+  `joy_usage` in "Database tables", the six variables in
+  "Configuration", and the new file in the row of `joy/` in "Layout".
+- Here: section 8 (six rows and a dated clause); a row in 30.3; a dated
+  clause in 30.2 (three places), 30.4, 30.5 (three places), 30.6, 30.7,
+  30.8 and 30.10 (two places); a dated clause in 32.2 (three places),
+  32.3, 32.4 (two places) and 32.5; and this section.
+
+Nothing else changes: not `src/joy/joy.memory.js` and Joy's two memory
+tools, not `src/joy/joy.router.js`, not `src/app.js`, not
+`src/util/images.js`, whose reader is used as it is, not `package.json`
+and `package-lock.json`. One column and six env variables; no table, no
+route, no npm package.
+
+### 33.10 What is left as it is
+
+The plan's section 6, as far as it is this server's:
+
+- Changing the old picture itself. OpenAI has a request for it, in which
+  the picture is sent up again. Here a changed picture is a new picture
+  from a changed description.
+- Joy seeing a picture: her own, or a photo that a member wants to show
+  her. Anthropic's model can read pictures. That is another plan.
+- A picture made from a member's photo.
+- Keeping a picture on this server or on the pod. A picture lives in one
+  browser until New chat (the wallet's spec).
+- More than one picture for one message, and a size that the member
+  picks. The size is one setting for everybody.
+- A page that shows the pictures made. `joy_usage` is read with a psql
+  line, and OpenAI's Usage page has the cost.
+- A see-through background, a drawing as SVG, a moving picture. OpenAI's
+  request can make all three.
+- A mark that says the picture was made by an AI. OpenAI's pages do not
+  say whether a picture from this request carries one. This server adds
+  none and takes none out: the bytes are handed on as they came.
+- Saved chats: the line "Joy: saved chats" of
+  `~/Desktop/Z-TestNet/after_production_todos/things-to-do-after-production.md`.
+
+And what the build leaves as it is:
+
+- A refused picture leaves no trace here: no count and no line in the
+  log. How often OpenAI refused is on OpenAI's side only.
+- A picture that failed is not tried again by this server. Joy tells the
+  member to ask again later.
+- Nothing limits how large a picture this server hands on. With the
+  settings of the plan a picture is about 160 to 220 KB.
+- The `drawing` line says that Joy started a call. It is also written
+  for a call that brings no picture (33.4).
+- The key's form is not checked at the boot. A wrong key shows with the
+  first picture, as `status 401 invalid_api_key` in the log.
+
+### 33.11 Notes from the build
+
+#### Build 1, the masterpod (2026-11-25)
+
+Built from `~/Desktop/Z-TestNet/forclaude/joy-pictures-plan-1.md`, its
+sections 3.1 to 3.4 and 3.6, the points of its section 4, step 1 of its
+section 5 and its section 7, on main at 889c439, the working tree clean,
+in a build chat of its own that was started from the plan chat's card.
+The plan holds no code, so all of the code is the build's. The words
+that Joy is told were taken from the one place the plan names for them,
+`real-call/texts.mjs` in its tools folder. No new npm package, and no
+test script in the repo. Nothing was deployed, and the schema was
+applied to no database of the network: by the plan, both deploys follow
+the wallet's step, the wallet first, and OpenAI's key goes in last. In
+this server's own deploy the schema file goes on before the new code
+runs. On a database without the column the built code answers every
+`/ask-joy` with a `500` (`column "pictures" does not exist` in the log);
+the other order is safe, since the code of before names its columns in
+both of its statements on `joy_usage`. Both were tried (below). What the
+plan left open and how it was decided, each time the smallest way that
+fits its section 7:
+
+- One picture for one message is kept as ONE REQUEST TO OPENAI for one
+  message. The plan: "A second call in the same message is answered
+  [...]. Nothing goes to OpenAI for it", and "A longer one, or an empty
+  one, is answered to Joy without a request to OpenAI". It does not say
+  what becomes of a call after a too long one. Here such a call is
+  carried out: the call before it cost nothing and made nothing. After a
+  refused or a failed picture a further call is not carried out: the
+  message's request has gone.
+- The description. The spaces around it are taken off, before the count
+  and for OpenAI. An input with no description, or with one that is no
+  text, is answered as an empty one. The words of the two answers are
+  those of `texts.mjs`.
+- The `drawing` line is written for every call that Joy starts, as the
+  plan's section 7 words it, also for one that brings no picture. The
+  search's line is written the same way (32.10).
+- What is taken for a picture. The plan: "an answer that is no picture"
+  fails. Here: bytes that begin as a JPEG, a PNG or a WebP and name a
+  size, by the reader that is in the code already. The type in the
+  picture's line is the one of the bytes, and the base64 is this
+  server's own encoding of them. That reader reads OpenAI's four real
+  pictures of the real call as JPEG of 1024 by 1024 (tried).
+- A status from 200 to 299 with a picture in it is a picture. The plan
+  says 200.
+- A picture is counted at the moment it is handed on, and stays counted
+  when the answer fails later or the wallet has left.
+- The log's line: its beginning `joy picture failed:`, and its forms
+  (33.3). Where OpenAI gives no code, its type stands in the line. A
+  refusal writes no line, and neither does a wallet that went away.
+- When the wallet goes away while a picture is made, the loop ends with
+  the error that Anthropic's package has for a stopped request. The
+  handler answers that error with nothing, as it does when it stops a
+  stream.
+- The three states `on`, `off` and `used`, as the searches have them,
+  with the service deciding and the call to Anthropic building. The
+  picture's sentence stands after the search's. A search and a picture
+  are switched and counted apart: a request can hold either tool, both
+  or neither.
+- The request to OpenAI follows no redirect, as the request to the email
+  company follows none.
+- No setting for OpenAI's address. The plan names six settings, and the
+  address is a constant, as the email company's is.
+- `JOY_PICTURE_SIZE` is checked for its form only, a width and a height
+  with an x between them. `JOY_PICTURE_QUALITY` and `JOY_PICTURE_FORMAT`
+  take the three words that the plan names for each.
+- The column is an `INTEGER`, as `searches` is, with the table's own
+  form of check. The block's name, "The Joy picture block".
+- The section's number is the plan's, 33.
+- Sentences that the step outdates in files of its own commit were
+  brought in line in the build, where the build of section 32 had left
+  six and was then told to bring them in line (32.10). In
+  `db/schema.sql`, the comment of the table `joy_usage`: it is a
+  `COMMENT ON` statement, so the deploy's schema line writes the new
+  words into the database. In `src/joy/joy.handlers.js`, the log text of
+  a write that failed: `joy: the tokens, the web searches and the
+  pictures of a message were not written:`. No other file under
+  `~/Desktop/Z-TestNet` reads that text (searched). In `README.md`, the
+  rows of 33.9. Here, the dated clauses of 33.9. The openings of
+  sections 30 and 32, their lists of files and their notes say what
+  their own builds made and stay as records. Left as they are, as after
+  both builds before: the README's second paragraph and section 1's last
+  bullet, which say that everything a pod keeps private reaches this
+  server as ciphertext (30.11).
+
+The checks. All of them ran on the files as they were handed over, the
+last time from empty databases. The tools are outside the repo, in
+`~/Desktop/Z-TestNet/forclaude/joy-pictures-plan-1-tools/step-1-trial/`,
+with what they printed. No request left this Mac: no key of either
+company is on it, no `.env` file was read, and the trial's process lets
+no request out to another address than 127.0.0.1.
+
+- The code. `node --check` on the six files of code, clean, on Node
+  24.22.0. One load of the app with no server and no database
+  (`createApp()` with made-up settings): 117 routes, as a copy of
+  889c439 gives, each with as many handlers, the three of Joy with their
+  four each; the same with both keys set. A type checker's read of
+  `src/app.js` (`tsc --checkJs`, TypeScript 6.0.3 from the wallet's
+  folder): none of the kinds that mean a real mistake, here and in the
+  same read of 889c439.
+- The settings, read with nothing else set, 31 checks. With no line: no
+  key, `gpt-image-2.6-flare`, `low`, `1024x1024`, `jpeg` and 30. Each is
+  read as written, the key without the spaces around it, and an empty
+  key is no key. `xhigh`, `auto` and `Low`; `jpg`, `gif` and `JPEG`;
+  `1024`, `1024X1024`, `1024 x 1024`, `0x1024`, `auto` and
+  `1024x1024x3`; `-1`, `abc`, `1.5`, `03` and `thirty` each stop the
+  boot with the variable's name. `JOY_DAILY_MESSAGES=0` still stops it.
+- The shared memory file. The trial compares it with `texts.mjs`: the
+  new part stands in it word for word, once, after "Looking things up"
+  and before "What you cannot do yet". The tool, the six outcomes and
+  the two sentences are compared with `texts.mjs` too, each where Joy is
+  told it. The file has 43 lines and 5,020 bytes, where it had 33 and
+  3,143.
+- The scratch PostgreSQL. A PostgreSQL 17.11 that was started for this
+  build alone: a data folder of its own in the build chat's scratch
+  folder, listening on 127.0.0.1 port 61977 and nowhere else, with no
+  socket file. This Mac's own PostgreSQL on port 5432 was not touched,
+  and `scripts/setup-db.sh` was not run. Every apply of a schema file
+  ran as the deploy's line runs it: one transaction after `SET ROLE
+  masterpodsoftware`, into a database that the role owns.
+- The schema file, 12 checks. Alone into an empty database, twice: 47
+  tables both times, and the schema as `pg_dump` prints it the same
+  after the second run as after the first. On top of a database built
+  from the file of before, with two rows written into `joy_usage`,
+  twice: 47 tables, the second run changing nothing, and the schema as
+  `pg_dump` prints it the same as that of the database built from the
+  new file alone, so the column is the table's last on both ways.
+  Against the schema of before, `pg_dump` shows the column, its check
+  `joy_usage_pictures_check`, its comment and the table's changed
+  comment, and nothing else. The two rows kept every value they had,
+  `updated_at` included, and hold 0 in the new column. An update to a
+  negative number is refused by the check.
+- The stand-ins. For Anthropic, the stand-in of section 32's build with
+  picture answers put in: it answers a streamed request and still holds
+  a request to the rules of Anthropic's pages for a message that takes
+  several requests (32.10). Its picture answers have the form of the
+  real call: the call at once, with thinking before it and no words, and
+  her sentence in the next request, picked by the outcome that this
+  server hands back. That call was not streamed, so the events of a
+  streamed call of `make_picture` are made after the form that a call of
+  `remember` has had in the stand-ins since section 30. For OpenAI, a
+  small server that answers `POST /v1/images/generations` and holds each
+  request to the plan's 3.2. Its good answer is a real picture of
+  OpenAI's: the picture at low quality of the real call, 158,249 bytes.
+  Its other answers are made after OpenAI's pages as the planning read
+  them.
+- How the stand-in for OpenAI is reached. OpenAI's address is a constant
+  of the code. So the trial's process puts a `fetch` of its own in front
+  before this server's code loads: a request to `https://api.openai.com`
+  goes to the stand-in with everything else of it untouched, and any
+  other address that is not 127.0.0.1 is refused. The address that the
+  code asked for is kept and checked.
+- The trial. The working tree's own app (`createApp()`, nothing of
+  `src/server.js`) on the scratch database, called over HTTP with
+  requests signed as a wallet signs them, by session keys made for the
+  run. 179 checks in nine runs, none bad. The first run has the default
+  settings and both keys, and 107 of them.
+- A picture, line by line: `{"drawing":true}` when her call began; the
+  picture's line 300 milliseconds later, which is the stand-in's rest
+  for a picture, as ONE line of 211,165 characters that holds `picture`
+  with `type`, `data` and `description` in that order, the type
+  `image/jpeg`, the data the real picture's bytes whole, the description
+  the one she wrote; her sentence after it, from a second request to
+  Anthropic; the last line as before; one picture and both requests'
+  tokens on the day's row; nothing in the log.
+- The request as OpenAI's stand-in got it: `POST
+  /v1/images/generations`, asked of `https://api.openai.com`; the key as
+  `Authorization: Bearer`; a body of 299 bytes that is the seven fields
+  of 33.3 and nothing else; `safety_identifier` the SHA-256 hash of the
+  pod's id, 64 hex characters, and not the id. Nothing of the chat was
+  in it: not the member's message, not the memory file, not the pod's id
+  and not the username.
+- The two requests as Anthropic's stand-in got them: `tools` with
+  `remember`, `update_memory`, the web search entry and `make_picture`,
+  the last word for word the plan's; the two system parts as before the
+  step, the first of them the new file whole, the second with no
+  sentence about a search or a picture; the second request with her
+  answer back as it came and ONE message that holds the outcome `made`
+  and nothing else. Words before the call: her sentence after the
+  picture begins a new paragraph.
+- A picture that OpenAI refuses: the `drawing` line, her words, no
+  picture; Joy is told `refused: …` as an error and nothing of OpenAI's
+  reason; nothing is counted; the log holds no line.
+- Each kind of failure, 14 of them, each with Joy told `failed: …`, her
+  words, nothing counted and ONE line in the log: a refused key (`status
+  401 invalid_api_key`), an organization that is not verified (`status
+  403 invalid_request_error`), no credit, the spend limit and too many
+  requests in a minute (`status 429` with OpenAI's code for each), a
+  failure at OpenAI (`status 500 server_error`), a request that OpenAI
+  does not take (`status 400 invalid_value`), a 502 with a page that is
+  no JSON (`status 502`), a 200 that is no JSON, one with an empty list
+  and one whose bytes are no picture (`status 200 with no picture in the
+  answer`), a redirect (`status 302`, and it was not followed), a
+  connection cut before an answer (`fetch failed UND_ERR_SOCKET`) and
+  one cut in the middle of the picture (`terminated UND_ERR_SOCKET`).
+  None of the lines holds the key or a part of it, a word of the
+  description or OpenAI's own message.
+- Other pictures. Base64 in the other alphabet with no padding is handed
+  on as plain base64 of the same bytes. A PNG and a WebP, sent where a
+  JPEG was asked for, are handed on as `image/png` and `image/webp`. A
+  picture of 1.5 MB is one line of 2,000,177 characters, whole.
+- No answer for longer than the limit, 12 checks, in a run of its own
+  with the real 150 seconds: one request that gets no answer at all, and
+  one whose answer stops in the middle of the picture. In both, the
+  `drawing` line, then an empty line every 10 seconds, fifteen of them,
+  and after 150.0 seconds her words that the picture could not be made.
+  This server closed its request to OpenAI at 150.0 seconds. Nothing was
+  counted but the message and both requests' tokens, and the log has `no
+  answer in 150 seconds` for each.
+- The wallet going away. One second into OpenAI's three seconds: the
+  request to OpenAI is stopped then, no further request goes to
+  Anthropic, nothing is logged, no picture is counted, and the first
+  request's tokens are on the row. When the picture has come already: it
+  is counted.
+- Two calls in one message. In one answer: one request to OpenAI, both
+  outcomes in ONE message in the order of the calls, `made` and `one
+  picture for each message: …` as an error, two `drawing` lines and one
+  picture. In a later request of the same message: answered without a
+  request to OpenAI. A model that never stops calling the tool: four
+  requests to Anthropic, one to OpenAI, then the end. After a refused
+  picture a second call is not carried out either.
+- `remember` and a picture in one message, in both orders: both outcomes
+  in ONE message in the order of the calls, the picture in the stream,
+  and the new memory file in the last line.
+- A search and a picture in one message. A search with its pages and
+  then the call: `searching`, `drawing`, the picture, her words, the
+  cited page in the last line, one search and one picture on the row. A
+  search that Anthropic holds back for the call: her answer goes back
+  with the query and no pages, with the one outcome after it, and her
+  words after the pages are a new paragraph.
+- The description. 1,001 characters: answered as an error with no
+  request to OpenAI, and her next call, with a short one, is carried
+  out. Exactly 1,000 go to OpenAI. Spaces alone, an input with no
+  description and a description that is a number: `the description is
+  empty`. The spaces around one are taken off. One in Thai, with a sign
+  outside the first plane of Unicode, reaches OpenAI and the wallet as
+  it was written. The model's limit in the middle of a call: `stop` is
+  `length`, and the call is not carried out. A request to Anthropic that
+  fails after the picture: the picture stays in the stream, the last
+  line is the failure, and the picture is counted.
+- The daily number. A row set to 29 by SQL: the request goes out with
+  the tool, and the picture brings the row to 30. At 30, and at 45: the
+  request goes out with her two tools and the web search, and with the
+  sentence for the daily number, word for word, after the date; the
+  message is answered and counted, with no `drawing` line, and nothing
+  goes to OpenAI. With the searches of the day used as well: her two
+  tools alone, and both sentences, the search's first. Another pod is
+  not touched by it. A row of the day before does not count. Two
+  messages of one pod at the same moment, at 29: both make a picture,
+  and the day ends at 31.
+- Answers without a picture, as they were: a plain answer, a searched
+  one, a search and a saved line, a search paused twice, a model that
+  never stops calling `remember`, a cut-off, a refused, a failed and a
+  dropped answer, the refusals before the stream, and a later message
+  that carries an earlier answer with the wallet's note as words alone.
+- What was written: of the 47 tables three hold rows, the pods, the
+  nonces of the signed requests and `joy_usage`. The log's lines hold no
+  description, no picture, no key and no word of a message.
+- No key, and `JOY_DAILY_PICTURES=0`, 13 checks each: the request goes
+  out without the tool and with the sentence for the switch, word for
+  word, also with 500 pictures on the row; the message is answered and
+  counted; a model that calls `make_picture` all the same is told that
+  there is no such tool, with no `drawing` line; a search and her own
+  tools work as before; and no request was made to OpenAI's address in
+  the whole run.
+- The other settings, 8 checks: another model, `high`, `1536x1024` and
+  `png` stand in the request to OpenAI, the PNG that came is handed on
+  as `image/png`, and with a daily number of 2 the third message goes
+  out without the tool. With `JOY_MAX_SEARCHES=0` and pictures on, 6
+  checks: her two tools and `make_picture`, the search's sentence alone,
+  and a picture is made. With no key for Anthropic, 4 checks: `503 joy
+  is off`, nothing counted, nothing sent to either company.
+- The two half-deployed states, 10 and 6 checks. The code of 889c439 on
+  the new schema: a message is answered with the lines of before, it is
+  counted, its tokens are written and the new column holds 0; a searched
+  answer and a saved line land on the same row; its daily number of
+  searches and its daily limit of messages work. The built code on the
+  schema of before: `/ask-joy` answers `500` (`column "pictures" does
+  not exist` in the log), nothing goes to Anthropic or to OpenAI, and
+  the two memory routes answer. So the schema line goes first.
+- A picture's line of 2 MB through the wallet's own server program, 9
+  checks: `server/app.js` of a scratch copy of `web_app` at d9c56c7 in
+  front of the working tree's app. The stream came with that program's
+  headers, the picture's line as ONE line of 2,000,177 characters, its
+  bytes the 1,500,000 that OpenAI's stand-in sent. A picture of the real
+  size came whole too. With a picture that takes three seconds, the
+  `drawing` line came three seconds before the picture's: that program
+  holds no line back.
+- The wallet of before, 18 checks, none bad. A development build of
+  `web_app` at d9c56c7, from a scratch copy, behind that commit's own
+  server program, against the working tree's app on a scratch database
+  of its own, in Google Chrome with no window, with the helper of
+  section 32's walks for a made-up login. An answer with a picture is
+  read to its end and drawn in Joy's bubble with no red line and no
+  picture; while the picture was made the page said "Joy is writing…",
+  since that wallet knows no other words; its Log names the call as
+  whole, with 4 lines. A picture of 1.5 MB is read to its end as well. A
+  refused and a failed picture give her own words and no red line. A
+  saved line and a picture in one message give one answer and the stored
+  memory file, a search and a picture her words with the source under
+  them. A later message carries the earlier answers as their words
+  alone: that wallet knows no note. After a reload the chat is back, and
+  no picture is kept with it. Chrome raised no error on the page. The
+  pictures were made and counted all the same, five of them: that is why
+  the key goes in last (33.1).
+- Faults put in, to see that the trial notices one. Nine scratch copies
+  of the working tree with one place changed each: the message's one
+  request to OpenAI not remembered; no `drawing` line; the pod's id in
+  the place of its hash; a refused and a failed picture counted; the
+  daily number one too high; the request to OpenAI not stopped when the
+  wallet goes away; each tool's outcome in a message of its own; no
+  limit on the description; and whatever comes with a 200 handed on as a
+  picture. Each run came out bad: seven by 3 to 34 of their checks, and
+  two by an error of the trial's own at the first check that met the
+  fault, one of them after 20 bad checks.
+- The trial of section 32's build, run again against this code with no
+  key for OpenAI, in its five runs that do not need the commit before
+  that step. Unchanged, 101 of its 106 checks hold. The five that do not
+  are the five that name what this step changes on purpose: four expect
+  the sentences on the memory file directly after the date or after the
+  search's sentence, where the sentence for the switch now stands, and
+  one lists the columns of `joy_usage`. With those five expectations
+  brought in line, 106 of 106.
+- Not tried by the build. Nothing against OpenAI's or Anthropic's real
+  API: no key is on this Mac. The real call of the planning sent the
+  request of 33.3 to OpenAI from prod1, the same seven fields, by a
+  program of its own, and it sent Anthropic the tools and the words of
+  33.2 and 33.6 as they then stood, in requests that were not streamed.
+  So three things have not been to a real API: this server's own code
+  with either request; a streamed call of `make_picture`; and the two
+  shortened sentences of 33.6. The first real picture at the deploy is
+  that proof (the plan's section 7). Not tried either: whether prod2 and
+  prod3 reach `api.openai.com` (the real call proved prod1); how many
+  pictures a minute the account may make; nothing on a server, nothing
+  on Linux, nothing on PostgreSQL 16, which the servers run (the block
+  uses nothing newer than the file had), and nothing through PgBouncer,
+  the doormen or nginx, where a line of 211,000 characters has not gone
+  yet. `src/server.js` was not booted. The wallet of step 2 does not
+  exist yet: the picture on the page, the Download button and the note
+  are that step's to try.
+- The numbers. `db/schema.sql` has 1949 lines, 17 more than before, and
+  its sha256 begins 58586402. Before the step it had 1932 lines and its
+  sha256 began fe4676b1. It makes 47 tables, as before: the count that
+  the deploy's schema line prints does not change with this step, so
+  that line needs a look of its own that proves the column.
+
+#### After the build's report, the same day (2026-11-25)
+
+The build's report named one side find that is not this step's: under
+the table of settings, in `README.md` and in section 8 here, a sentence
+said that the JSON body limit is computed from "the last two". The two
+it means, `MAX_IMAGE_BYTES` and `MAX_IMAGES_PER_REQUEST`, have not been
+the table's last two rows since the rows of later sections came under
+them. The user: "go ahead and fix those sentences and then bring me the
+commit again." So both sentences now name the two settings. The limit
+itself is as it was (`JSON_LIMIT_BYTES` in `src/app.js`, not touched).
+No line of code and no other sentence changed, so no check was run
+again but the trial of the commit line, which is the same text for the
+same eleven files.
