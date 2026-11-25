@@ -5,6 +5,8 @@ import {
   createRoom,
   declineInvite,
   declineJoin,
+  deleteMessage,
+  editMessage,
   getChatPublicKeys,
   getRoomPicture,
   invite,
@@ -92,6 +94,16 @@ export async function listMessagesHandler(req, res) {
 /** POST /send-message */
 export async function sendMessageHandler(req, res) {
   answer(res, await sendMessage(req.anopod, req.body));
+}
+
+/** POST /edit-message */
+export async function editMessageHandler(req, res) {
+  answer(res, await editMessage(req.anopod, req.body));
+}
+
+/** POST /delete-message */
+export async function deleteMessageHandler(req, res) {
+  answer(res, await deleteMessage(req.anopod, req.body));
 }
 
 /** POST /mark-messages-seen */

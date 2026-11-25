@@ -664,8 +664,12 @@ CREATE TABLE IF NOT EXISTS chat_room_messages (
   chat_room_id     BYTEA       NOT NULL CHECK (octet_length(chat_room_id) = 32),
   sender_anopod_id BYTEA       NOT NULL CHECK (octet_length(sender_anopod_id) = 32),
   position         BIGINT      GENERATED ALWAYS AS IDENTITY,
-  message          BYTEA       NOT NULL CHECK (octet_length(message) <= 65536),
-  created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+  message          BYTEA       CHECK (octet_length(message) <= 65536),
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  kind             TEXT        CHECK (kind IN ('edit', 'delete')),
+  target_message_id BYTEA      CHECK (octet_length(target_message_id) = 32),
+  CONSTRAINT chat_room_messages_edit_delete_check CHECK ((kind IS NULL) = (target_message_id IS NULL)
+    AND (message IS NULL) = (kind IS NOT DISTINCT FROM 'delete'))
 );
 CREATE INDEX IF NOT EXISTS chat_room_messages_room_position_idx ON chat_room_messages (chat_room_id, position);
 ```
@@ -673,6 +677,22 @@ CREATE INDEX IF NOT EXISTS chat_room_messages_room_position_idx ON chat_room_mes
 `message` is ciphertext under the room key. `position` orders messages and
 drives pagination (`afterPosition`). The sender is the verified caller;
 there is no per-message signature, by decision.
+
+`kind` and `target_message_id` (added 2026-11-24, section 31) make a row an
+edit or a delete of a message: since that day the table holds three kinds
+of row. A message has neither, as every row of before. An edit has `kind`
+`edit`, the `message_id` of the message it is about in `target_message_id`,
+and the new text's ciphertext in `message`. A delete has `kind` `delete`,
+its message in `target_message_id`, and no ciphertext: `message` is
+nullable since that day, null on a delete and nowhere else.
+`chat_room_messages_edit_delete_check` holds all of that. Each kind of row
+takes its own `position` from the one counter, and no row is ever updated
+or deleted: /edit-message and /delete-message insert. For a live database
+the message edit block at the end of `db/schema.sql` adds the two columns,
+drops the `NOT NULL` of `message` and drops and adds the check, all
+idempotent. A second index, on `target_message_id` for the rows that have
+one, and the comments of the two columns are in that block only. The block
+and the reading rule are in 31.2 and 31.4.
 
 ### chat_room_pictures
 
@@ -1266,6 +1286,19 @@ whose people or facts changed whole, a room with only a new message as
 requests written since. `since` is a whole number from 0 (`400 invalid
 since` for another value); without it the three lists hold everything, as
 before. The numbered steps are in 29.3.
+Since 2026-11-24, later the same day (section 31), `lastMessage` is the
+room's newest message as it stands now, and never an edit or a delete of
+one: `{ messageId, position, senderAnopodId, message, createdAt,
+editPosition, deleted }`. The first three and `createdAt` are the
+message's own. `message` is the ciphertext of the newest edit when the
+message was edited, its own when it was not, and null when it was deleted.
+`editPosition` is the position of the newest edit, null for a message that
+was never edited, and `deleted` is true or false. `lastPosition` is the
+highest position of any row of the room, so it is above
+`lastMessage.position` when an edit or a delete is the room's newest row.
+(Until then `lastMessage` was the room's newest row in the form
+/list-messages uses, and `lastPosition` its position.) The three fields of
+a room in an answer with `since` have the same form. 31.5 has the rest.
 
 ### POST /list-public-chat-rooms (setup)
 
@@ -1323,7 +1356,8 @@ newest messages and loads older ones (2026-11-05).
 Checks: the caller is a member (`403 not a member`).
 
 Answer: `200 { messages: [ { messageId, position, senderAnopodId, message,
-createdAt } ] }`, ascending by position, `position` as a number.
+createdAt, kind, targetMessageId } ] }`, ascending by position, `position`
+as a number.
 
 With `seenSince` in the body (2026-11-24, section 29), a whole number from
 0 (`400 invalid seenSince` for another value, checked before the member
@@ -1333,6 +1367,17 @@ members of the room whose seen position changed after that number, each as
 has seen anything. `seenSeq` is the number to send as the next
 `seenSince`. Without `seenSince` the answer is `{ messages }`, as before.
 The steps are in 29.4.
+
+Since 2026-11-24, later the same day (section 31), `messages` holds every
+row of the room in the order of `position`: the messages, and the rows
+that /edit-message and /delete-message write. `afterPosition`,
+`beforePosition` and `limit` count every row. Each entry has two fields
+more: `kind`, null on a message and `edit` or `delete` on a row about one,
+and `targetMessageId`, the message such a row is about, null on a message.
+And `message` can be null: a row goes out without its ciphertext once a
+later row of the room names the same message, and a delete never has one.
+(Until then an entry had the first five fields, and `message` was always a
+ciphertext.) The rule and two examples are in 31.4.
 
 ### POST /send-message (setup)
 
@@ -11437,7 +11482,14 @@ This is the answer when nothing is new, 105 bytes as it travels.
   (the newest room first). An entry is a whole room, in that same form,
   or the three fields `{ chatRoomId, lastMessage, lastPosition }`, with
   `lastMessage` and `lastPosition` as a whole room has them. A room is
-  never in the answer twice.
+  never in the answer twice. (Since 2026-11-24, later the same day,
+  section 31: `lastMessage` is the room's newest message as it stands
+  now, with two fields more, `editPosition` and `deleted`, and it is never
+  an edit or a delete of a message; `lastPosition` is the highest position
+  of any row of the room. An edit or a delete is a row written in the
+  room, so it raises the room's `message_seq` as a message does, and the
+  room's three fields travel for it too. The example below shows a
+  `lastMessage` of before that section.)
 - `invites` and `joinRequests`: with no `since`, all of them. With
   `since`, the ones written after it, each in the form of section 5,
   the oldest first.
@@ -12357,3 +12409,857 @@ Left as it is:
   private reaches this server as ciphertext (the README's second
   paragraph, and section 1's last bullet). What a member writes to Joy
   does not. They were not changed in this build.
+
+## 31. A person edits and deletes their own chat messages (2026-11-24)
+
+Design settled 2026-11-24 in a talking chat, in two rounds of four
+questions, and its planning (the plan is
+`~/Desktop/Z-TestNet/forclaude/chat-edit-delete-plan-1.md`, FINAL,
+2026-11-24, on the user's word "Final"). What it is: in a chat, a person
+gives a message of their own a new text, or deletes it, and the others in
+the chat see the new text, or a line that a message was deleted. The user,
+in the talk's first message: "In the marketplace, editing and deleting of
+chats must be disabled, because those chats could end up being evidence. I
+believe we don't have edits or deletes open on the chats, so what we might
+have to do instead, is hide editied or deleted chats so they don't show in
+the wallet, and the edited chat just replaces the old one in the chat
+box." So an edit or a delete is a new row beside the message, which this
+server marks as what it is, and nothing that is stored is ever changed or
+removed. Two steps in order: this server (this section, step 1 of the
+plan: one schema block, two routes, two fields more on every row of
+`/list-messages`, and a new form of `lastMessage` in `/list-chat-rooms`)
+and the wallet (its spec, step 2: the menu on a person's own message, the
+two requests, and how an edit and a delete are drawn). With this server
+alone deployed nothing changes for anyone: no wallet sends the two new
+requests, so no edit and no delete is in the table, every answer carries
+the new fields with nothing in them, and a wallet of before passes them
+over. Inside this server's own deploy the order matters: the schema file
+goes onto the database before the new code runs (31.9). One schema block:
+two columns, one check, one index, and one column made nullable. Two
+routes. No table, no trigger, no counter, no env variable and no npm
+package. The validators, the doormen, the keyholders, the signing servers
+and the wallet's proxy are not touched: nothing between a wallet and this
+server keeps a list of paths (31.9). Nothing above this section changes
+except the items in 31.7.
+
+### 31.1 The rule
+
+- An edit or a delete is a new row (the plan's decision 1). Two routes
+  write it, `/edit-message` and `/delete-message`, and two columns mark
+  it. No row is ever changed or removed. This server knows which rows are
+  edits and deletes, so it is this server that refuses them. The user:
+  "1. yes".
+- Editing and deleting are off in a chat about a listing, in an old
+  marketplace room and in a chat about an attestor case (decision 2).
+  This server refuses them there, for a wallet and for a request made by
+  hand. The user: "those chats could end up being evidence"; "2. yes".
+- The others see the small word "edited" on an edited message and a grey
+  line for a deleted one (decision 3; "3. yes"). That is the wallet's
+  part. This server hands out which rows are edits and deletes.
+- This server keeps every row for good. Once a message is edited or
+  deleted, it no longer hands the old ciphertext out. The old row itself
+  still goes out, with its sender, its time and its `position`, so the
+  new text or the grey line stays in the old place (decision 4; "4.
+  yes").
+- An edit within 15 minutes of sending, by this server's clock against
+  the message's `created_at`. A delete at any time (decision 5). The
+  user: "Alright, that sounds good".
+- A person edits and deletes only their own messages (decision 7). The
+  creator of a public room may do no more than a member. The user: "Yeah,
+  you can only edit or delete your own. We'll talk about something like
+  room admins later".
+- `lastMessage` of `/list-chat-rooms` is the chat's newest message as it
+  stands now: with the newest edit's ciphertext, or marked as deleted. It
+  is never an edit or a delete itself. `lastPosition` stays the chat's
+  highest position (decision 8). The user: "Sounds good". So in a wallet
+  an edit or a delete lights no unread dot, plays no sound and moves no
+  chat in the list.
+- A message can be edited more than once, each time within 15 minutes of
+  when it was first sent (the plan's section 4, point 1). The time is
+  compared with the message's own `created_at`, so a second edit needs no
+  rule of its own.
+- One rule decides which ciphertext is no longer handed out (point 8; the
+  rule is in 31.4). It also takes an earlier edit's text out once a newer
+  edit is there.
+- A delete has no ciphertext (point 9). `message` may be null on a delete
+  and nowhere else, and a check in the database holds that.
+- Both statements that make `lastMessage` take the new form (point 7), so
+  the first read after a login and the read of every 5 seconds show the
+  same line for a chat.
+- Decision 6, the tap that opens the menu, and the points 2 to 6, 10 and
+  11 of the plan's section 4 are the wallet's.
+- What this server learns that it did not know: which rows are edits and
+  deletes, of which message, by whom and when. It still cannot read a
+  message, and an edit is a message's ciphertext like any other. It
+  cannot tell a sticker from a text, so "a sticker has no Edit" is the
+  wallet's menu alone.
+
+### 31.2 The two columns, the check and the index
+
+`db/schema.sql`, in two places. Inline in the `CREATE TABLE` of
+`chat_room_messages`, for a database built from nothing (section 4): the
+two new columns after `created_at`, `message` without its `NOT NULL`, and
+the named check. And in a new block, the last thing in the file, after
+the block of Joy's two tables: "The message edit block (2026-11-24, spec
+section 31)", for a database that has the table. The block without its
+comments:
+
+```sql
+ALTER TABLE chat_room_messages ADD COLUMN IF NOT EXISTS kind TEXT CHECK (kind IN ('edit', 'delete'));
+ALTER TABLE chat_room_messages ADD COLUMN IF NOT EXISTS target_message_id BYTEA CHECK (octet_length(target_message_id) = 32);
+ALTER TABLE chat_room_messages ALTER COLUMN message DROP NOT NULL;
+ALTER TABLE chat_room_messages DROP CONSTRAINT IF EXISTS chat_room_messages_edit_delete_check;
+ALTER TABLE chat_room_messages ADD CONSTRAINT chat_room_messages_edit_delete_check
+  CHECK ((kind IS NULL) = (target_message_id IS NULL) AND (message IS NULL) = (kind IS NOT DISTINCT FROM 'delete'));
+CREATE INDEX IF NOT EXISTS chat_room_messages_target_message_id_idx ON chat_room_messages (target_message_id) WHERE target_message_id IS NOT NULL;
+```
+
+| New column | What it holds |
+| ---------- | ------------- |
+| `kind` | `edit` or `delete`. Null on a message. |
+| `target_message_id` | The `message_id` of the message that the edit or the delete is about, 32 bytes. Null on a message. |
+
+So the table holds three kinds of row, and the named check allows these
+three and nothing else:
+
+| The row | `kind` | `target_message_id` | `message` |
+| ------- | ------ | ------------------- | --------- |
+| a message, as every row of before | null | null | the text's ciphertext |
+| an edit | `edit` | the message it is about | the new text's ciphertext |
+| a delete | `delete` | the message it is about | null |
+
+`chat_room_messages_edit_delete_check` says two things. The two new
+columns are set together or not at all. And `message` is null on a delete
+and nowhere else: `kind IS NOT DISTINCT FROM 'delete'` is false for a
+message, whose `kind` is null, where a plain `=` would give null and let
+the row pass. Each new column also has a check of its own, which
+PostgreSQL names `chat_room_messages_kind_check` and
+`chat_room_messages_target_message_id_check` on both ways. There is no
+foreign key (section 1): the two routes keep `target_message_id` to a
+message of the same room.
+
+Each row takes its `position` from the table's one identity counter, as
+every row does. No trigger and no counter is new. An edit or a delete is
+an `INSERT`, so the trigger of section 29,
+`chat_room_messages_set_room_message_seq`, raises the room's `message_seq`
+for it as for a message: the room's three fields travel once to every
+member's wallet with its next read with `since` (31.5).
+
+The index is on `target_message_id`, for the rows that have one: both
+reads look up the rows that name a message (31.4, 31.5), and a message's
+own row is not in it. The comments of the two columns are in the block
+only, like the index: on a live database the columns do not exist before
+the block.
+
+The block is idempotent: `ADD COLUMN IF NOT EXISTS`, a `DROP NOT NULL`
+that changes nothing on a nullable column, a drop-and-add of the named
+check under its one name, as the case chat block does it, and `CREATE
+INDEX IF NOT EXISTS`. So the whole file applies to a live database and a
+second run changes nothing. On a database of before every row passes the
+check: `kind` and `target_message_id` are null, and `message` is not. At
+every run of the file the added check reads every row of the table once
+(31.9 has the time). The code of before names its four columns in its
+`INSERT`, so it runs on the new table. The file makes 47 tables, as
+before.
+
+### 31.3 The two new routes
+
+Both are at level setup, as every chat route is (section 2), and a wallet
+sends them the way it sends `/send-message`.
+
+**POST /edit-message** (setup). Body:
+
+```json
+{ "chatRoomId": "<hex 32 bytes>", "messageId": "<hex 32 bytes>", "message": "<base64>" }
+```
+
+`messageId` is the message to edit, and `message` the new text's
+ciphertext, with the limits of `/send-message`: base64 of 1 to 65536
+bytes.
+
+**POST /delete-message** (setup). Body:
+
+```json
+{ "chatRoomId": "<hex 32 bytes>", "messageId": "<hex 32 bytes>" }
+```
+
+A body of the wrong shape gets a `400`, as on every route, in this order:
+`chatRoomId` and `messageId` are strings, and for an edit `message` is one
+too, else `400 bad request shape`; `chatRoomId` decodes to 32 bytes, else
+`400 invalid chatRoomId`; `messageId` decodes to 32 bytes, else `400
+invalid messageId`; and for an edit `message` is base64 of 1 to 65536
+bytes, else `400 message must be base64 of 1 to 65536 bytes`, the words of
+`/send-message`. Then six checks, in this order, and the first that fails
+answers:
+
+| | The check | When it fails |
+| - | --------- | ------------- |
+| 1 | The caller is a member of the room. | `403 not a member` |
+| 2 | The room is not about a listing (`chat_rooms.listing_id`), is not an old marketplace room (`type = 'marketplace'`) and is not about an attestor case (`case_id`). | `403 editing and deleting are off in this chat` |
+| 3 | `messageId` is a message of that room: a row with no `kind`, so not an edit and not a delete. | `404 message not found` |
+| 4 | The caller wrote it. | `403 not your message` |
+| 5 | No delete names it yet. | `409 message deleted` |
+| 6 | Only for an edit: the database's clock is at most 15 minutes past the message's `created_at`. | `409 too late to edit` |
+
+How they run. Checks 1 and 2 are two plain reads, of the member row and
+of the room's row. Checks 3 to 6 and the write are one transaction:
+
+1. `SELECT ... FOR UPDATE` reads the message's row, by its id, its room
+   and `kind IS NULL`, and locks it until the transaction ends. No row:
+   check 3 fails. The same statement works out check 6 inside the
+   database, as `now() > created_at + 15 minutes`. `now()` is the clock
+   that stamped `created_at`. Three servers run this code, and none of
+   their own clocks is asked.
+2. The row's sender is compared with the caller (check 4).
+3. A second statement looks for a row of the room with `kind` `delete`
+   that names the message (check 5).
+4. For an edit, the answer of step 1 decides check 6.
+5. One `INSERT` writes the new row: a new random `message_id`, the room,
+   the caller as sender, the `kind`, the message's id in
+   `target_message_id`, and for an edit the new ciphertext. A delete's
+   `message` is null. Nothing else is written, and no notification, as
+   for a message.
+
+A check that fails inside the transaction ends it with nothing written.
+
+Answer: `201 { messageId, position }`, the new row's id and position, as
+`/send-message` answers.
+
+What the lock gives. Two requests about one message go one after the
+other: the second waits at step 1 until the first has ended, and then
+sees what the first wrote. So of two deletes sent in the same instant one
+is written and the other gets `409 message deleted`. Of an edit and a
+delete sent in the same instant, the one that reaches the lock first is
+written first: when that is the edit, both are written, the edit with the
+lower position; when it is the delete, the edit gets `409 message
+deleted`. An edit is never written after a delete, so a delete is always
+the last row that names a message. The lock is on the message's row
+alone. A request about another message does not wait at it, and a read of
+the room never waits for it.
+
+What follows from the checks:
+
+- A person who has left a room is no member, so the two routes refuse
+  them, and what they wrote there stays as it is. A room that does not
+  exist has no member either: `403 not a member`.
+- The id of an edit or of a delete is no message (`404 message not
+  found`): an edit cannot be edited or deleted by its own id. So is the
+  id of a message of another room, also one the caller is in.
+- The 15 minutes count from the message, also for a second edit. A
+  message that is exactly 15 minutes old can still be edited. The number
+  is `EDIT_MINUTES` in `src/chat/chat.service.js`.
+- A delete has no time limit.
+- Where editing and deleting are off, they are off for every member and
+  every message of the room, and check 2 answers before the message is
+  looked at.
+
+### 31.4 The changes of `/list-messages`
+
+**POST /list-messages** (setup; section 5). The request is the one of
+before: the open chat's read of every 3 seconds with `afterPosition`, and
+the read with `beforePosition` when a chat opens and for older messages.
+The answer's `messages` now holds every row of the room in the order of
+`position`, all three kinds, and each row has two fields more:
+
+```json
+{ "messageId", "position", "senderAnopodId", "message", "createdAt", "kind", "targetMessageId" }
+```
+
+- `kind`: null on a message, `"edit"` or `"delete"` on a row about one.
+- `targetMessageId`: the message an edit or a delete is about, hex; null
+  on a message.
+- `message`: the ciphertext, base64, or null.
+
+One rule decides about the ciphertext: **a row goes out with `message:
+null` once a later row of the room names the same message.** A message is
+named by its own id; an edit and a delete name their target. So an edited
+or deleted message goes out without its text. An edit goes out without
+its text once a newer edit, or a delete, of the same message is there. A
+delete never has one. Everything else of such a row goes out as before:
+its id, its `position`, its sender and its time.
+
+A message that was edited once, and its edit:
+
+```json
+{ "messageId": "a1…", "position": 4102, "senderAnopodId": "9c…", "message": null, "createdAt": "…", "kind": null, "targetMessageId": null }
+{ "messageId": "d7…", "position": 4117, "senderAnopodId": "9c…", "message": "…", "createdAt": "…", "kind": "edit", "targetMessageId": "a1…" }
+```
+
+The same two rows after the message was deleted, and the delete:
+
+```json
+{ "messageId": "a1…", "position": 4102, "senderAnopodId": "9c…", "message": null, "createdAt": "…", "kind": null, "targetMessageId": null }
+{ "messageId": "d7…", "position": 4117, "senderAnopodId": "9c…", "message": null, "createdAt": "…", "kind": "edit", "targetMessageId": "a1…" }
+{ "messageId": "f3…", "position": 4130, "senderAnopodId": "9c…", "message": null, "createdAt": "…", "kind": "delete", "targetMessageId": "a1…" }
+```
+
+What a reader of the answer has to know:
+
+- `afterPosition`, `beforePosition` and `limit` count every row. A page
+  of 50 rows can hold fewer than 50 messages.
+- A row with no `kind` and no `message` is a message whose text stands in
+  a later row, or that is deleted. The row that says which has a higher
+  `position`. A wallet reads a chat from its newest rows backwards, so it
+  mostly holds that row already. When it does not, because the row was
+  written after the position the wallet asked below, or because `limit`
+  cut the answer before it, the wallet's next read with `afterPosition`
+  brings it (the plan's section 7).
+- The reading rule on both sides is the same (the plan's section 7): a
+  message is deleted when a delete names it; otherwise its text is the
+  newest edit's; otherwise its own.
+- The old ciphertext stays in the table. This server hands it to nobody
+  any more, a member of the room included.
+- `seenSince`, `seen` and `seenSeq` (29.4) are as before. A seen position
+  counts every row too: `/mark-messages-seen` raises it up to the room's
+  highest position, which can be an edit's or a delete's.
+
+The statement of each of the two reads names the same columns for a row
+and, for each row it sends, asks the index of 31.2 once whether a later
+row of the room names the same message. An entry is 35 bytes longer than
+before (`,"kind":null,"targetMessageId":null`).
+
+### 31.5 The changes of `/list-chat-rooms`
+
+**POST /list-chat-rooms** (setup; section 5; 29.3). The request is the
+one of before. Two statements make `lastMessage` and `lastPosition`:
+`listRoomsFor`, for a room that is sent whole, and
+`listNewestMessagesFor`, for the three fields of a room in which only a
+row is new. Until this section both took the row with the room's highest
+`position`. Now, in both:
+
+- `lastMessage` is the room's newest message, never an edit or a delete:
+  the newest row with no `kind`. It is null for a room without a message.
+
+  ```json
+  { "messageId", "position", "senderAnopodId", "message", "createdAt", "editPosition", "deleted" }
+  ```
+
+  `messageId`, `position`, `senderAnopodId` and `createdAt` are that
+  message's own. `message` is the ciphertext of the newest edit when the
+  message was edited, its own when it was not, and null when it was
+  deleted. `editPosition` is the `position` of the newest edit, null for
+  a message that was never edited. `deleted` is true when a delete names
+  the message, else false.
+- `lastPosition` is the highest `position` of any row of the room, 0 for
+  a room with none, as before.
+
+The message of 31.4, edited once, as its room's newest:
+
+```json
+"lastMessage": { "messageId": "a1…", "position": 4102, "senderAnopodId": "9c…", "message": "…", "createdAt": "…", "editPosition": 4117, "deleted": false }, "lastPosition": 4117
+```
+
+What a reader of the answer has to know:
+
+- `lastPosition` is above `lastMessage.position` whenever the room's
+  newest row is an edit or a delete, of the newest message or of an older
+  one. An older message that is edited leaves `lastMessage` as it was and
+  raises `lastPosition`.
+- A newest message that is deleted stays the room's `lastMessage`, with
+  `message` null and `deleted` true. The answer does not go back to the
+  message before it.
+- `editPosition` stays what it was when an edited message is deleted.
+- An edit or a delete raises the room's `message_seq` (31.2). So a read
+  with `since` gets that room's three fields once, about 570 bytes with a
+  short text, and a read without `since` has the same `lastMessage` in
+  the whole room. That is how a wallet's chat list follows an edit.
+  Nothing new is needed for it.
+- `seq`, `counts`, the invites and the join requests are as in 29.3.
+
+The two statements share one piece of SQL for these fields, and one
+function makes the object from a row, so that they cannot come apart. A
+`lastMessage` is 36 bytes longer than before
+(`,"editPosition":null,"deleted":false`).
+
+### 31.6 What a wallet does with it
+
+The wallet's part is step 2 of the plan and is written in the wallet's
+spec. In short, as this server's answers are meant to be read (the plan's
+3.5 and section 7):
+
+- In an open chat a message is drawn as a bubble, and an edit or a delete
+  never is. The page keeps, for each message, the newest row that names
+  it: a delete means the grey line, an edit means the edit's text and the
+  word "edited".
+- The person's own edit or delete is drawn at once, from the `201`.
+  Everyone else gets the row with their next read of the room.
+- In the chat list the line under a chat's name is `lastMessage.message`
+  decrypted, or "Message deleted" when `deleted` is true. The time and
+  the order go by `lastMessage.createdAt`, the message's own time.
+- The unread dot goes by `lastMessage`'s sender and `position`, which an
+  edit or a delete does not move. The sound has to compare
+  `lastMessage.position` where it compared `lastPosition` (the plan's
+  section 4, point 6).
+- "Seen" under a person's own edited message is counted from the edit's
+  `position` (point 5).
+- The menu shows only where this server would say yes; a refusal as too
+  late or as deleted gets a sentence of the wallet's own.
+
+A wallet of before step 2 passes the new fields over. It meets a row
+without ciphertext only once somebody has edited or deleted, which needs
+a wallet of step 2. What it then draws is read in the wallet's code by
+the plan (its section 4, point 10) and is step 2's to try.
+
+### 31.7 Files
+
+- `db/schema.sql`: in the `CREATE TABLE` of `chat_room_messages` the two
+  columns, `message` without `NOT NULL` and the named check; the message
+  edit block, new, at the end; the file's opening comment, which names
+  the new block among the idempotent ALTERs; and, on the user's word
+  after the build, six older comments (31.9).
+- `src/chat/chat.queries.js`: `lockMessage`, `messageDeleted` and
+  `insertMessageChange`, new, after `insertMessage`; `MESSAGE_ROW_COLUMNS`
+  and `messageFromRow`, new, which `listMessages` and `listMessagesBefore`
+  now use for their columns and their rows, with the two fields and the
+  rule of 31.4; `LAST_MESSAGE_COLUMNS`, `LAST_MESSAGE_JOINS` and
+  `lastMessageFromRow`, new, which `listRoomsFor` and
+  `listNewestMessagesFor` now use in place of their own copies of the
+  join of the newest row; the comments of these four functions, and a
+  sentence in the comment of `raiseSeenPosition`.
+- `src/chat/chat.service.js`: `editMessage` and `deleteMessage`, new,
+  after `sendMessage`, and `changeMessage`, which holds what the two
+  share; the constants `EDIT_MINUTES` and `EDITS_OFF`; three imports; the
+  file's opening comment; and a sentence in the comments of `listRooms`,
+  `listRoomMessages` and `markSeen`.
+- `src/chat/chat.handlers.js`: `editMessageHandler` and
+  `deleteMessageHandler`, new, after `sendMessageHandler`, and the two
+  imports.
+- `src/chat/chat.router.js`: the two routes' lines after `/send-message`,
+  the two imports, and "eighteen" in the comment.
+- `src/app.js`, on the user's word after the build: "eighteen" in the
+  comment on the chat router's line. No line of code.
+- Here: section 4 (`### chat_room_messages`: the new columns and the
+  check in the SQL and a paragraph), section 5 (`### POST
+  /list-chat-rooms`: a dated paragraph; `### POST /list-messages`: the
+  two fields in the answer and a dated paragraph), 29.3 (a dated clause
+  on `lastMessage`) and this section. `README.md`: the rows of
+  `/edit-message` and `/delete-message` in the Endpoints table, after
+  `/send-message`; and, on the user's word after the build, five older
+  places (31.9).
+
+Nothing else in existing code changes: not `insertMessage` and
+`sendMessage`, not `raiseSeenPosition` and `lastPosition`, which count
+every row of a room and stay as they are, no line of code in
+`src/app.js`, not `package.json`, not `.example.env`. Two columns, one check, one index and
+two routes; no table, no trigger, no counter, no env variable, no npm
+package.
+
+### 31.8 What is left as it is
+
+The plan's section 6, as far as it is this server's:
+
+- The `refuse_change` trigger on `chat_room_messages`. The database
+  itself would still take an `UPDATE` or a `DELETE` of a row: only this
+  server's code never sends one. On the user's word ("Add that to the
+  after production todos list") it is the line "chat messages: the
+  database itself does not refuse a change" in
+  `~/Desktop/Z-TestNet/after_production_todos/things-to-do-after-production.md`.
+- Room admins. Nobody edits or deletes another person's message, a
+  public room's creator included. It is the block "Room admins, added
+  2026-11-24" under the line "chat rooms: nobody can be taken out" of
+  the same list.
+- Replying to a message: the line "chat: reply to a message, and the
+  three options on a phone" of the same list. A reply is also a message
+  that names another message, so `target_message_id` could serve it
+  later. Nothing of it is built here, and the reading rule of 31.4 would
+  have to leave a reply out.
+- A history of a message's earlier texts. This server keeps the rows and
+  hands the old ciphertext to nobody.
+- Taking a text back from someone who has read it. A wallet that had the
+  chat open has the old text, and this server cannot take it away.
+- Editing or deleting after leaving a room, and in the three kinds of
+  room of 31.1.
+- The gap of 29.7: of two rows written in the same instant, a wallet can
+  miss one. An edit and a delete are rows like any other. A wallet that
+  misses one keeps the old text, or leaves that message out, until the
+  chat is opened again. It is the line "chat: of two changes written at
+  the same instant, a phone can miss one" of the same list.
+- A limit on how many edits one message takes in its 15 minutes. Each
+  edit is a row, and nothing limits how many requests one person sends,
+  messages included: the line "limits against flooding" of the same
+  list.
+
+### 31.9 Notes from the build
+
+#### Build 1, the masterpod (2026-11-24)
+
+Built from `~/Desktop/Z-TestNet/forclaude/chat-edit-delete-plan-1.md`,
+its sections 3.1 to 3.4, the points 1, 7, 8 and 9 of its section 4, step
+1 of its section 5 and its section 7, on main at 5ca9e41, the working
+tree clean. The plan holds no code, so all of the code is the build's. No
+new npm package, and no test script in the repo. The schema was not
+applied to any database of the network: the user applies the whole file
+as section 6 of `forclaude/masterpod-deploy-plan-1.md` says, on the
+leader, and then pulls and restarts the three servers, the leader last.
+The file goes on before the new code runs. On a database without the
+block the built code fails every `/list-messages` and every
+`/list-chat-rooms` that has a room to send: the chat would be down for
+everybody until the block is there. The other order is safe: the code of
+before names its columns and never looks at the new ones. Both were tried
+(below). What the plan left open and how it was decided:
+
+- The number and the date. The plan says "a new section 30": 29 was the
+  last section when it was written. Joy's build took 30 a few hours
+  later the same day (5ca9e41), so this section is 31, the next free
+  number on the build day. The wallet's spec has the same thing: the
+  plan's "a new 4.18" is taken by Joy there. The date is 2026-11-24, the
+  day of the build and of the plan's FINAL.
+- The block's name, "The message edit block". The file's opening comment
+  lists the blocks whose ALTERs change a table that exists; the plan
+  says the new one joins that list, and it does.
+- The columns inline. The two new columns are the last of the table on
+  both ways, so a database built from nothing and one that got the block
+  hold their columns in the same order. The line of `message` lost its
+  `NOT NULL` and nothing else.
+- The check. The plan asks for a check that `message` is null on a
+  delete and nowhere else. The one named check also holds that `kind`
+  and `target_message_id` are set together: the plan's 3.1 says so of
+  the three kinds of row, and it costs nothing more. It reads both ways:
+  a delete has no ciphertext, and every other row has one. Its name is
+  not `chat_room_messages_message_check` or
+  `chat_room_messages_kind_check`: PostgreSQL gave those to the columns'
+  own checks. It is dropped and added at every run, as
+  `chat_rooms_case_check` and `notifications_kind_check` are, which is
+  the file's way to make a named check idempotent.
+- The index is partial, `WHERE target_message_id IS NOT NULL`, as
+  `chat_rooms_listing_id_idx` is: "for the rows that have one".
+- `400 invalid messageId`. The plan's table has the six refusals and
+  says that a body of the wrong shape gets a `400`. A `messageId` that
+  is no id is answered like a `chatRoomId` that is none, in the words of
+  the neighbours `/send-message` and `/list-messages`.
+- Check 2 reads the room after the member check. A room that does not
+  exist never gets there: it has no member.
+- Checks 3 and 4 run inside the transaction too, with the locked row,
+  though the plan asks that only of check 5: one read of the message's
+  row serves checks 3, 4 and 6, and it has to be the locked one.
+- The 15 minutes. `now()` is the moment the request's transaction began,
+  the same function that stamps `created_at`. A request that waits at
+  the lock for another one is judged by the moment it began. The
+  comparison is `now() > created_at + 15 minutes`: exactly 15 minutes is
+  still in time.
+- "An edit and a delete of one message that arrive in the same instant
+  cannot both pass" (the plan's section 7) is read as 31.3 tells it: the
+  one that reaches the lock first is written first, and an edit that
+  comes second is refused. A delete that comes second, after an edit, is
+  written: the plan's check 5 asks only that no delete names the message
+  yet. What cannot happen is an edit after a delete, or two deletes.
+- `editPosition` of a deleted message. The plan gives `editPosition` as
+  "the `position` of the newest edit, `null` for a message that was
+  never edited". A deleted message that was edited keeps it.
+- "Names the same message" is read within the room, as the plan's rule
+  says ("a later row of the chat"): each of the three lookups also
+  compares `chat_room_id`. The routes write an edit or a delete only
+  into its message's room, so this changes no answer.
+- One piece of SQL for a row and one for `lastMessage`. `listMessages`
+  and `listMessagesBefore` each had their own copy of the columns and of
+  the lines that make a row's object, and so had `listRoomsFor` and
+  `listNewestMessagesFor` for the newest row (29.8). Each pair now uses
+  one constant and one function of the file, in the manner of
+  `ROOM_LISTING_COLUMNS` and `listingFromRow`, because the plan's point
+  7 wants the two statements to give the same `lastMessage`. In
+  `listRoomsFor` the join of the newest row now names the room through
+  the member row (`cm.chat_room_id`), which is the same room.
+- Three lookups for `lastMessage` where there was one: the room's
+  highest position, its newest row with no `kind`, and that message's
+  newest edit and its delete, the last two through the new index. The
+  newest message is found by walking back from the room's newest row
+  past the edits and deletes above it.
+- `insertMessage` is untouched, and `insertMessageChange` beside it
+  writes the six columns of an edit or a delete.
+- Here and in the README. In section 4 the SQL of `###
+  chat_room_messages` is the file's, with one paragraph at the end of
+  the entry. In section 5 the answer of `/list-messages` names the two
+  new fields, and both entries end with a dated paragraph. In 29.3 the
+  clause stands in brackets after the sentence on the three fields.
+  Section 5 has no entry of its own for the two new routes: the plan
+  names the dated clauses of the two reads there, and the two routes
+  are in 31.3, as Joy's three routes are in 30.4 alone. The README's two
+  new rows follow the row of `/send-message`.
+- Places the plan does not name that this step leaves saying less than
+  is true. In the four files of `src/chat/`, which the plan names whole,
+  the build brought the comments in line: the comments of `listRooms`,
+  `listRoomMessages`, `markSeen` and `raiseSeenPosition` each gained a
+  sentence, and no line of their code changed. In the files that the
+  plan names with their places, or does not name, twelve sentences were
+  left as they are and asked about in the build's report. In
+  `src/app.js`, the comment on the chat router's line ("the sixteen chat
+  routes"). In `README.md`, five: the `chat/` line of the Layout ("the
+  sixteen chat routes"); in "Database tables" the row of
+  `chat_room_messages` ("Ciphertext messages, numbered by `position`")
+  and the row of `chat_rooms` ("the counter's value at the room's last
+  message"); and in the Endpoints table the rows of `/list-messages` and
+  `/list-chat-rooms`, which do not know the edits and the deletes. In
+  `db/schema.sql`, six comments: of the table `chat_room_messages`
+  ("Messages, ciphertext under the room key"), of its `position`
+  ("Counts up with every message written") and of its `message`, which
+  does not say that it is null on a delete; of `chat_rooms.message_seq`
+  and, in the chat change block's opening comment, the sentence on it
+  ("when a message is written in the room": an edit or a delete raises
+  it too); and of `chat_room_members.seen_position` ("never above the
+  room's newest message": the newest row can be an edit or a delete).
+  Read for it: every sentence of this file, of the README, of `src` and
+  of the schema file that names `/list-messages`, `/list-chat-rooms`,
+  `/send-message`, `/mark-messages-seen`, `lastMessage`, `message_seq`
+  or `chat_room_messages`. Sections 21 and 29 say what their own builds
+  changed and stay as records, but for the one clause in 29.3. (The
+  twelve were brought in line the same day, on the user's word: "After
+  the build's report", below.)
+
+The checks. All of them ran from empty databases on the files as they
+were handed over. The tools are outside the repo, in the build chat's
+scratch folder, and none of them is kept in it.
+
+- The code. `node --check` on the four changed files, clean, on Node
+  24.22.0. One load of the app with no server and no database
+  (`createApp()` with made-up settings): 117 routes, eighteen of them
+  the chat's; a copy of 5ca9e41 gave 115 and sixteen the same way. A
+  type checker's read of `src/app.js` (`tsc --checkJs`, TypeScript 6.0.3
+  from the wallet's folder) named no unknown name, no wrong count of
+  arguments and no missing export or module, and in the four chat files
+  no kind of finding that the same read of 5ca9e41 does not have, apart
+  from "implicitly has an 'any' type".
+- The scratch PostgreSQL. A PostgreSQL 17.11 that was started for this
+  build alone: a data folder of its own in the build chat's scratch
+  folder, listening on 127.0.0.1 port 62731 and nowhere else, with no
+  socket file. This Mac's own PostgreSQL on port 5432 was not touched.
+  Every apply of a schema file ran as the deploy's line runs it: one
+  transaction after `SET ROLE masterpodsoftware`, into a database that
+  the role owns. Every tool that uses this server's pool stops before
+  its first query unless the pool's host and port are the scratch
+  PostgreSQL's.
+- A database as it is live today. The file of 5ca9e41 into an empty
+  database: 47 tables. It was then filled through that commit's own
+  routes, over HTTP with signed requests: seven pods and, between them,
+  a chat of two, a group, a public room with a picture, a chat about a
+  listing, a chat with an open invite and a chat with no message. Two
+  old marketplace rooms, one of them with its listing, and a chat about
+  an attestor case were written by SQL, with two members and two
+  messages each: no route makes a marketplace room any more, and a case
+  chat needs an appointed attestor and an open case. 9 rooms and 18
+  messages.
+- The schema file. The new file on top of that database: 47 tables. One
+  md5 over every column, constraint, index, trigger, function, sequence,
+  comment and owner of the schema came from 1,266 lines before and from
+  1,274 after: 8 are new, the 2 columns, their 2 checks, the named
+  check, the index and the 2 comments, and six changed, `message` from
+  not nullable to nullable and the five older comments of "After the
+  build's report", below. One md5 over every message row's
+  id, position, sender, ciphertext and time was the same before and
+  after: no row was touched. The new file once more: both md5 the same.
+  The new file alone into a second empty database, twice: 47 tables and
+  that same md5 of the catalog, both times. The check by hand on that
+  empty database, ten inserts: a message with ciphertext, an edit with
+  ciphertext and a delete without were taken; a message without, an
+  edit without, a delete with ciphertext, a `kind` without a target and
+  a target without a `kind` were refused by the named check, another
+  `kind` and a target of 31 bytes by the columns' own.
+- The two half-deployed states, each with the real app over HTTP and
+  signed requests. The built code on the tables of before:
+  `/list-messages` answered `500` (`column m.kind does not exist` in the
+  server's log); `/list-chat-rooms` answered `500` with no `since` and
+  with a `since` below a room's number (`column msg.kind does not
+  exist`), and `200` with a `since` and nothing new, which is the one
+  statement that names no new column; `/edit-message` and
+  `/delete-message` answered `500`; `/send-message`,
+  `/mark-messages-seen` and `/list-public-chat-rooms` answered. So the
+  schema line goes first. The code of 5ca9e41 on the new tables: a
+  message sent (`201`; its row has no `kind`, no target and a
+  ciphertext), read back by `/list-messages` with the five fields of
+  before, named by `/list-chat-rooms` as `lastMessage` in the form of
+  before, and marked seen; `/edit-message` answered `404`, since that
+  code has no such route.
+- A wallet of today, with no edit and no delete in the table. The code
+  of 5ca9e41 and the built code were started in one process on one
+  database and asked the same as the same seven pods.
+  `/list-chat-rooms` with `{}` and with `since` 0: the built code's
+  answer is the answer of before, byte for byte, with
+  `,"editPosition":null,"deleted":false` in each `lastMessage`, 36 bytes
+  for each chat that has a message. `/list-messages` in four forms of
+  the request for each of 16 memberships: the answer of before, byte for
+  byte, with `,"kind":null,"targetMessageId":null` in each row, 35 bytes
+  a row.
+- The walk. The built code on the updated database, over HTTP with
+  signed requests. 95 results, none bad. Before any edit: both reads
+  carry the new fields with nothing in them, in the plan's order. Twelve
+  bodies of the wrong shape: each its `400`, nothing written. Check 1: a
+  pod outside the chat, and a chat that does not exist. Check 2: an edit
+  and a delete of one's own message in a chat about a listing, in an old
+  marketplace room without and with its listing, and in a chat about an
+  attestor case, each `403 editing and deleting are off in this chat`,
+  the rows as they were. Check 3: an id that names nothing, one's own
+  message of another chat, an edit's id and a delete's id. Check 4: the
+  other person's message, and a public room's creator on a member's
+  message. An edit: `201` with the new row's id and a higher position;
+  the new row in the table an edit that names the message, by the
+  caller, with the new ciphertext; the message's own row in the table
+  as it was, with its old ciphertext; no notification. The other
+  person's read with `afterPosition`: the edit alone. The whole read:
+  the message's row still there, with its sender, time and position and
+  without ciphertext, every other row with its own. `/list-chat-rooms`:
+  `lastMessage` the message itself with the edit's ciphertext and
+  `editPosition`, `lastPosition` the edit's; with `since` that chat
+  alone as three fields with the same `lastMessage`; nothing else of the
+  chat's entry changed; nothing for a pod outside. A second edit: the
+  first edit goes out without ciphertext and is still in the table;
+  `lastMessage` has the second's. A seen position rises to an edit's
+  position. A delete: `201`; a row with no ciphertext; the three
+  ciphertexts still in the table; the whole read hands all four rows
+  out without ciphertext; `lastMessage` the message itself with
+  `message` null, `deleted` true and the `editPosition` of before.
+  Check 5: an edit and a delete of a deleted message. Check 6: an edit
+  of a message whose `created_at` was set back 16 minutes, refused;
+  set back 14 minutes, taken, and refused again at 16, since a second
+  edit goes by the message's own time; a delete at 16 minutes and one
+  at 400 days, taken. The order of the checks where two fail at once,
+  five pairs. An older message edited: `lastMessage` stays the newest
+  message as it was and `lastPosition` is the edit's; then deleted;
+  then the newest message deleted with no edit before (`editPosition`
+  null, `deleted` true); then a new message. `beforePosition` with a
+  limit of 3: two deletes and a message. An edit and a delete in a
+  public room by the member who wrote the message. A person who left a
+  chat: both refused. An edit of 65536 bytes taken, one of 65537
+  refused. At the end both reads of every chat of every pod were
+  worked out again from the table's rows by the plan's rule and were
+  equal, and both statements gave the same `lastMessage`.
+- An edit and a delete in the same instant. With two transactions held
+  open and the routes' own statements: a second request about the same
+  message waited at the lock before it had looked for a delete, and,
+  once the first was committed, saw the delete the first had written;
+  a read of the chat did not wait; a request about another message of
+  the chat did not wait at the lock, and its write waited for the first
+  one's write, as two messages sent in one chat do (29.2); a request
+  about a message of another chat waited for nothing. Then the real
+  routes over HTTP, 100 rounds, each with five messages changed at the
+  same moment through the app's pool of ten connections. An edit and a
+  delete of one message at once, 200 times: the delete was written
+  every time, and the edit was written before it, with the lower
+  position, or refused as deleted, about half and half. Two deletes at
+  once, 100 times: one `201` and one `409 message deleted`. Four edits
+  and two deletes at once, 100 times: one delete written, every written
+  edit below it. The table afterwards: 402 deleted messages, none with
+  two deletes, none with an edit above its delete; PostgreSQL's own
+  count of deadlocks 0. The same rounds against a scratch copy of the
+  code with `FOR UPDATE` taken out came out bad: 180 messages with two
+  deletes and 176 with an edit after the delete. So the rounds notice a
+  missing lock, and the lock is needed.
+- Random people. Five rounds of 3,000 steps with five seeds, over HTTP
+  with signed requests: seven people send messages, messages get 16
+  minutes old, and a random person asks for an edit or a delete of a
+  random row of a random chat, or of an id that names nothing. A script
+  holds the six checks in their order and says for each request what
+  the answer must be. 9,587 requests, none answered otherwise: 976
+  written, 1,800 `not a member`, 3,417 off in that chat, 1,902 `message
+  not found`, 957 `not your message`, 345 `message deleted`, 190 `too
+  late to edit`. After each round the table held exactly the rows the
+  script had counted, no edit or delete stood in one of the three kinds
+  of chat, and both reads of every chat equalled the rule worked out
+  from the table.
+- Many rows. A database with 20,000 rooms, 100,000 member rows and
+  400,000 messages, 100,000 of them in one room; the table with its
+  index is 149 MB. The schema file's first run on it took 0.7 seconds
+  at one try and 0.9 at another, psql's start included, and a later run
+  0.11 seconds, where the file of before takes 0.07 on tables that have
+  it. For that time the table is held and requests wait. Of a later
+  run, the dropped and added check is 24 milliseconds, one read of the
+  400,000 rows. The same
+  reads by the code of 5ca9e41 and by the built code, with no edit and
+  no delete in the table, each the middle of five turns of 100 calls of
+  the route's own function, on this Mac, the database on the same
+  machine and no PgBouncer between: the whole list of a pod in 50 rooms
+  2.06 milliseconds before and 2.33 now; the three fields of its 50
+  rooms 0.25 and 0.41; the newest 50 rows of the room of 100,000
+  messages 0.16 and 0.19; 200 rows from its middle 0.43 and 0.46; a
+  read with nothing new 0.05 and 0.07. Then 44,000 edits and 20,000
+  deletes were written into it by SQL, 16,000 of them above the newest
+  message of the room of many rows: the index on `target_message_id` is
+  3.7 MB for the 64,000 rows; PostgreSQL planned no walk through the
+  whole table for any of the four statements, each lookup goes through
+  one of the two indexes; that room's three fields took 1.1
+  milliseconds, against 0.19 for a room of 15 messages, which is the
+  walk back past 16,000 rows; and both reads of all 50 rooms of that
+  pod, 116,750 rows, equalled the rule worked out from the table.
+- The way back, for the day it is asked. The code of 5ca9e41 on a table
+  that holds an edit answers: it hands the message out with its old
+  ciphertext and the edit as a second message. On a table that holds a
+  delete it answers `500` for that chat's `/list-messages`, and `500`
+  for `/list-chat-rooms` of every member of that chat for as long as
+  the delete is the chat's newest row (`Cannot read properties of null`
+  in the server's log): that code takes every row for a ciphertext. So
+  once a wallet of step 2 has been in use, this server cannot go back
+  to the code of before this step without that. Until then no delete
+  is in the table, and the way back is as for any update.
+- The lines for the servers, in stand-in form on the scratch
+  PostgreSQL, with a copy of a local file in place of the download.
+  Every line's syntax was read by bash and by dash. The schema line
+  carries the whole hash of the new file and prints `OK`, 47, the
+  apply's 586 lines, 47, the owner, 2 for the new columns and 1 for the
+  new index; a second run prints the same; with the file of before as
+  the download it prints `FAILED` and applies nothing. The look line
+  asks a server's own port for `/delete-message` with the body `{}`:
+  the built code answers `{"error":"bad request shape"}` and the code
+  of before `{"error":"Not Found","path":"/delete-message"}`. None of these lines
+  has run on a server.
+- Not tried by the build. Nothing on a server, nothing on Linux,
+  nothing on PostgreSQL 16, which the servers run (the block uses
+  nothing newer than the file had), and nothing through PgBouncer.
+  `src/server.js` was not booted: the app was started by `createApp()`.
+  No wallet called the routes: the wallet's part is step 2, and what a
+  wallet of before draws for an edit and a delete (the plan's section
+  4, point 10) is that step's to try. The gap of 29.7 was not tried
+  for.
+- Not touched: `insertMessage` and every route of before but the two
+  reads, `src/app.js` but for one word of a comment (below),
+  `src/marketplace/`, every other feature folder,
+  `package.json`, `.example.env`, the scripts. Nothing between a wallet
+  and this server names a path: the wallet's server program forwards
+  everything under `/api/masterpod` (read at web_app 6aee7e7), and the
+  written copy of the doormen's file has no rule by path (the plan's
+  section 7; not read again by the build).
+- The numbers. `db/schema.sql` has 1914 lines, 38 more than before, and
+  its sha256 begins 90711297, with the six comments of "After the
+  build's report", below. Before the step it had 1876 lines and its
+  sha256 began 9ae0fd66. It makes 47 tables, as before: the count that
+  the deploy's schema line prints does not change with this step, so
+  that line also counts the two new columns and the new index.
+
+#### After the build's report, the same day (2026-11-24)
+
+The user read the report in the build chat. It listed the twelve
+sentences above, with the advice to bring them in line before the commit.
+The user: "go ahead and do the updates to the files and then bring me the
+new paste to commit". So the twelve were brought in line before the
+commit, by a small script that changes an old sentence only where it
+stands exactly once. None of this is in the plan, and no line of code
+changed.
+
+- `src/app.js`, the comment on the chat router's line: "owns the eighteen
+  chat routes".
+- `README.md`, five places. The `chat/` line of the Layout: "the eighteen
+  chat routes". In "Database tables", the row of `chat_room_messages`
+  names the edits and the deletes, each a row of its own, and says that
+  no row is ever changed or removed; the row of `chat_rooms` says that
+  `message_seq` follows an edit and a delete too. In the Endpoints table
+  the rows of `/list-messages` and `/list-chat-rooms` each gained a
+  clause that begins "since section 31".
+- `db/schema.sql`, six comments. Of the table `chat_room_messages`: the
+  edits and the deletes, each a row of its own, and that no row is ever
+  updated or deleted. Of its `position`: it counts up with every row
+  written. Of its `message`: a message's text or an edit's new text,
+  null on a delete and nowhere else. Of `chat_rooms.message_seq`, and
+  the sentence on it in the chat change block's opening comment, which
+  is one line longer for it: an edit or a delete raises it too. Of
+  `chat_room_members.seen_position`: never above the room's newest row,
+  which can be an edit or a delete. Five of the six are `COMMENT ON`
+  statements, so the deploy's schema line writes the new words into the
+  database. No statement was added or taken away.
+- Checks. All of them ran again from empty databases on the files as
+  they now stand, and the list above has what this last run gave. A
+  `diff` against the files as the report had handed them shows 12 lines
+  out and 13 in, in these three files, every one a comment or a line of
+  the README, and none in `src/chat/`. `node --check` on `src/app.js`,
+  clean.
+- The numbers. `db/schema.sql` has 1914 lines, one more than the report
+  handed, and its sha256 begins 90711297, where it began a495bdc1. The
+  deploy's schema line carries the new hash; the line of the build's
+  report would print `FAILED` and apply nothing. One commit carries the
+  build and this: eight files, the seven of the build and `src/app.js`.

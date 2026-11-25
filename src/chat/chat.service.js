@@ -24,6 +24,7 @@ import {
   insertJoinRequest,
   insertMember,
   insertMessage,
+  insertMessageChange,
   insertRoom,
   inviteOpen,
   isMember,
@@ -37,6 +38,8 @@ import {
   listPublicRooms as listPublicRoomsQuery,
   listRoomsFor,
   listSeenSince,
+  lockMessage,
+  messageDeleted,
   raiseSeenPosition,
   roomAboutListingBy,
   upsertRoomPicture,
@@ -44,6 +47,7 @@ import {
 
 /**
  * The chat feature: rooms, invites, join requests, membership, messages,
+ * a person's edits and deletes of their own messages (since 2026-11-24),
  * how far each member has read (the seen positions, since 2026-11-19), the
  * picture of a public room (since 2026-11-22) and the chat public keys.
  * The server never opens a wrapped room key or a message; it checks who
@@ -62,6 +66,12 @@ const hpkeKeyLength = (n) => n >= 1 && n <= 4096;
 
 /** A message is at most 65536 bytes of ciphertext. */
 const MESSAGE_MAX_BYTES = 65536;
+
+/** A message can be edited until this many minutes after it was sent (2026-11-24, spec section 31). A delete has no such limit. */
+const EDIT_MINUTES = 15;
+
+/** What /edit-message and /delete-message answer in a room where they are off (spec section 31). */
+const EDITS_OFF = 'editing and deleting are off in this chat';
 
 /** Defaults and ceilings of the paged lists. */
 const PUBLIC_ROOMS_DEFAULT_LIMIT = 50;
@@ -378,6 +388,9 @@ export async function leave(anopod, body) {
  * people, picture or listing changed whole, a room with only a new message
  * as { chatRoomId, lastMessage, lastPosition }, and the invites and the
  * join requests written since. Without `since` it holds everything.
+ * Since spec section 31 an edit or a delete of a message counts as a new
+ * message does here, and `lastMessage` is the room's newest message as it
+ * stands now.
  */
 export async function listRooms(anopod, body) {
   if (!isObject(body)) return refuse(400, BAD_SHAPE);
@@ -487,6 +500,9 @@ export async function getRoomPicture(body) {
  * `seenSince` (2026-11-24, spec section 29), a number a wallet got as
  * `seenSeq` before, or 0, the answer also holds `seen`, the members whose
  * seen position changed after it, and `seenSeq`, the next `seenSince`.
+ * Since spec section 31 `messages` holds every row of the room, the edits
+ * and the deletes of a message among them, and the positions and `limit`
+ * count every row.
  */
 export async function listRoomMessages(anopod, body) {
   if (!isObject(body) || typeof body.chatRoomId !== 'string') return refuse(400, BAD_SHAPE);
@@ -530,10 +546,96 @@ export async function sendMessage(anopod, body) {
 }
 
 /**
+ * What /edit-message and /delete-message share after their body is read
+ * (2026-11-24, spec section 31): the six checks of 31.3 in their order,
+ * and the write. `kind` is 'edit' or 'delete'; `message` is the new text's
+ * ciphertext for an edit and null for a delete. An edit or a delete is a
+ * new row with a position of its own, written by the caller: no row is
+ * changed or removed. The last four checks and the write are one
+ * transaction with the message's row locked, so two requests about one
+ * message go one after the other, and a delete is always the last row
+ * that names a message.
+ */
+async function changeMessage(anopod, chatRoomId, targetMessageId, kind, message) {
+  if (!(await isMember(chatRoomId, anopod.anopodId))) return refuse(403, 'not a member');
+  // Off where a chat can end up as evidence: about a listing, an old marketplace room, about an attestor case.
+  const room = await findRoom(chatRoomId);
+  if (room === null || room.listingId !== null || room.type === 'marketplace' || room.caseId !== null) {
+    return refuse(403, EDITS_OFF);
+  }
+
+  const messageId = randomId();
+  const written = await withTransaction(async (client) => {
+    const target = await lockMessage(client, chatRoomId, targetMessageId, EDIT_MINUTES);
+    if (target === null) return refuse(404, 'message not found');
+    if (!target.senderAnopodId.equals(anopod.anopodId)) return refuse(403, 'not your message');
+    if (await messageDeleted(chatRoomId, targetMessageId, client)) return refuse(409, 'message deleted');
+    if (kind === 'edit' && target.editTimeOver) return refuse(409, 'too late to edit');
+    const position = await insertMessageChange(client, {
+      messageId,
+      chatRoomId,
+      senderAnopodId: anopod.anopodId,
+      kind,
+      targetMessageId,
+      message,
+    });
+    return { position };
+  });
+  if (written.ok === false) return written;
+  return ok(201, { messageId: toHex(messageId), position: written.position });
+}
+
+/**
+ * POST /edit-message. Body { chatRoomId, messageId, message }, the new
+ * text's ciphertext base64, with the limits of /send-message (2026-11-24,
+ * spec section 31). A member gives a message of their own a new text,
+ * until EDIT_MINUTES minutes after it was sent, by the database's clock.
+ * Off in a room about a listing, in an old marketplace room and in a room
+ * about an attestor case. Answers the new row's id and position.
+ */
+export async function editMessage(anopod, body) {
+  if (
+    !isObject(body) ||
+    typeof body.chatRoomId !== 'string' ||
+    typeof body.messageId !== 'string' ||
+    typeof body.message !== 'string'
+  ) {
+    return refuse(400, BAD_SHAPE);
+  }
+  const chatRoomId = decodeId(body.chatRoomId);
+  if (chatRoomId === null) return refuse(400, 'invalid chatRoomId');
+  const messageId = decodeId(body.messageId);
+  if (messageId === null) return refuse(400, 'invalid messageId');
+  const message = decodeBase64(body.message, MESSAGE_MAX_BYTES);
+  if (message === null) return refuse(400, `message must be base64 of 1 to ${MESSAGE_MAX_BYTES} bytes`);
+
+  return changeMessage(anopod, chatRoomId, messageId, 'edit', message);
+}
+
+/**
+ * POST /delete-message. Body { chatRoomId, messageId } (2026-11-24, spec
+ * section 31). A member deletes a message of their own, at any time. Off
+ * in the same three kinds of room as /edit-message. Answers the new row's
+ * id and position.
+ */
+export async function deleteMessage(anopod, body) {
+  if (!isObject(body) || typeof body.chatRoomId !== 'string' || typeof body.messageId !== 'string') {
+    return refuse(400, BAD_SHAPE);
+  }
+  const chatRoomId = decodeId(body.chatRoomId);
+  if (chatRoomId === null) return refuse(400, 'invalid chatRoomId');
+  const messageId = decodeId(body.messageId);
+  if (messageId === null) return refuse(400, 'invalid messageId');
+
+  return changeMessage(anopod, chatRoomId, messageId, 'delete', null);
+}
+
+/**
  * POST /mark-messages-seen. Body { chatRoomId, position }. Members
  * only. The caller's seen position in the room rises to `position`,
  * never above the room's newest message; a lower position changes
- * nothing.
+ * nothing. Since spec section 31 the room's newest row can be an edit or
+ * a delete of a message, and the position rises up to that row's.
  */
 export async function markSeen(anopod, body) {
   if (!isObject(body) || typeof body.chatRoomId !== 'string') return refuse(400, BAD_SHAPE);
