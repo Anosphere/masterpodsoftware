@@ -110,11 +110,29 @@ function optionalChoice(name, choices, fallback) {
 }
 
 /**
+ * An optional picture size: a width and a height in pixels with an x
+ * between them, such as 1024x1024, when set; `fallback` when the
+ * variable is not set.
+ */
+function optionalSize(name, fallback) {
+  const value = optionalText(name);
+  if (value === null) return fallback;
+  if (!/^[1-9][0-9]*x[1-9][0-9]*$/.test(value)) {
+    throw new Error(`${name} must be a width and a height in pixels, such as 1024x1024, got "${value}"`);
+  }
+  return value;
+}
+
+/**
  * The settings of Joy, the wallet's AI (src/joy/, spec section 30). With
  * ANTHROPIC_API_KEY set Joy is on. Without it Joy is off: /ask-joy says
  * so, and nothing is sent to Anthropic. No error ever prints the key.
- * The last two are her web search's (spec section 32): each may be 0,
- * and 0 in either switches web search off.
+ * The two after the first five are her web search's (spec section 32):
+ * each may be 0, and 0 in either switches web search off. The last six
+ * are her pictures' (spec section 33). With OPENAI_API_KEY set Joy can
+ * have a picture made. Without it she cannot, nothing is sent to OpenAI,
+ * and everything else is as it was. JOY_DAILY_PICTURES may be 0, which
+ * switches pictures off too. No error ever prints that key either.
  */
 function readJoy() {
   return Object.freeze({
@@ -125,6 +143,12 @@ function readJoy() {
     dailyMessages: optionalInteger('JOY_DAILY_MESSAGES', 300),
     maxSearches: optionalCount('JOY_MAX_SEARCHES', 3),
     dailySearches: optionalCount('JOY_DAILY_SEARCHES', 100),
+    openaiApiKey: optionalText('OPENAI_API_KEY'),
+    pictureModel: optionalText('JOY_PICTURE_MODEL') ?? 'gpt-image-2.6-flare',
+    pictureQuality: optionalChoice('JOY_PICTURE_QUALITY', ['low', 'medium', 'high'], 'low'),
+    pictureSize: optionalSize('JOY_PICTURE_SIZE', '1024x1024'),
+    pictureFormat: optionalChoice('JOY_PICTURE_FORMAT', ['jpeg', 'png', 'webp'], 'jpeg'),
+    dailyPictures: optionalCount('JOY_DAILY_PICTURES', 30),
   });
 }
 
@@ -214,6 +238,12 @@ export const env = Object.freeze({
   // many messages one pod may send her in one day (UTC). Her web search
   // (spec section 32): the most web searches for one message; and from
   // how many web searches in one day (UTC) a pod's further messages go
-  // out without web search. 0 in either switches web search off.
+  // out without web search. 0 in either switches web search off. Her
+  // pictures (spec section 33): OpenAI's API key (without it Joy makes
+  // no picture); OpenAI's image model; the quality of a picture (low,
+  // medium or high), its width and height in pixels and its file format
+  // (jpeg, png or webp); and from how many pictures in one day (UTC) a
+  // pod's further messages go out without the picture tool. 0 switches
+  // pictures off.
   joy: readJoy(),
 });

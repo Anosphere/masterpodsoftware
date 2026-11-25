@@ -13,12 +13,15 @@ import { addTokens, countMessage, findMemory, upsertMemory } from './joy.queries
  *
  * What this server keeps: the member's memory file, as one blob under the
  * pod's encryption key, which this server cannot open (joy_memories); and
- * a count of messages, tokens and web searches for each pod and day
- * (joy_usage). It keeps nothing of a conversation. The wallet sends the
- * conversation and the opened memory file with every message; both pass
- * through this server's memory on their way to Anthropic and are written
- * nowhere. Nothing of a web search is written either: no query, no page
- * and no source (spec section 32).
+ * a count of messages, tokens, web searches and pictures for each pod and
+ * day (joy_usage). It keeps nothing of a conversation. The wallet sends
+ * the conversation and the opened memory file with every message; both
+ * pass through this server's memory on their way to Anthropic and are
+ * written nowhere. Nothing of a web search is written either: no query,
+ * no page and no source (spec section 32). And nothing of a picture: no
+ * picture and no description (spec section 33). A picture's description,
+ * which Joy writes from the conversation, goes on to a second company,
+ * OpenAI.
  *
  * Each function runs its route's checks in the spec's order and returns
  * ok(status, body) or refuse(status, reason).
@@ -72,6 +75,20 @@ function searchFor(searches) {
 }
 
 /**
+ * Whether Joy may have a picture made for a message (spec section 33),
+ * from the pictures the pod's row of the day held when the message was
+ * counted: 'off' when this server holds no OPENAI_API_KEY or
+ * JOY_DAILY_PICTURES is 0; 'used' when the row has reached
+ * JOY_DAILY_PICTURES; 'on' otherwise. The row is read before the
+ * message's own picture, so a pod that writes from two devices at the
+ * same moment can end a day one over the number.
+ */
+function pictureFor(pictures) {
+  if (env.joy.openaiApiKey === null || env.joy.dailyPictures === 0) return 'off';
+  return pictures >= env.joy.dailyPictures ? 'used' : 'on';
+}
+
+/**
  * The checks of POST /ask-joy (setup), before anything is sent to
  * Anthropic. Body { messages, memory }: `messages` is the conversation,
  * oldest first, each { role: 'user' | 'assistant', text }, the member's
@@ -83,11 +100,13 @@ function searchFor(searches) {
  * Joy is on; and the pod's count of the day, which this call raises by
  * one unless it has reached JOY_DAILY_MESSAGES.
  *
- * Returns ok(200, { history, memory, day, search }) for the handler,
- * which answers as a stream, or a refusal. `day` is the row of joy_usage
- * the message was counted on. `search` is whether the message may search
- * the web: 'on', 'off' or 'used' (searchFor). It is never a refusal: a
- * message that may not search is answered without searching.
+ * Returns ok(200, { history, memory, day, search, picture }) for the
+ * handler, which answers as a stream, or a refusal. `day` is the row of
+ * joy_usage the message was counted on. `search` is whether the message
+ * may search the web: 'on', 'off' or 'used' (searchFor). It is never a
+ * refusal: a message that may not search is answered without searching.
+ * `picture` is the same for a picture (pictureFor): a message that may
+ * not have one made is answered without one.
  */
 export async function prepareAsk(anopod, body) {
   if (!isObject(body) || !Array.isArray(body.messages) || typeof body.memory !== 'string') return refuse(400, BAD_SHAPE);
@@ -109,11 +128,11 @@ export async function prepareAsk(anopod, body) {
 
   const counted = await countMessage(anopod.anopodId, env.joy.dailyMessages);
   if (counted === null) return refuse(429, 'daily limit reached');
-  return ok(200, { history, memory: body.memory, day: counted.day, search: searchFor(counted.searches) });
+  return ok(200, { history, memory: body.memory, day: counted.day, search: searchFor(counted.searches), picture: pictureFor(counted.pictures) });
 }
 
-/** Writes the tokens and the web searches of one message onto the pod's row of `day`. Nothing is written when Anthropic counted none. */
+/** Writes the tokens, the web searches and the pictures of one message onto the pod's row of `day`. Nothing is written when Anthropic counted none and OpenAI made no picture. */
 export async function recordTokens(anopod, day, tokens) {
-  if (tokens.input + tokens.output + tokens.cacheRead + tokens.cacheWrite + tokens.searches === 0) return;
+  if (tokens.input + tokens.output + tokens.cacheRead + tokens.cacheWrite + tokens.searches + tokens.pictures === 0) return;
   await addTokens(anopod.anopodId, day, tokens);
 }

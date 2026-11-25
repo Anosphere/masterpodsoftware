@@ -168,7 +168,7 @@ are base64 / base64url as the browser produces them.
 | `/list-noted-transactions`      | setup   | The caller's notes in a date range, newest first, the newest 1,000 with `more` when there are older ones |
 | `/get-wallet-settings`          | setup   | The caller's wallet settings blob and when it was set, null before the first set         |
 | `/set-wallet-settings`          | setup   | Stores the caller's wallet settings blob whole: one row per pod, replaced in place        |
-| `/ask-joy`                      | setup   | A message to Joy, the wallet's AI (2026-11-24, section 30): the conversation and the caller's opened memory file go to Anthropic's model, and the answer comes back as a stream of JSON lines; counted against the caller's messages of the day; nothing of it is stored; since section 32 Joy can search the web, the stream has a line when a search starts and the cited pages as `sources` in its last line, and the searches are counted for the caller's day |
+| `/ask-joy`                      | setup   | A message to Joy, the wallet's AI (2026-11-24, section 30): the conversation and the caller's opened memory file go to Anthropic's model, and the answer comes back as a stream of JSON lines; counted against the caller's messages of the day; nothing of it is stored; since section 32 Joy can search the web, the stream has a line when a search starts and the cited pages as `sources` in its last line, and the searches are counted for the caller's day; since section 33 (2026-11-25) Joy can have a picture made by OpenAI's image model, the stream has a line when she starts on one and one line with the picture, the description she wrote goes to OpenAI, and the pictures are counted for the caller's day |
 | `/get-joy-memory`               | setup   | The caller's memory file for Joy, as the blob the wallet made, and when it was set, null before the first set |
 | `/set-joy-memory`               | setup   | Stores the caller's memory file blob whole: one row per pod, replaced in place           |
 
@@ -300,7 +300,7 @@ tables, and no route reads the counter itself.
 | `noted_transactions`      | One row per ledger transaction a pod noted for its tax records: the ledger's facts in the clear, the private part as a blob under the pod's encryption key; one per pod and transaction; deleted when the person removes it |
 | `wallet_settings`         | One row per pod: the small things its wallet remembers as one encrypted blob (the Protect your passkey answer first); replaced in place |
 | `joy_memories`            | One row per pod: the member's memory file for Joy (section 30) as one encrypted blob, which this server cannot open; replaced in place |
-| `joy_usage`               | One row per pod and day (UTC): the messages sent to Joy, the tokens Anthropic counted for them and, since section 32, the web searches Anthropic made for them; no text of a message; the daily limit of messages and the daily number of searches are read from it |
+| `joy_usage`               | One row per pod and day (UTC): the messages sent to Joy, the tokens Anthropic counted for them, since section 32 the web searches Anthropic made for them and, since section 33, the pictures OpenAI made for them; no text of a message and no picture; the daily limit of messages, the daily number of searches and the daily number of pictures are read from it |
 | `recovery_cases`          | One row per recovery case: lookup id, the pod being recovered, contact email and phone (both on a case opened since 2026-11-12; the table's check is still at least one of the two, for a case of before), status; one open case per lookup id |
 | `recovery_pods`           | One per case: the recovery passkey, the recovery session, the hybrid key and its wrapped private halves |
 | `recovery_shares`         | What the keyholders posted to a case, as posted; append-only           |
@@ -363,9 +363,15 @@ at boot. Everything after `PGPASSWORD` has a default.
 | `JOY_DAILY_MESSAGES`       | `300`                   | How many messages one pod may send Joy in one day (UTC)          |
 | `JOY_MAX_SEARCHES`         | `3`                     | The most web searches for one message to Joy (`docs/schemas.md` section 32); `0` switches web search off |
 | `JOY_DAILY_SEARCHES`       | `100`                   | From how many web searches in one day (UTC) a pod's further messages go out without web search; `0` switches web search off |
+| `OPENAI_API_KEY`           | none: Joy makes no picture | OpenAI's API key (Joy's pictures, `docs/schemas.md` section 33); without it Joy answers as before and tells a member that pictures are switched off |
+| `JOY_PICTURE_MODEL`        | `gpt-image-2.6-flare`   | OpenAI's image model                                             |
+| `JOY_PICTURE_QUALITY`      | `low`                   | The quality of a picture: `low`, `medium` or `high`              |
+| `JOY_PICTURE_SIZE`         | `1024x1024`             | The width and the height of a picture, in pixels                 |
+| `JOY_PICTURE_FORMAT`       | `jpeg`                  | The file format of a picture: `jpeg`, `png` or `webp`            |
+| `JOY_DAILY_PICTURES`       | `30`                    | From how many pictures in one day (UTC) a pod's further messages go out without the picture tool; `0` switches pictures off |
 
-The JSON body limit is computed from the last two:
-`MAX_IMAGES_PER_REQUEST * MAX_IMAGE_BYTES * 1.4 + 1 MB`.
+The JSON body limit is computed from `MAX_IMAGES_PER_REQUEST` and
+`MAX_IMAGE_BYTES`: `MAX_IMAGES_PER_REQUEST * MAX_IMAGE_BYTES * 1.4 + 1 MB`.
 
 ## Genesis
 
@@ -420,7 +426,7 @@ src/
   marketplace/       /create-listing, /close-listing, /list-listings
   anos-accounts/     /create-anos-account, /mark-anos-account-submitted, /list-anos-accounts, /store-first-key-blob, /get-anos-account
   wallet-memory/     the six wallet memory routes, /add-noted-transaction to /set-wallet-settings; the two tables' queries
-  joy/               Joy, the wallet's AI (section 30): /ask-joy, /get-joy-memory, /set-joy-memory; the two Joy tables' queries; joy.anthropic.js, the call to Anthropic through its own package; joy.memory.js, the memory file's text and Joy's two tools
+  joy/               Joy, the wallet's AI (section 30): /ask-joy, /get-joy-memory, /set-joy-memory; the two Joy tables' queries; joy.anthropic.js, the call to Anthropic through its own package; joy.memory.js, the memory file's text and Joy's two tools; joy.pictures.js, her third tool, make_picture, and the one request to OpenAI that makes a picture (section 33)
   recovery/          /open-recovery-case, /unlock-recovery-pod, /get-recovery-pod, the six moderator routes, /receive-recovery-share/:caseId, /recover-with-backup-code, /complete-recovery-case, /rotate-backup-code, /store-break-glass-blob; the four recovery tables' queries
   attesting/         the fourteen attestor routes, /list-attestors to /dismiss-attestor-case, and the person's /list-my-cases, /get-my-case, /share-lookup-id, /add-dispute-evidence; the five attestation tables' queries; account-signatures.js, the validators' any-two-pairs rule
   break-glass/       the nine break-glass routes, the person's /file-break-glass-moves and /list-my-break-glass-moves and the attestors' /list-break-glass-cases to /dismiss-break-glass-case; the two break-glass tables' queries
