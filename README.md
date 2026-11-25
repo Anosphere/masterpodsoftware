@@ -122,8 +122,8 @@ are base64 / base64url as the browser produces them.
 | `/get-anopod-session-keys`      | none    | A pod's current session public keys and their expiry, for the keyholders' pod check      |
 | `/search-usernames`             | session | Any pod by exact username, with selfie and seed flags; finds a seed to ask and a pod to invite |
 | `/send-vouch-request`           | session | Asks a seed to vouch for the caller                                                      |
-| `/list-notifications`           | session | The caller's notifications, newest first (`unreadOnly`, `limit`)                        |
-| `/mark-notifications-read`      | session | Marks notifications read                                                                 |
+| `/list-notifications`           | session | The caller's notifications, newest first (`unreadOnly`, `limit`); since section 34 also only the rows above a number (`since`), below one (`before`) or of some kinds (`kinds`), each row with its `seq`, and `seq`, `count` and `unread` in every answer |
+| `/mark-notifications-read`      | session | Marks notifications read: the ones named by their ids, or, since section 34, every unread one up to a number (`upTo`) |
 | `/list-vouch-requests`          | vouched | The open requests addressed to the caller (a seed), oldest first, each with the requester's profile (no selfie since 2026-11-08; the wallet reads it through `/get-anopod-profile`) |
 | `/approve-vouch-request`        | vouched | Records the vouch; flips `vouched` on a super seed's approval or the second vouch; a super seed's approval also makes a seed |
 | `/decline-vouch-request`        | vouched | Drops the request and notifies the requester                                             |
@@ -266,10 +266,12 @@ the attestations to a validator.
 
 `db/schema.sql`, applied by `npm run db:setup`. No foreign keys; the services
 keep the references straight. Every table and column has a `COMMENT ON`
-(`\d+ <table>` in psql). Beside the tables there is one sequence,
-`chat_change_seq` (2026-11-24, section 29): the counter of the changes of
-the chat lists. Triggers write its values into five columns of the chat
-tables, and no route reads the counter itself.
+(`\d+ <table>` in psql). Beside the tables there are two sequences.
+`chat_change_seq` (2026-11-24, section 29) is the counter of the changes
+of the chat lists: triggers write its values into five columns of the
+chat tables. `notification_seq` (2026-11-25, section 34) is the counter
+of the notifications: each new row of `notifications` takes its next
+value as its `seq`. No route reads a counter itself.
 
 | Table                     | Holds                                                                  |
 | ------------------------- | ---------------------------------------------------------------------- |
@@ -282,7 +284,7 @@ tables, and no route reads the counter itself.
 | `vouches`                 | Approved vouches, never changed                                        |
 | `seeds`, `super_seeds`    | The pods that may vouch                                                |
 | `appointments`            | The pods that are moderators or attestors, and the pods that may stake for validator or masterPod: one row per appointment, revoked rows kept |
-| `notifications`           | What the phone polls; read, never deleted; twenty-one kinds, the newest the four of the security alerts (2026-11-21) |
+| `notifications`           | What the phone polls; read, never deleted; twenty-one kinds, the newest the four of the security alerts (2026-11-21); `seq`, each row's running number from the counter `notification_seq` (section 34) |
 | `security_images`         | Encrypted images of both buckets, each with the id of its bucket key; append-only |
 | `security_info`           | Encrypted texts of bucket two, each with the id of its bucket key; append-only |
 | `chat_rooms`              | Private, public and old marketplace rooms; `listing_id` when a room is about a listing, `case_id` and `case_kind` when it is about an attestor case; `message_seq` and `people_seq`, the counter's value at the room's last message, or since section 31 edit or delete of one, and at its last other change (section 29) |

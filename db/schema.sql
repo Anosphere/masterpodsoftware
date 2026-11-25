@@ -8,8 +8,8 @@
 -- It never alters a table that already exists, though, apart from the
 -- idempotent ALTERs of the appointments block and of the recovery,
 -- attestation, marketplace, wallet memory, case chat, seen position,
--- first key blob, chat change, message edit, Joy search and Joy picture
--- blocks at the end.
+-- first key blob, chat change, message edit, Joy search, Joy picture and
+-- notification number blocks at the end.
 -- After changing this file, rebuild the local database from scratch with
 --
 --   npm run db:reset
@@ -1947,3 +1947,50 @@ COMMENT ON COLUMN joy_usage.searches IS 'The web searches Anthropic made for the
 ALTER TABLE joy_usage ADD COLUMN IF NOT EXISTS pictures INTEGER NOT NULL DEFAULT 0 CHECK (pictures >= 0);
 
 COMMENT ON COLUMN joy_usage.pictures IS 'The pictures OpenAI made for the messages the pod sent Joy that day (spec section 33); 0 on a day without one. A picture that OpenAI refused, or that failed, is not counted. From JOY_DAILY_PICTURES on, the pod''s further messages of that day go out without the picture tool.';
+
+
+-- The notification number block (2026-11-25, spec section 34): every
+-- notification gets a running number, so that /list-notifications can hand
+-- a wallet only the notifications that are new, and
+-- /mark-notifications-read can mark everything up to a number.
+-- notification_seq is the counter, a sequence of its own. notifications.seq
+-- takes its next value by the column's default when a row is written:
+-- notify() names its columns, so no statement of the server sets seq, no
+-- trigger is needed, and the rows of a server that still runs the code of
+-- before are numbered too. The column is in this block only, and not
+-- inline in the CREATE TABLE above: its default names the sequence, which
+-- is made here. On a fresh database the block adds the column to the empty
+-- table, so a fresh database and a live one hold the same columns in the
+-- same order. On its first run on a live database the block numbers once
+-- the rows that are there, oldest first: in the order of created_at, and
+-- the rows of one moment by notification_number from the highest down.
+-- For those rows the order of seq from the highest down is then the order
+-- /list-notifications had before, created_at DESC and then
+-- notification_number. The numbering is one statement: the rows in their
+-- order, each with the counter's next value, kept in a materialized WITH so
+-- that every number is taken exactly once. Then the column gets its default
+-- and NOT NULL. One index, on (anopod_id, seq): a pod's rows in the order
+-- of their numbers. Idempotent: IF NOT EXISTS, an UPDATE that finds no row
+-- without a number the second time, and a SET DEFAULT and a SET NOT NULL
+-- that change nothing on a column that has them.
+
+CREATE SEQUENCE IF NOT EXISTS notification_seq;
+
+ALTER TABLE notifications ADD COLUMN IF NOT EXISTS seq BIGINT;
+
+WITH numbered AS MATERIALIZED (
+  SELECT oldest_first.notification_number, nextval('notification_seq') AS seq
+  FROM (SELECT notification_number FROM notifications WHERE seq IS NULL
+        ORDER BY created_at, notification_number DESC) AS oldest_first
+)
+UPDATE notifications SET seq = numbered.seq
+FROM numbered
+WHERE notifications.notification_number = numbered.notification_number;
+
+ALTER TABLE notifications ALTER COLUMN seq SET DEFAULT nextval('notification_seq');
+ALTER TABLE notifications ALTER COLUMN seq SET NOT NULL;
+
+CREATE INDEX IF NOT EXISTS notifications_anopod_id_seq_idx ON notifications (anopod_id, seq);
+
+COMMENT ON SEQUENCE notification_seq IS 'The counter of the notifications (spec section 34). notifications.seq takes its next value, by the column''s default, when a notification is written. A number is taken when the row is written, a moment before its transaction is committed. No route reads the counter itself.';
+COMMENT ON COLUMN notifications.seq IS 'The notification''s running number (spec section 34): the next value of the counter notification_seq, taken by the column''s default when the row is written. A row that was there when the column was added got its number then, the oldest first. /list-notifications hands the rows out in the order of this number, the highest first, and hands a wallet the rows above the `since` it sends; /mark-notifications-read with `upTo` marks the unread rows up to a number.';
