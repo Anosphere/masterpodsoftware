@@ -3,13 +3,15 @@ import { decodeBytes } from '../crypto/bytes.js';
 import { toHex } from '../util/ids.js';
 import { isObject } from '../util/is-object.js';
 import { ok, refuse } from '../util/result.js';
-import { joyIsOn } from './joy.anthropic.js';
+import { joyIsOn } from './joy.answer.js';
 import { MEMORY_MAX_BYTES } from './joy.memory.js';
 import { addTokens, countMessage, findMemory, upsertMemory } from './joy.queries.js';
 
 /**
  * Joy, the wallet's AI (spec section 30). A member writes to her in the
- * wallet, and a model of the company Anthropic writes her answers.
+ * wallet, and a model of one of two companies writes her answers:
+ * Anthropic's or OpenAI's, by the setting JOY_PROVIDER (joy.answer.js,
+ * spec section 36).
  *
  * What this server keeps: the member's memory file, as one blob under the
  * pod's encryption key, which this server cannot open (joy_memories); and
@@ -18,12 +20,12 @@ import { addTokens, countMessage, findMemory, upsertMemory } from './joy.queries
  * reads with her tool read_file, the same for every member (joy_files).
  * It keeps nothing of a conversation. The wallet sends
  * the conversation and the opened memory file with every message; both
- * pass through this server's memory on their way to Anthropic and are
- * written nowhere. Nothing of a web search is written either: no query,
- * no page and no source (spec section 32). And nothing of a picture: no
- * picture and no description (spec section 33). A picture's description,
- * which Joy writes from the conversation, goes on to a second company,
- * OpenAI.
+ * pass through this server's memory on their way to the company that
+ * answers and are written nowhere. Nothing of a web search is written
+ * either: no query, no page and no source (spec section 32). And nothing
+ * of a picture: no picture and no description (spec section 33). A
+ * picture's description, which Joy writes from the conversation, goes on
+ * to OpenAI's image model, whoever answers.
  *
  * Each function runs its route's checks in the spec's order and returns
  * ok(status, body) or refuse(status, reason).
@@ -37,7 +39,7 @@ const MAX_MESSAGES = 200;
 /**
  * The most bytes (UTF-8) the texts of one request's messages may have
  * together. It keeps one request far under the 100,000 tokens above which
- * Anthropic's price for the model is five times as high.
+ * Anthropic's price for its model is five times as high.
  */
 const MAX_CONVERSATION_BYTES = 120_000;
 
@@ -69,7 +71,10 @@ export async function setJoyMemory(anopod, body) {
  * 'off' when JOY_MAX_SEARCHES or JOY_DAILY_SEARCHES is 0; 'used' when
  * the row has reached JOY_DAILY_SEARCHES; 'on' otherwise. The row is
  * read before the message's own searches, so a pod can end a day over
- * the number: by up to 2 when one message may make 3 searches.
+ * the number: by up to 2 when one message may make 3 searches. With
+ * OpenAI's model answering, by up to 11: the 3 are then the most steps
+ * of its search tool for one request, and one message can take four
+ * requests (spec 36.5).
  */
 function searchFor(searches) {
   if (env.joy.maxSearches === 0 || env.joy.dailySearches === 0) return 'off';
@@ -91,10 +96,11 @@ function pictureFor(pictures) {
 }
 
 /**
- * The checks of POST /ask-joy (setup), before anything is sent to
- * Anthropic. Body { messages, memory }: `messages` is the conversation,
- * oldest first, each { role: 'user' | 'assistant', text }, the member's
- * new message last; `memory` is the member's memory file as text.
+ * The checks of POST /ask-joy (setup), before anything is sent to the
+ * company that answers. Body { messages, memory }: `messages` is the
+ * conversation, oldest first, each { role: 'user' | 'assistant', text },
+ * the member's new message last; `memory` is the member's memory file as
+ * text.
  *
  * In order: the shape; the messages (1 to 200, each with a role and a
  * text that is not empty, the first and the last the member's); their
@@ -133,7 +139,7 @@ export async function prepareAsk(anopod, body) {
   return ok(200, { history, memory: body.memory, day: counted.day, search: searchFor(counted.searches), picture: pictureFor(counted.pictures) });
 }
 
-/** Writes the tokens, the web searches and the pictures of one message onto the pod's row of `day`. Nothing is written when Anthropic counted none and OpenAI made no picture. */
+/** Writes the tokens, the web searches and the pictures of one message onto the pod's row of `day`. Nothing is written when the company that answers counted none and OpenAI made no picture. */
 export async function recordTokens(anopod, day, tokens) {
   if (tokens.input + tokens.output + tokens.cacheRead + tokens.cacheWrite + tokens.searches + tokens.pictures === 0) return;
   await addTokens(anopod.anopodId, day, tokens);

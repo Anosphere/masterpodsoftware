@@ -3,6 +3,7 @@ import { createApp } from './app.js';
 import { env } from './config/env.js';
 import { startDaoClock, stopDaoClock } from './dao/dao-clock.js';
 import { closePool, query } from './db/pool.js';
+import { whoAnswersJoy } from './joy/joy.answer.js';
 
 // Verify the database connection before accepting traffic, so a bad
 // configuration fails loudly at boot instead of on the first request.
@@ -21,6 +22,9 @@ const app = createApp();
 
 const server = app.listen(env.port, () => {
   console.log(`masterpodsoftware listening on http://localhost:${env.port}`);
+  // Who answers Joy, the wallet's AI, and with which model, or that she
+  // is off (src/joy/joy.answer.js, spec section 36).
+  console.log(whoAnswersJoy());
   // And the DAO clock (src/dao/dao-clock.js): once now, then every minute,
   // the expiry, the flip and the close of the DAO proposals (spec 15.5).
   startDaoClock();

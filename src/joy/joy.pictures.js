@@ -11,10 +11,13 @@ import { isObject } from '../util/is-object.js';
  * the tool, the few words Joy is told of a call's outcome, and the one
  * request to OpenAI. No package: fetch, Node's own.
  *
- * What leaves for OpenAI is the description that Joy wrote and a hash of
- * the pod's id. Not the conversation, not the memory file, not the pod's
- * id. This server keeps no picture and no description: neither is
- * written into a table or into the log.
+ * What leaves for OpenAI in this request is the description that Joy
+ * wrote and a hash of the pod's id. Not the conversation, not the memory
+ * file, not the pod's id. When OpenAI's model also writes Joy's answers
+ * (spec section 36), the conversation and the memory file go to OpenAI
+ * in the request for her answer (joy.openai.js), not in this one. This
+ * server keeps no picture and no description: neither is written into a
+ * table or into the log.
  */
 
 /** Where a picture is asked for. */
