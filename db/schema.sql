@@ -1994,3 +1994,34 @@ CREATE INDEX IF NOT EXISTS notifications_anopod_id_seq_idx ON notifications (ano
 
 COMMENT ON SEQUENCE notification_seq IS 'The counter of the notifications (spec section 34). notifications.seq takes its next value, by the column''s default, when a notification is written. A number is taken when the row is written, a moment before its transaction is committed. No route reads the counter itself.';
 COMMENT ON COLUMN notifications.seq IS 'The notification''s running number (spec section 34): the next value of the counter notification_seq, taken by the column''s default when the row is written. A row that was there when the column was added got its number then, the oldest first. /list-notifications hands the rows out in the order of this number, the highest first, and hands a wallet the rows above the `since` it sends; /mark-notifications-read with `upTo` marks the unread rows up to a number.';
+
+
+-- The Joy files block (2026-11-25, spec section 35): one new table.
+-- joy_files holds the files that Joy reads with her tool read_file: how
+-- the wallet works and what the anoSphere is. One row for each file, its
+-- name and its whole text. The files are the same for every member and
+-- hold nothing secret: Joy tells a member what stands in them.
+-- scripts/joy-files.js alone writes the table; no route does, and no
+-- route hands it out. The server reads one row by its name each time Joy
+-- calls the tool, and keeps no copy. The code of before this block does
+-- not know the table, so it runs on a database that has the block.
+-- Idempotent: IF NOT EXISTS and OR REPLACE.
+
+CREATE TABLE IF NOT EXISTS joy_files (
+  file_name  TEXT        PRIMARY KEY CHECK (file_name ~ '^[a-z0-9-]{1,32}$'),
+  content    TEXT        NOT NULL CHECK (octet_length(content) BETWEEN 1 AND 100000),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE OR REPLACE TRIGGER joy_files_set_updated_at
+  BEFORE UPDATE ON joy_files
+  FOR EACH ROW
+  WHEN (OLD.* IS DISTINCT FROM NEW.*)
+  EXECUTE FUNCTION set_updated_at();
+
+COMMENT ON TABLE  joy_files            IS 'The files that Joy reads with her tool read_file (spec section 35), one row for each file. In the clear, and the same for every member. Written by scripts/joy-files.js, which adds a file and replaces a file''s text and never takes a row out; read by the server, one row by its name, each time Joy calls the tool. No route reads or writes the table.';
+COMMENT ON COLUMN joy_files.file_name  IS 'The file''s name, which is the name that Joy calls the tool with: wallet or anosphere. Small letters, digits and hyphens, at most 32 characters. Which names there are is a list of the code (src/joy/joy.files.js).';
+COMMENT ON COLUMN joy_files.content    IS 'The whole file, as text: 1 to 100,000 bytes of UTF-8. It goes to the model as it stands here, whole.';
+COMMENT ON COLUMN joy_files.created_at IS 'When the file was first written. Set by default, never changed.';
+COMMENT ON COLUMN joy_files.updated_at IS 'When the file''s text last changed. Maintained by the joy_files_set_updated_at trigger. A write of the same text changes nothing.';

@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { env } from '../config/env.js';
+import { READ_FILE_TOOL, readJoyFile } from './joy.files.js';
 import { MEMORY_TOOLS, applyMemoryTool } from './joy.memory.js';
 import { MAKE_PICTURE_TOOL, makePicture } from './joy.pictures.js';
 
@@ -11,19 +12,27 @@ import { MAKE_PICTURE_TOOL, makePicture } from './joy.pictures.js';
  *
  * One message to Joy is one request to Anthropic, and one more after each
  * round in which Joy called a tool of her own (a change of the memory
- * file, a picture) or Anthropic paused a long web search. Every request
- * carries, in this order: the shared memory file, today's date and the
- * member's memory file, and the conversation. The answer is read as a
- * stream, and its text is handed on while it is being written.
+ * file, a read of one of her files, a picture) or Anthropic paused a
+ * long web search. Every request carries, in this order: the shared
+ * memory file, today's date and the member's memory file, and the
+ * conversation. The answer is read as a stream, and its text is handed
+ * on while it is being written.
  *
  * Joy can search the web (spec section 32): Anthropic's own web search
- * tool stands beside her two tools in the request, and Anthropic runs a
+ * tool stands beside her own tools in the request, and Anthropic runs a
  * search inside the request. This server calls no search engine.
  *
- * Joy can have a picture made (spec section 33): her third tool,
- * make_picture, stands in the request too. The model writes a
- * description, and this server carries the call out between two requests
- * to Anthropic, with one request to OpenAI (joy.pictures.js).
+ * Joy can have a picture made (spec section 33): her tool make_picture
+ * stands in the request too. The model writes a description, and this
+ * server carries the call out between two requests to Anthropic, with
+ * one request to OpenAI (joy.pictures.js).
+ *
+ * Joy can read how the wallet and the anoSphere work (spec section 35):
+ * her tool read_file stands in every request, after her two memory
+ * tools. The model names a file, and this server carries the call out
+ * between two requests to Anthropic, with one read of the file's row
+ * from its own database (joy.files.js). The file's text goes back as the
+ * tool's outcome, and Joy's answer comes in the next request.
  */
 
 /** The shared memory file: what every request begins with, the same for every member. Read once, when this module loads. */
@@ -31,7 +40,7 @@ const SHARED_MEMORY_FILE = fileURLToPath(new URL('../../joy/shared-memory.md', i
 const SHARED_MEMORY = readFileSync(SHARED_MEMORY_FILE, 'utf8').trim();
 if (SHARED_MEMORY === '') throw new Error('joy/shared-memory.md is empty');
 
-/** The most requests one message to Joy may take: the first, and one after each round of her own tools (a change of the memory file, a picture) and after each pause of a web search. */
+/** The most requests one message to Joy may take: the first, and one after each round of her own tools (a change of the memory file, a read of one of her files, a picture) and after each pause of a web search. */
 const MAX_ROUNDS = 4;
 
 /**
@@ -172,7 +181,8 @@ function addSources(sources, content) {
  *             even when a later request fails
  *   leaving   an AbortSignal that the caller fires when the wallet has
  *             gone away: a request to OpenAI that is under way is
- *             stopped by it
+ *             stopped by it, and after a read of a file no further
+ *             request goes to Anthropic
  *   onText    called with each piece of the answer's text as it comes
  *   onSearch  called each time Joy starts a web search
  *   onDrawing called each time Joy starts a call of make_picture
@@ -202,8 +212,9 @@ export async function askAnthropic({ history, memory, search, picture, anopodId,
   ];
   // The same tools stand in every request of one message: Anthropic
   // refuses a request that goes on with a web search when the web
-  // search tool is no longer in it.
-  const tools = [...MEMORY_TOOLS, ...(search === 'on' ? [WEB_SEARCH_TOOL] : []), ...(picture === 'on' ? [MAKE_PICTURE_TOOL] : [])];
+  // search tool is no longer in it. read_file is in every request: no
+  // setting and no daily number takes it out.
+  const tools = [...MEMORY_TOOLS, READ_FILE_TOOL, ...(search === 'on' ? [WEB_SEARCH_TOOL] : []), ...(picture === 'on' ? [MAKE_PICTURE_TOOL] : [])];
   const messages = history.map(({ role, text }) => ({ role, content: text }));
   const sources = [];
   let file = memory;
@@ -316,6 +327,16 @@ export async function askAnthropic({ history, memory, search, picture, anopodId,
         }
         // The wallet went away meanwhile: nobody is left to tell, so no
         // further request goes to Anthropic.
+        if (leaving.aborted) throw new Anthropic.APIUserAbortError();
+      } else if (call.name === READ_FILE_TOOL.name) {
+        // A call of read_file is carried out here too, between two
+        // requests to Anthropic: one read of the file's row from this
+        // server's database, at this moment. No copy of a file is kept
+        // here, and no watch on silence runs meanwhile. The file's text
+        // is the tool's outcome, whole and alone.
+        done = await readJoyFile(call.input);
+        // The wallet went away meanwhile: no further request goes to
+        // Anthropic, as with a picture.
         if (leaving.aborted) throw new Anthropic.APIUserAbortError();
       } else {
         done = applyMemoryTool(file, call.name, call.input);

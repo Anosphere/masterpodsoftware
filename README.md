@@ -49,6 +49,7 @@ Then open <http://localhost:3100>. The web app that drives it is
 | `npm run revoke -- <id>` | End the pod's appointment; the row stays on record.                   |
 | `npm run small-selfies -- look` | The one-time job that makes the stored selfies small (`docs/schemas.md` section 24): `look` reads and draws every selfie and writes nothing; with `write` in its place it does the same and then writes. Its own packages are in `scripts/small-selfies/`. |
 | `npm run stickers -- look <folder>` | Puts the stickers of the wallet's chat into the database (`docs/schemas.md` section 28), from a folder with `all-sets.ts`, one `.ts` file for each set and one folder of pictures for each set: `look` says what it would write, names every fault and writes nothing; with `write` in its place it does the same and then writes, all of it or nothing. |
+| `npm run joy-files -- look <folder>` | Puts Joy's files into the database (`docs/schemas.md` section 35): the two texts that Joy reads with her tool `read_file`, from a folder with `wallet.md` and `anosphere.md`, the folder `joy` of the wallet's repository. `look` says for each file whether it is new, changed or the same as the stored one, with its bytes, names every fault and writes nothing; with `write` in its place it does the same and then writes, all of it or nothing. Joy's next answer comes from the new text, with no restart. |
 | `npm run make-alert-push-key -- <file>` | Makes this server's key for the phones' delivery services (`docs/schemas.md` section 25): writes ONE line, `ALERT_PUSH_PRIVATE_KEY=...`, to `<file>`, which only its owner can read and which is never overwritten, and prints the public half. The line goes to the end of `.env`. |
 
 ## Who may call what
@@ -168,7 +169,7 @@ are base64 / base64url as the browser produces them.
 | `/list-noted-transactions`      | setup   | The caller's notes in a date range, newest first, the newest 1,000 with `more` when there are older ones |
 | `/get-wallet-settings`          | setup   | The caller's wallet settings blob and when it was set, null before the first set         |
 | `/set-wallet-settings`          | setup   | Stores the caller's wallet settings blob whole: one row per pod, replaced in place        |
-| `/ask-joy`                      | setup   | A message to Joy, the wallet's AI (2026-11-24, section 30): the conversation and the caller's opened memory file go to Anthropic's model, and the answer comes back as a stream of JSON lines; counted against the caller's messages of the day; nothing of it is stored; since section 32 Joy can search the web, the stream has a line when a search starts and the cited pages as `sources` in its last line, and the searches are counted for the caller's day; since section 33 (2026-11-25) Joy can have a picture made by OpenAI's image model, the stream has a line when she starts on one and one line with the picture, the description she wrote goes to OpenAI, and the pictures are counted for the caller's day |
+| `/ask-joy`                      | setup   | A message to Joy, the wallet's AI (2026-11-24, section 30): the conversation and the caller's opened memory file go to Anthropic's model, and the answer comes back as a stream of JSON lines; counted against the caller's messages of the day; nothing of it is stored; since section 32 Joy can search the web, the stream has a line when a search starts and the cited pages as `sources` in its last line, and the searches are counted for the caller's day; since section 33 (2026-11-25) Joy can have a picture made by OpenAI's image model, the stream has a line when she starts on one and one line with the picture, the description she wrote goes to OpenAI, and the pictures are counted for the caller's day; since section 35 (2026-11-25) Joy reads how the wallet and the anoSphere work from two files in this server's database, with her tool `read_file`, and neither the request nor the stream changes for it |
 | `/get-joy-memory`               | setup   | The caller's memory file for Joy, as the blob the wallet made, and when it was set, null before the first set |
 | `/set-joy-memory`               | setup   | Stores the caller's memory file blob whole: one row per pod, replaced in place           |
 
@@ -303,6 +304,7 @@ value as its `seq`. No route reads a counter itself.
 | `wallet_settings`         | One row per pod: the small things its wallet remembers as one encrypted blob (the Protect your passkey answer first); replaced in place |
 | `joy_memories`            | One row per pod: the member's memory file for Joy (section 30) as one encrypted blob, which this server cannot open; replaced in place |
 | `joy_usage`               | One row per pod and day (UTC): the messages sent to Joy, the tokens Anthropic counted for them, since section 32 the web searches Anthropic made for them and, since section 33, the pictures OpenAI made for them; no text of a message and no picture; the daily limit of messages, the daily number of searches and the daily number of pictures are read from it |
+| `joy_files`               | The files that Joy reads with her tool `read_file` (section 35), one row for each file: its name, `wallet` or `anosphere`, and its whole text, at most 100,000 bytes; in the clear, the same for every member; written by `npm run joy-files` alone, and read by this server one row at a time, each time Joy calls the tool |
 | `recovery_cases`          | One row per recovery case: lookup id, the pod being recovered, contact email and phone (both on a case opened since 2026-11-12; the table's check is still at least one of the two, for a case of before), status; one open case per lookup id |
 | `recovery_pods`           | One per case: the recovery passkey, the recovery session, the hybrid key and its wrapped private halves |
 | `recovery_shares`         | What the keyholders posted to a case, as posted; append-only           |
@@ -428,7 +430,7 @@ src/
   marketplace/       /create-listing, /close-listing, /list-listings
   anos-accounts/     /create-anos-account, /mark-anos-account-submitted, /list-anos-accounts, /store-first-key-blob, /get-anos-account
   wallet-memory/     the six wallet memory routes, /add-noted-transaction to /set-wallet-settings; the two tables' queries
-  joy/               Joy, the wallet's AI (section 30): /ask-joy, /get-joy-memory, /set-joy-memory; the two Joy tables' queries; joy.anthropic.js, the call to Anthropic through its own package; joy.memory.js, the memory file's text and Joy's two tools; joy.pictures.js, her third tool, make_picture, and the one request to OpenAI that makes a picture (section 33)
+  joy/               Joy, the wallet's AI (section 30): /ask-joy, /get-joy-memory, /set-joy-memory; the three Joy tables' queries; joy.anthropic.js, the call to Anthropic through its own package; joy.memory.js, the memory file's text and Joy's two memory tools; joy.pictures.js, her tool make_picture and the one request to OpenAI that makes a picture (section 33); joy.files.js, the names of her two files, her tool read_file and the read of a file's row (section 35)
   recovery/          /open-recovery-case, /unlock-recovery-pod, /get-recovery-pod, the six moderator routes, /receive-recovery-share/:caseId, /recover-with-backup-code, /complete-recovery-case, /rotate-backup-code, /store-break-glass-blob; the four recovery tables' queries
   attesting/         the fourteen attestor routes, /list-attestors to /dismiss-attestor-case, and the person's /list-my-cases, /get-my-case, /share-lookup-id, /add-dispute-evidence; the five attestation tables' queries; account-signatures.js, the validators' any-two-pairs rule
   break-glass/       the nine break-glass routes, the person's /file-break-glass-moves and /list-my-break-glass-moves and the attestors' /list-break-glass-cases to /dismiss-break-glass-case; the two break-glass tables' queries
@@ -439,7 +441,7 @@ src/
 db/
   schema.sql         the whole schema, built from nothing
 joy/
-  shared-memory.md   what every request to Anthropic begins with, the same for every member: who Joy is and how she answers (section 30)
+  shared-memory.md   what every request to Anthropic begins with, the same for every member: who Joy is, where she lives, how she answers and when she reads one of her two files (sections 30 and 35)
 network/
   validators.json    the id and the public key of each validator, from the validators' registry: who may report a waiting transfer (section 25)
 scripts/
@@ -451,6 +453,7 @@ scripts/
   revoke.js          end a pod's appointment
   small-selfies/     the one-time job that makes the stored selfies small (section 24): small-selfies.js, with a package.json and a package-lock.json of its own for sharp
   stickers.js        puts the stickers of the wallet's chat into the database, with a look run that writes nothing and a write run (section 28)
+  joy-files.js       puts Joy's two files into the database, with a look run that writes nothing and a write run (section 35)
   make-alert-push-key.js  makes this server's key for the phones' delivery services (section 25)
 docs/
   schemas.md         the specification: tables, routes, objects, client crypto, variables
