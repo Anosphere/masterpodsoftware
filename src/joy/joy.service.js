@@ -14,7 +14,9 @@ import { addTokens, countMessage, findMemory, upsertMemory } from './joy.queries
  * What this server keeps: the member's memory file, as one blob under the
  * pod's encryption key, which this server cannot open (joy_memories); and
  * a count of messages, tokens, web searches and pictures for each pod and
- * day (joy_usage). It keeps nothing of a conversation. The wallet sends
+ * day (joy_usage); and, since spec section 35, the two files that Joy
+ * reads with her tool read_file, the same for every member (joy_files).
+ * It keeps nothing of a conversation. The wallet sends
  * the conversation and the opened memory file with every message; both
  * pass through this server's memory on their way to Anthropic and are
  * written nowhere. Nothing of a web search is written either: no query,

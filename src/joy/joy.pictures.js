@@ -6,7 +6,7 @@ import { isObject } from '../util/is-object.js';
 
 /**
  * Joy's pictures (spec section 33). Joy does not draw. She calls her
- * third tool, make_picture, with a description, and this server has a
+ * tool make_picture with a description, and this server has a
  * model of the company OpenAI make the picture from it. This file holds
  * the tool, the few words Joy is told of a call's outcome, and the one
  * request to OpenAI. No package: fetch, Node's own.
@@ -31,8 +31,8 @@ const TIMEOUT_MS = 150_000;
 const DESCRIPTION_MAX_CHARS = 1000;
 
 /**
- * Joy's third tool, as Anthropic's API takes it. Its input is checked
- * here, in makePicture.
+ * Joy's tool make_picture, as Anthropic's API takes it. Its input is
+ * checked here, in makePicture.
  */
 export const MAKE_PICTURE_TOOL = Object.freeze({
   name: 'make_picture',

@@ -12116,6 +12116,9 @@ Kept, in the database:
   2026-11-24, section 32, also the number of web searches that
   Anthropic made for them, 32.4.) (Since 2026-11-25, section 33, also
   the number of pictures that OpenAI made for them, 33.5.)
+- (Since 2026-11-25, section 35: the two files that Joy reads with her
+  tool `read_file`, in the clear (`joy_files`). They are no member's:
+  they are the same for every member and hold nothing secret, 35.3.)
 
 Passing through, kept nowhere:
 
@@ -12166,7 +12169,9 @@ memory file do not, 33.3.)
 | `pictures` | `INTEGER` | Since 2026-11-25, section 33: the pictures OpenAI made for the pod's messages of that day; 0 or more. The table's last column (33.5) |
 
 Both have the `set_updated_at` trigger and a `COMMENT ON` for the table
-and every column. No foreign keys, as everywhere.
+and every column. No foreign keys, as everywhere. (Since 2026-11-25,
+section 35, Joy has a third table, `joy_files`, with the two files that
+she reads, 35.3.)
 
 The memory file itself is text of at most 10240 bytes (UTF-8). Its blob
 may be up to 32768 bytes, because the wallet wraps the text in JSON
@@ -12289,7 +12294,9 @@ sentence in the second system part, after the date, tells Joy so. 32.2.)
 (Since 2026-11-25, section 33, `tools` also holds Joy's third tool,
 `make_picture`, as its last entry. It is left out when pictures are
 switched off or the pod has made its pictures of the day, and then one
-more sentence in the second system part tells Joy so. 33.2.)
+more sentence in the second system part tells Joy so. 33.2.) (Since
+2026-11-25, section 35, `tools` also holds `read_file`, after Joy's two
+and before the web search tool. It is in every request. 35.2.)
 
 The model's thinking is left as the model has it (adaptive, on by
 default) and is not shown. No `temperature`, `top_p` or `top_k` is sent:
@@ -12324,7 +12331,10 @@ four, and the first text after a web search begins a new paragraph too.
 is such a round too, so a picture takes two of the four. That tool's
 outcome does not come at once: this server sends one request to OpenAI
 between the two requests to Anthropic, and waits up to 150 seconds for
-its answer. 33.2 and 33.3.)
+its answer. 33.2 and 33.3.) (Since 2026-11-25, section 35, a call of
+`read_file` is such a round too, so an answer from a file takes two of
+the four. Its outcome is the file's text, which this server reads from
+its database between the two requests. 35.2.)
 
 A request is given up when Anthropic sends nothing for 120 seconds
 while it is under way. The package's own time limit does not end an
@@ -12377,7 +12387,10 @@ of our own are the shorter way.
 (Since 2026-11-25, section 33, Joy has a third tool of this server's
 own, `make_picture`, which changes nothing in the memory file. It is in
 `src/joy/joy.pictures.js`, without `eager_input_streaming`, and its
-outcome is a few words too. 33.2.)
+outcome is a few words too. 33.2.) (Since 2026-11-25, section 35, she
+has a fourth, `read_file`, in `src/joy/joy.files.js`, without
+`eager_input_streaming` too. Its outcome is a file's whole text, or a
+few words when no file comes. 35.2.)
 
 ### 30.7 The shared memory file
 
@@ -12401,12 +12414,20 @@ how the wallet works. The file has 33 lines now. 32.5.) (Since
 2026-11-25, section 33, a second new part, "Making pictures", stands
 after "Looking things up". It tells her that she can have a picture
 made and how. She still cannot see one. The file has 43 lines now.
-33.6.)
+33.6.) (Since 2026-11-25, section 35, the file no longer says that she
+has not been taught the wallet. Two new parts stand in it, "Where you
+live" and "Answering about the wallet and the anoSphere", and "How you
+answer" has one line more. The file has 70 lines now. 35.6.)
 
 A shortcut that fits a file of about twenty lines: a change to it is a
 commit and this server's update on the three servers. When the file
 grows into the wallet's how-to, it moves into the database, so that it
-can be changed without an update. That is not built.
+can be changed without an update. That is not built. (Since 2026-11-25,
+section 35, the wallet's how-to is built, in another way. It is a file
+of its own in the database, which Joy reads with a tool when a question
+needs it, and it is changed without an update. The shared memory file
+itself stays a file of this repository: a change to it is still a commit
+and this server's update on the three servers. 35.5.)
 
 ### 30.8 Environment variables
 
@@ -12475,7 +12496,8 @@ Left as it is:
   made. She still takes none: she sees no picture, not even one she
   made.)
 - She knows nothing of the wallet. The shared memory file tells her to
-  say so.
+  say so. (Since 2026-11-25, section 35, she reads how the wallet and
+  the anoSphere work from two files, 35.2.)
 - The memory file is the last one written. A member who writes to Joy
   on two devices at the same moment can lose a line that one of them
   saved.
@@ -13492,6 +13514,8 @@ when to search. Anthropic runs the search and hands Joy the pages inside
 the same request. Nothing else is set on the entry: no location, and no
 list of sites. (Since 2026-11-25, section 33, Joy's third tool,
 `make_picture`, stands after this entry when pictures are on, 33.2.)
+(Since 2026-11-25, section 35, `read_file` stands between Joy's two and
+this entry, 35.2.)
 
 **When the tool is left out.** Whether a message may search is one of
 three, decided in `src/joy/joy.service.js` (`searchFor`) and handed to
@@ -13525,6 +13549,9 @@ sentence of the same kind can stand in the second system part, for a
 request without `make_picture`. It stands after the one for the search,
 as a paragraph of its own. 33.2.)
 
+(Since 2026-11-25, section 35: `read_file` is in `tools` in every
+request, also in one that goes out without the web search tool. 35.2.)
+
 **The same tools in every request of one message.** `tools` is built
 once for a message. Anthropic refuses a request that goes on with a web
 search when the web search tool is no longer in it.
@@ -13547,7 +13574,9 @@ but the outcomes of her tools. Anthropic runs the search at the start of
 the next request, whose answer begins with the pages (a
 `web_search_tool_result` block). (Since 2026-11-25, section 33,
 `make_picture` is one of her own tools in this sense. The picture is
-then made before the search runs. 33.2.)
+then made before the search runs. 33.2.) (Since 2026-11-25, section 35,
+`read_file` is one too. The file is then read before the search runs.
+35.2.)
 
 **A search that fails** is no failure of the request. Inside a `200`,
 the block that would hold the pages holds one object with an
@@ -13700,7 +13729,9 @@ memory.
 
 The point on the wallet's own workings now ends: "Never guess, never
 give steps for them, and do not search the web for them: no page on the
-web tells how this wallet works."
+web tells how this wallet works." (Since 2026-11-25, section 35, that
+point is gone from the file. Its last clause lives on as the last point
+of the new part "Answering about the wallet and the anoSphere". 35.6.)
 
 The file's words are the plan's (its 3.5), word for word. The two
 sentences for a request without the tool are in 32.2.
@@ -14239,7 +14270,9 @@ of the chat; for a change, write the whole description again; put
 nothing from the memory file into it unless the member asks for it; one
 call for each message. The entry has no `eager_input_streaming` (30.6):
 the plan's tool has none, and the real call sent it so. Joy decides when
-to call it.
+to call it. (Since 2026-11-25, section 35, the order is `remember`,
+`update_memory`, `read_file`, `web_search`, `make_picture`: `read_file`
+stands third. 35.2.)
 
 **When the tool is left out.** Whether a message may have a picture made
 is one of three, decided in `src/joy/joy.service.js` (`pictureFor`) and
@@ -14286,7 +14319,9 @@ in the order of the calls, a memory tool's and the picture's alike, and
 the next request to Anthropic brings Joy's sentence. So a picture takes
 two of the four requests of one message. A picture that OpenAI made is
 handed to the wallet at once, before that next request (33.4), and
-counted (33.5).
+counted (33.5). (Since 2026-11-25, section 35, a call of `read_file` is
+carried out in the same place, and its outcome goes into the same one
+message. 35.2.)
 
 **One request to OpenAI for one message.** It is counted across the
 requests that one message takes. Once a request has gone to OpenAI for a
@@ -15747,3 +15782,979 @@ sentence of the same kind in `scripts/setup-db.sh`, "it never changes a
 table that already exists", was out of date before this step and is not
 this step's: it is as it was. And the gap of 34.7 was told with the offer
 of a line on the after-production list.
+
+## 35. Joy reads how the wallet and the anoSphere work from two files (2026-11-25)
+
+Design settled 2026-11-25 in a talking chat of seven rounds, by the
+first drafts of two files that the user committed that day as `web_app`
+7a70064, by one real trial that the user ran on prod1 that afternoon,
+and by a plan (`~/Desktop/Z-TestNet/forclaude/joy-files-plan-1.md`,
+FINAL, 2026-11-25, on the user's word "Final"; the trial's files and
+what prod1 printed are kept in
+`~/Desktop/Z-TestNet/forclaude/joy-files-trial/`). The work note is
+`~/Desktop/Z-TestNet/forclaude/notes/project-joy-wallet-and-anosphere-files.md`.
+What it is: Joy, the wallet's AI of section 30, answers questions about
+the wallet and about the anoSphere. Until this section she said that she
+had not been taught the wallet. The user: "I really just want joy to be
+able to know how the wallet works, so she can work out solutions to
+problems herself." And: "I also don't want it to be reading a bunch of
+files about how things work on every chat. Could we have the shared
+memory link to a couple other files, like anosphere file and a wallet
+file, that gives info about that?" So how the wallet works and what the
+anoSphere is are two files of text, `wallet` and `anosphere`. Joy gets
+one more tool of this server's own, `read_file`, and calls it with a
+file's name when a question needs that file. This server then reads the
+file from its database and hands its text back as the tool's outcome,
+and Joy answers from it. The two files are written and kept in the
+wallet's repository (`~/Desktop/Z-TestNet/web_app/joy/`). They come into
+this server's database by a script that the operator runs on a masterpod
+server, as the stickers do (section 28): a changed file is no commit of
+this server and no restart. One step on this server (this section, step
+1 of the plan). The wallet's app does not change: the request it sends
+and the stream it reads are as they were. The plan's step 2 is the
+wallet file itself, brought up to date in the wallet's repository. One
+schema block with one new table, one more entry in `tools`, one new file
+of code, one new script and new words in `joy/shared-memory.md`. No
+route, no env variable and no npm package. Inside this server's deploy
+the order matters, and it is another order than in the sections before:
+the schema file goes onto the database first, then the new code is
+pulled on one server WITHOUT a restart, then the two files are put in,
+then real answers are looked at, and only then the servers are restarted
+(35.10). The validators, the keyholders, the signing servers, the
+doormen and the wallet's own server program are not touched. Nothing
+above this section changes except the items in 35.8.
+
+### 35.1 The rules
+
+Decided by the user (the plan's section 2):
+
+- Joy learns the wallet and the anoSphere from two files, and she reads
+  one only when a question needs it (the user's words above).
+- The wallet file describes how the wallet works, so that Joy works an
+  answer out herself. It is no list of fixes for single cases.
+  "Obviously we would still want some kind of faq though."
+- A changed file reaches Joy as it happens. The user: "there's a lot of
+  updates that happen on the site, and I would like the files to be
+  updated as they happen without having to worry about joy reading the
+  old info."
+- This server keeps no copy of a file in its own memory. The user, of
+  such a copy: "What would even be the point of this? Doesn't postgres
+  already keep a lot of data in memory anyways?" So a file's row is read
+  each time Joy asks.
+- Joy asks for a file each time she needs it. Anthropic's caching of the
+  files is for later. The user: "Seems like that's something we can talk
+  about later then, right now the cost will still be so much smaller
+  than say, an image. So asking for the file in every chat that asks for
+  it is fine." So the wallet needs no change.
+- The two files are kept in the wallet's repository, in `web_app/joy/`
+  ("1. That sounds good").
+- Where Joy sends a member when a file has no answer stays the wallet's
+  own pages and the team. "What it says right now is fine, we can change
+  that later."
+- This build goes before the change of Joy's chat to OpenAI's GPT-6.2
+  Sol. "Do this one first."
+- The four changes of Joy's lines (35.6) go in with no second trial
+  before the build. "That's fine".
+- A changed file gets to a masterpod server the way the stickers do.
+  "No, just do it like how we do the stickers." The plan's first draft
+  had the server take the two files from GitHub itself. That is out.
+
+The mechanism as a whole (one more tool, one new table, a script with no
+route, no deploy for a changed file) was told to the user as a rundown
+that they asked for. They answered its three open points and objected to
+no part of it. They did not say yes to it in so many words (the plan's
+section 2, point 6).
+
+The plan's own points (its section 4), each put to the user to object
+to; none was. As far as they are this server's:
+
+- The words that Joy is told (35.6), with the seven sentences that are
+  the plan's in what they say.
+- The table is named `joy_files`, a file's name in it is the name that
+  Joy uses, and a file is at most 100,000 bytes. The 62,000 bytes that
+  the user allowed the wallet file are its writer's own ceiling, not
+  this server's.
+- A file that cannot be read is answered as a refusal, with fixed words.
+  One line goes into the log. No sentence is added to Joy's lines for
+  it.
+- The tool stands after `remember` and `update_memory` and before the
+  web search tool and `make_picture`. It is in every request, also for a
+  pod that has used its searches or its pictures of the day. Four
+  requests for one message stay the most.
+- The deploy's order (35.10).
+
+### 35.2 The request to Anthropic
+
+The request of 30.5, 32.2 and 33.2, with these things new.
+
+**The tool.** `tools` holds one entry more, its third:
+
+```
+{ "name": "read_file",
+  "description": "Read one of your two files. wallet: how the anoPod wallet works, … Do not call it for anything else.",
+  "input_schema": { "type": "object",
+    "properties": { "name": { "type": "string", "enum": ["wallet", "anosphere"],
+      "description": "The file to read: wallet or anosphere." } },
+    "required": ["name"] } }
+```
+
+So the order is `remember`, `update_memory`, `read_file`, `web_search`,
+`make_picture`: the order the real trial sent. The tool's words are the
+plan's (its 3.5), word for word those of the trial (`words.mjs` in its
+folder), and stand in `src/joy/joy.files.js` (`READ_FILE_TOOL`). Its
+description in full: "Read one of your two files. wallet: how the anoPod
+wallet works, every part of it, with the names of its pages and buttons
+in English and in Thai and a list of known troubles. anosphere: what the
+anoSphere is, what it is for, how it is built and what is planned. Call
+it before you answer a question about the wallet or about the anoSphere,
+each time anew: nothing of a file stays in the chat. The whole text of
+the file comes back. Do not call it for anything else." The entry has no
+`eager_input_streaming` (30.6), as `make_picture` has none: the trial
+sent it so. Joy decides when to call it, and the shared memory file
+tells her when (35.6).
+
+**In every request.** No setting switches the tool off, and no daily
+number takes it out. A request that goes out without the web search tool
+or without `make_picture` (32.2, 33.2) still holds it. The same `tools`
+stand in every request of one message.
+
+**The names in one place.** `wallet` and `anosphere` stand once in the
+code as names: the list `FILE_NAMES` of `src/joy/joy.files.js`. The
+tool's `enum`, the check of a call's name and the script (35.4) take
+them from there. The tool's two descriptions, the answer for a name that
+is no file and the shared memory file name the two files in words that
+Joy reads. So a third file changes the list, those words and the shared
+memory file (35.5).
+
+**How a call is carried out.** In the loop of 30.5, where a memory tool
+and `make_picture` are carried out (33.2). When a request to Anthropic
+has ended with `stop_reason: "tool_use"`, the calls of her own tools in
+that answer are carried out one after the other, in the order they stand
+in it. A call of `read_file` is carried out by `readJoyFile()` of
+`src/joy/joy.files.js`. It checks the name and reads the file's row with
+one query, `SELECT content FROM joy_files WHERE file_name = $1`, at that
+moment. The loop waits for it. The file's text is the call's outcome:
+the content of its `tool_result`, as one string, whole and alone, with
+nothing in front of it and nothing after it, as it stands in the row,
+the line break at its end included. Then every outcome goes into ONE
+`user` message of tool results, in the order of the calls, and the next
+request to Anthropic brings Joy's answer. So an answer from a file takes
+two of the four requests of one message.
+
+**No copy.** This server keeps nothing of a file in its memory: no
+variable and no cache. Every call reads the row again, also a second
+call of the same file in one answer, and a call in the next message of
+the same chat. So a file that the script has changed is what Joy's next
+call gets, on all three servers, with no restart (tried, 35.10).
+
+**Several calls in one answer.** Both files in one answer, the same file
+twice, and a file together with a memory tool or `make_picture`: each
+call is carried out, and all outcomes go back in the one message, in the
+order of the calls.
+
+**Nothing of a file stays in the chat.** The wallet sends the words of
+each message alone (30.4). So a later message of the same chat carries
+Joy's answer and no file, and when she needs the file again she calls
+the tool again (35.6 tells her so). Inside one message the file stays
+where it was handed: when a message takes a third request, the outcome
+of the second goes back with it as it was, and nothing is read again for
+it.
+
+**What Joy is told**, as the content of the call's `tool_result`:
+
+| Outcome | When | `is_error` |
+| ------- | ---- | ---------- |
+| the file's text | the name is one of the two, and its row was read | no |
+| `there is no such file: the two files are wallet and anosphere` | the name is none of the two, or the input holds no name that is a text | yes |
+| `the file could not be read right now: tell the member that you cannot look this up right now and that they can ask again later, and do not answer from what you remember` | the table holds no row of that name, or the read failed | yes |
+
+**A name that is no file.** The tool's definition allows the two names
+only, so this is for a model that goes wrong. A name is compared as it
+was written: `Wallet`, `wallet.md` and `../wallet` are no file. Neither
+is an input with no `name`, or with one that is no text. Such a call is
+answered without a read: the database is not asked, and nothing is
+written into the log.
+
+**A file that cannot be read.** Two things get the same words: the table
+holds no row for the name, and the query fails (the table is not there,
+the database does not answer, the connection is lost). The read never
+throws. The answer goes on, Joy says that she cannot look the thing up
+right now, and the message ends as every message does. One line is
+written into the log for it, `joy file not read: <name> <why>`. The why
+is `no row in joy_files`, or the words of PostgreSQL or of Node for the
+failure, cut at 100 characters, with PostgreSQL's code after them where
+the words do not hold it: `relation "joy_files" does not exist (42P01)`,
+`connect ECONNREFUSED 127.0.0.1:6432`. The line holds the file's name,
+which is one of the two, and nothing of a member. On the three servers a
+row can only be missing when the deploy's order was not kept (35.10).
+
+**The rest of 30.5, 32.2 and 33.2 holds.** `read_file` is one of her own
+tools in the sense of 32.2: a search that Anthropic holds back because
+the answer also calls `read_file` runs at the start of the next request,
+after the file was read. An answer that is refused or cut off at the
+model's limit can end in the middle of the call's input, so its call is
+not carried out. The fourth request is the last: a call in its answer is
+still carried out, and the answer ends there, with no words after it. So
+a model that calls `read_file` in every request ends after four
+requests. No line of the stream says that Joy is reading (35.9).
+
+**No watch on silence between two requests**, as with a picture (33.2).
+The read is one query for one row by its key. When the wallet's
+connection has closed meanwhile, the loop ends after the read and no
+further request goes to Anthropic: nobody is left to tell. The handler
+of `/ask-joy` fires the signal of 33.3 for it, and the loop looks at
+that signal after the read, as it does after a picture.
+
+### 35.3 The table
+
+`joy_files`, one row for each file:
+
+| Column | Type | Notes |
+| ------ | ---- | ----- |
+| `file_name` | `TEXT` | Primary key. The name that Joy calls the tool with: `wallet` or `anosphere`. Small letters, digits and hyphens, 1 to 32 characters, by the column's check |
+| `content` | `TEXT` | Not null. The whole file as text, 1 to 100,000 bytes (`octet_length`), by the column's check |
+| `created_at`, `updated_at` | `TIMESTAMPTZ` | When the file was first written, and when its text last changed |
+
+`db/schema.sql` has one new block, the last thing in the file, "The Joy
+files block (2026-11-25, spec section 35)": the `CREATE TABLE IF NOT
+EXISTS`, the `set_updated_at` trigger, and a `COMMENT ON` for the table
+and each column. It changes no table that exists, so the file's opening
+comment, which lists the blocks that do, is as it was. No foreign key,
+as everywhere, and no index beside the primary key's. The file makes 48
+tables where it made 47.
+
+- Only the script writes the table (35.4). No route writes it, and no
+  route hands it out.
+- This server reads one row by its name each time Joy calls `read_file`.
+  The three servers read the same database, so one upload serves all
+  three.
+- The files hold nothing secret: Joy tells a member what stands in them.
+  They are stored in the clear and are the same for every member.
+- Which names there are is the code's list, not the table's. A row of
+  another name, written by hand, is never read, and the script never
+  touches it.
+- The column's check holds a name's form and not the two names, so a
+  third file needs no change of the table.
+- Nothing else is kept. No count of reads, and nothing of a chat.
+  `joy_usage` is as it was: the tokens of a read are in the day's
+  tokens, as the tokens of every request are.
+
+The look, which writes nothing and can run on any of the three servers:
+each file with its bytes and when it last changed.
+
+```text
+sudo -u postgres psql -X -P pager=off "dbname=masterpod options='-c default_transaction_read_only=on'" -c "select file_name, octet_length(content) as bytes, created_at, updated_at from joy_files order by file_name"
+```
+
+### 35.4 The script
+
+On a masterpod server, as the masterpod user in the checkout:
+
+```bash
+npm run joy-files -- look <folder>
+npm run joy-files -- write <folder>
+```
+
+The folder is the folder `joy` of the wallet's repository: `wallet.md`
+and `anosphere.md`. A file's name in the folder is its name with `.md`
+after it. `look` reads the folder and the database. For each file it
+says whether the file is new, changed or the same as the stored one,
+with its bytes, and it names every fault. It writes nothing. `write`
+does the same and then writes, all of it or nothing. The script reads
+`.env` like the server and writes through the server's own pool, so it
+runs on any of the three masterpod servers. There is no route for it.
+Its model is the stickers' script (28.4).
+
+What a write does:
+
+- A file that the database does not hold is added.
+- A file whose stored text differs is replaced, whole.
+- A file whose stored text is the file's own is left alone, and its
+  `updated_at` does not move.
+- A file that is not in the folder is left as it is. So a folder may
+  hold one of the two files alone.
+- Anything else in the folder is passed over: other files, folders, and
+  names that begin with a dot.
+- The script never takes a row out.
+
+A file is read as bytes and stored as the text that those bytes are,
+byte for byte. Nothing is taken off its ends, and a byte order mark and
+its line ends stay as they are. So the bytes that the script prints are
+the file's size on the computer it came from, and the text that Joy gets
+is the file.
+
+A fault stops the run before the database is asked. Every fault of the
+folder is named in one run, each on a line of its own:
+
+| The fault | Its line |
+| --------- | -------- |
+| a folder that is not there | `the folder is not there` |
+| a folder that holds neither file | `the folder holds none of Joy's files: wallet.md, anosphere.md` |
+| a file that is empty, or white space alone | `wallet.md: the file is empty` |
+| a file whose bytes are not UTF-8 | `wallet.md: not a text file: its bytes are not UTF-8` |
+| a file that holds a zero byte | `wallet.md: not a text file: it holds a zero byte` |
+| a file above 100,000 bytes | `wallet.md: 100,001 bytes, the limit is 100,000` |
+| a file that cannot be opened | `wallet.md may not be read by this user`, `wallet.md is a folder, not a file` |
+
+The first four and the sixth are the plan's (its 3.3). A zero byte is
+its own line because it is valid UTF-8 and PostgreSQL takes none in a
+text. A file that is white space alone is taken as empty. The last is
+what the script needs to read the folder at all.
+
+The report of a run without a fault, here the first run of the trial:
+
+```
+joy-files: look (nothing is written)
+folder: /tmp/joy
+  wallet.md: 59,781 bytes, new
+  anosphere.md: 5,515 bytes, new
+to write: 2 new files (65,296 bytes)
+Nothing was written.
+```
+
+A file that is in the database has a line like `wallet.md: 59,821 bytes,
+changed: the stored one has 59,781 bytes`, or `anosphere.md: 5,515
+bytes, the same as the stored one`. A file that is not in the folder has
+`wallet.md: not in the folder, the stored one is left as it is (59,781
+bytes)`, or `wallet.md: not in the folder, and the database holds none`.
+The line `to write:` sums the new and the changed files with their
+bytes, or says `nothing`. A `write` run prints the same report and then
+`committed`, or `Nothing to write.` when the database already holds what
+the folder says. With faults both runs print `faults: <n>`, the lines,
+and `Nothing was written.`
+
+The write is one transaction on one client: the comparison, the writes,
+and the comparison once more, which must find nothing left to write,
+then `COMMIT`. An error on the way ends in `ROLLBACK` and the lines of
+the error and `Nothing was written.` One case is not covered, as in
+`scripts/stickers.js`, the model: when the connection is lost while the
+`COMMIT` itself is under way, the script prints the error and `Nothing
+was written.`, and the database may hold the write all the same. A look,
+or the line that shows the two rows, tells which. A file is compared as
+its whole text.
+
+Exit codes: 0 for a run without a fault; 1 for faults and for an error;
+2 with the usage line, `usage: npm run joy-files -- <look|write>
+<folder>`, for anything but `look` or `write` with one folder. The
+report goes to standard output; the faults, an error and the usage line
+go to standard error. A folder is best given by its full path: npm
+starts the script in the checkout, so another path is read from there.
+The report's second line shows which folder was read.
+
+### 35.5 How a changed file reaches Joy
+
+1. The file is changed on the Mac that holds the wallet's repository,
+   and committed there. A change of the wallet and the change of the
+   file can be one commit.
+2. The folder `web_app/joy` goes from that Mac to the masterpod computer
+   by AirDrop, and lands there as `~/Downloads/joy`.
+3. From the masterpod computer it is copied to `/tmp/` on one masterpod
+   server with `scp`, as a stickers folder is.
+4. On that server: the look, then the write, then the look line of 35.3.
+5. Joy's next answer comes from the new text, on all three servers.
+
+There is no commit of this server, no restart, and nothing to do on the
+wallet's servers. GitHub has no part in an upload (35.1). The operator's
+steps, each with its line and what it prints, are a page of their own:
+`~/Desktop/Z-TestNet/how_to/joy/how_to_upload_joys_files_to_the_masterpod.md`.
+
+A NEW file is another thing. A third name changes `FILE_NAMES`, the
+tool's words and the shared memory file, so it is a commit of this
+server and an update of the three servers. Changing a file's text is the
+frequent thing, and it needs none of that.
+
+### 35.6 What Joy is told
+
+`joy/shared-memory.md` (30.7) stands at the start of every request. It
+had 43 lines. One line is gone, two new parts are in, and one older part
+has one line more. The file has 70 lines and 10,845 bytes now.
+
+- Gone: the last point of "What you cannot do yet", which began "You
+  have not been taught how the anoPod wallet, anos or the anoSphere
+  work". Its first point stays: she cannot see pictures or files, and
+  she can do nothing in the wallet for a member.
+- New, after "Who you are" and before "How you answer": "Where you
+  live", with ten points. The wallet is a web app, and a member reaches
+  her through the menu entry Joy. What the anoSphere and an anoPod are.
+  The passkey, and a recovery after a lost one. Vouching. Anos, the anos
+  accounts and the validators. How members buy and sell anos among
+  themselves: the marketplace, a chat and an escrow trade. What else the
+  wallet has. The roles: seed, attestor, moderator, banker, guardian.
+  The wallet's own words, which a member most likely means as the thing
+  in the wallet. And that she cannot see a member's wallet.
+- New, after "How you answer" and before "Looking things up": "Answering
+  about the wallet and the anoSphere", with eleven points. How the
+  wallet and the anoSphere work is told in two files, and what stands
+  under "Where you live" gives her the words and not the workings. What
+  the file wallet holds, part by part, and what the file anosphere
+  holds. She reads the file before she answers a question about the
+  wallet or about the anoSphere, with what makes a question such a one.
+  She reads it again for every such question, since the wallet keeps
+  only her words and the files change. She reads no file for anything
+  else. She works the answer out from the file. She uses only the names
+  that the file gives: to a member who writes in Thai the Thai name,
+  which stands in square brackets after the English one, and to everyone
+  else the English name. She says a warning, and that a step cannot be
+  undone, with its step. When the file does not cover a thing she says
+  that she does not know it, and that the wallet's own pages and the
+  team are where to ask. And she does not search the web for how the
+  wallet, anos or the anoSphere work.
+- One line more in "How you answer", after its first line: "In Thai,
+  speak as a woman does: ค่ะ and คะ, never ครับ." It is the file's first
+  line with Thai letters.
+
+The words are the plan's (its 3.5 and point 2 of its section 4). The two
+new parts are word for word those of the real trial, with four changes
+that the trial led to:
+
+- a. In the point on names, three sentences more, after "To everyone
+  else, give the English name.": "Give the one name alone, as the member
+  sees it on their screen: never the English name beside the Thai one,
+  and never a name in square brackets. The double quotes and the square
+  brackets are the file's way of writing, not yours. Where a name in the
+  file holds the letter N, it stands for a number: write the number, or
+  say the amount."
+- b. The words "how many anos there are" in the point on the file
+  anosphere, and in the sentence on what makes a question one about the
+  anoSphere.
+- c. In the point on what a file does not cover, "say so" became "say
+  that you do not know it", and one sentence more stands at its end: "A
+  member does not know your files: do not speak of them."
+- d. The line in "How you answer".
+
+The real trial of 2026-11-25 sent the words WITHOUT the four changes,
+from prod1, to Claude Haiku 5.5, with the five tools in the order of
+35.2 and each file's text as the tool's outcome: 18 member messages, all
+answered, in 31 requests. She read a file 13 times of 13 when a question
+needed one, also in the next message of a chat, and read none 5 times of
+5. She worked out the case that the user had named, a seller who left
+the chat in the middle of an escrow trade, 5 times of 5, with no entry
+written for it. Every Thai name that she gave was the file's. What the
+four changes answer: in 2 Thai answers of 3 and in 2 English answers of
+7 she wrote a name the way the file writes it, the English name in quote
+marks and the Thai name in square brackets after it, and twice she
+quoted a box with the letter N in the place of its number (a); for a
+question that the file anosphere alone answers she read both files (b);
+one answer told the member what "the file" does not say (c); and in Thai
+she ended two answers as a man does and three as a woman does (d). NONE
+OF THE FOUR CHANGES HAS BEEN IN A REAL CALL. The deploy asks real
+questions with them on its first server, before any member gets them
+(35.10).
+
+The file is made by a script, so that no word of it is typed: from the
+file of 4b4c0cb, the trial's two parts and the plan's own table of the
+four changes (`shared-memory/make-shared-memory.mjs` in
+`~/Desktop/Z-TestNet/forclaude/joy-files-plan-1-tools/`). The script
+stops unless the text with the four changes taken out again is the
+trial's text, byte for byte. Against the text as tried, 5 lines differ:
+four lines of the second new part hold more or other words, and one line
+is new.
+
+### 35.7 What it costs
+
+Measured in the real trial, by Anthropic's own count of tokens and its
+prices of that day for Claude Haiku 5.5 (the plan's 3.7):
+
+| The message | The file | One message costs | Until the first word |
+| ----------- | -------- | ----------------- | -------------------- |
+| A plain message, no file | | 0.013 to 0.029 cents | 0.4 to 1.3 seconds |
+| A question about the anoSphere | 5,515 bytes, 1,727 tokens | 0.06 to 0.11 cents | 2.0 to 3.8 seconds |
+| A question about the wallet | 59,781 bytes, 19,468 tokens | 0.29 to 0.41 cents | 2.2 to 5.5 seconds in English, 3.9 to 10.0 in Thai |
+
+- A file is paid in the message that reads it, as input tokens that are
+  written to Anthropic's prompt cache: about a quarter of a cent for the
+  wallet file. A later message of the same chat carries Joy's words
+  only.
+- 1,000 wallet questions cost about 3.35 dollars. One pod's dearest day,
+  300 messages that are all wallet questions, is about 1 dollar.
+- The new words of the shared memory file add about 1,600 tokens to
+  every request, by the plan's estimate. They stand in the cached
+  beginning of the request.
+- The conversation is at most 120,000 bytes (30.4). With both files read
+  at their sizes of the trial, the longest chat is a request of about
+  67,000 tokens, by the plan's estimate. With a file at this server's
+  limit of 100,000 bytes it would be about 80,000. Above 100,000 tokens
+  Anthropic's price for the model is five times as high.
+- These numbers are Claude Haiku 5.5's. On another model a read costs
+  what that model's input costs.
+
+### 35.8 Files
+
+- `src/joy/joy.files.js`, new: `FILE_NAMES`, `FILE_MAX_BYTES`,
+  `READ_FILE_TOOL`, the two outcomes that bring no file, and
+  `readJoyFile`.
+- `src/joy/joy.anthropic.js`: the import; `tools` with the new entry,
+  after her two memory tools; the branch of the loop that carries a call
+  of `read_file` out; the file's opening comment; and, on the operator's
+  word (35.10), the comment of `MAX_ROUNDS` and the description of
+  `leaving`.
+- `src/joy/joy.queries.js`: `findFile`, the server's read;
+  `listStoredFiles` and `upsertFile`, the script's read and its write;
+  the file's comment.
+- `scripts/joy-files.js`, new: the script.
+- `package.json`: the line `joy-files` in `scripts`, after `stickers`.
+- `db/schema.sql`: the Joy files block, new, at the end.
+- `joy/shared-memory.md`: the words of 35.6.
+- `README.md`: one row under "Scripts"; on the operator's word (35.10),
+  a clause in the row of `/ask-joy` in the Endpoints table; one row in
+  "Database tables"; and in "Layout" the row of `joy/` under `src`, the
+  row of `shared-memory.md` and one row for `joy-files.js`.
+- `src/joy/joy.service.js` and `src/joy/joy.pictures.js`: comments
+  alone, on the operator's word (35.10). In the first, the opening
+  comment's list of what this server keeps; in the second, two comments
+  that called `make_picture` Joy's third tool. No line of code in
+  either.
+- Here: a dated clause in 30.2, 30.3, 30.5 (two places), 30.6, 30.7 (two
+  places) and 30.10; in 32.2 (three places) and 32.5; in 33.2 (two
+  places); and this section.
+
+Nothing else changes: not `src/joy/joy.handlers.js`, `joy.router.js` and
+`joy.memory.js`, not `src/app.js`, not `src/config/env.js`, not
+`.example.env`, not `package-lock.json`. One table, one tool and one
+script; no route, no env variable, no npm package.
+
+### 35.9 What is left as it is
+
+The plan's section 6, as far as it is this server's:
+
+- Anthropic's caching of the files. Every read sends the whole file, at
+  Anthropic's price for a cache write. The user: "something we can talk
+  about later".
+- A count of how often a file is read, or of how often no file had the
+  answer. `joy_usage` holds a day's tokens, not its reads.
+- A line in the stream while Joy reads. The wallet shows what it shows
+  before every answer.
+- Joy looking into a member's wallet. She reads how the wallet works.
+  She sees no account, no trade and no chat.
+- More files, or the wallet file cut by subject. A third file is a build
+  (35.5).
+- The same tool on GPT-6.2 Sol. That belongs to the plan for the change
+  of company, which comes after this build.
+- A switch for the files. There is no setting. The way back is the
+  commit before, by the usual update of the three servers.
+- A page that shows what is stored. The look line of 35.3 shows the two
+  rows.
+
+And what the build leaves as it is:
+
+- Nothing limits how long a read may take but what limits every query of
+  this server: five seconds for a connection of the pool.
+- A file is not checked for what it says. The script checks that it is
+  text, and its size.
+- This server does not know which commit of the wallet's repository a
+  stored file is. The look prints each file's bytes and the time of its
+  last change.
+- A file that somebody writes into the table by hand is handed to Joy as
+  it stands, if its name is one of the two.
+
+### 35.10 Notes from the build
+
+#### Build 1, the masterpod (2026-11-25)
+
+Built from `~/Desktop/Z-TestNet/forclaude/joy-files-plan-1.md`, its
+sections 3 and 4, step 1 of its section 5 and its section 7, on main at
+4b4c0cb, the working tree clean, in a build chat of its own that was
+started from the plan chat's card. The plan holds no code, so all of the
+code is the build's. The words that Joy is told were taken from the
+places the plan names for them, by scripts: the tool and the answer for
+a name that is no file from the trial's `words.mjs`, the two new parts
+from its `new-lines/`, and the four changes and the answer for a file
+that cannot be read from the plan's own text. No new npm package, and no
+test script in the repo. Nothing was deployed, and the schema was
+applied to no database of the network.
+
+The deploy's order is the plan's (point 7 of its section 4), and it is
+not the order of the sections before, where a pull and a restart were
+one line:
+
+1. The schema line on the leader. It adds the table. The code that runs
+   today does not know the table and is not disturbed by it (tried,
+   below).
+2. On the first server, one that is not the leader: the pull ALONE. The
+   running server reads nothing from its folder after its start, so it
+   goes on as it is.
+3. The first upload of both files, on that server: the look, the write,
+   the look line of 35.3.
+4. One look at real answers, on that server: a small program asks
+   Anthropic seven questions through the code as pulled, with the
+   server's own key, and prints the answers and what a reader of English
+   cannot judge in them. It shows the four changes of 35.6, which no
+   real call has had.
+5. That server's restart. Then the two others, the leader last.
+
+Why this order: the new code with an empty table tells a member that it
+cannot look anything up right now, and a restart puts the new lines in
+front of members. On a database without the table the built code does
+the same for a question about the wallet, and answers everything else as
+before (tried, below): unlike the steps of sections 32 to 34, the built
+code does not fail on the schema of before.
+
+What the plan left open and how it was decided, each time the smallest
+way that fits its section 7:
+
+- The columns' names, `file_name` and `content`. The plan names what
+  each holds.
+- The check of `file_name` holds a name's form (small letters, digits
+  and hyphens, at most 32), as the check of a sticker set's name does,
+  and not the two names. The two names stand once, in the code.
+- The limit of 100,000 is counted in bytes of UTF-8, in the script and
+  in the column's check (`octet_length`).
+- A file is stored byte for byte: nothing is taken off its ends, and a
+  byte order mark stays. The trial handed Joy each file whole, with the
+  line break at its end.
+- A file that is white space alone is refused as empty, and a file with
+  a zero byte as no text. The plan names an empty file and a file that
+  is not valid UTF-8.
+- A fault of the folder stops the script before it asks the database,
+  and the script prints one line for a file that is not in the folder
+  too, with what the database holds of it.
+- An input with no name, or with a name that is no text, is answered as
+  a name that is no file.
+- The log's line for a file that cannot be read: its beginning `joy file
+  not read:`, and its forms (35.2).
+- After the read the loop looks whether the wallet went away, as it does
+  after a picture. The plan: "When the wallet has gone away meanwhile,
+  no further request goes out, as with a picture." A copy of the code
+  without that look came out the same in the trial: the handler of
+  `/ask-joy` stops a request that is begun after the wallet left, before
+  it leaves this server. The look is there so that the loop does not
+  lean on that.
+- The names of the new functions, and where the SQL stands: all of it in
+  `src/joy/joy.queries.js`, as the plan's section 7 names the file.
+- The section's number is 35, the next free one. The block's name, "The
+  Joy files block".
+- Sentences that the step outdates. In the places that the plan names
+  they were brought in line in the build. In `src/joy/joy.anthropic.js`,
+  the opening comment said that web search stands beside "her two tools"
+  and called `make_picture` "her third tool"; it says "her own tools"
+  and "her tool make_picture" now. In `README.md`, the rows of 35.8; its
+  row of `src/joy/` said "the two Joy tables' queries" and "her third
+  tool, make_picture". Here, the dated clauses of 35.8. The openings of
+  sections 30, 32 and 33, their lists of files and their notes say what
+  their own builds made and stay as records. Six places more, which the
+  plan does not name, were listed in the build's report and brought in
+  line on the operator's word, before the commit (2026-11-25, in the
+  build's chat: "Bring the six out of date places in line"). In
+  `src/joy/joy.anthropic.js`: the comment of `MAX_ROUNDS` named a change
+  of the memory file and a picture as the rounds of her own tools, and
+  names a read of one of her files too now; and the description of
+  `leaving` named the request to OpenAI alone, and says now that after a
+  read of a file no further request goes to Anthropic. In `README.md`:
+  the row of `/ask-joy` in the Endpoints table says now that Joy reads
+  how the wallet and the anoSphere work from two files. In
+  `src/joy/joy.service.js`, a file that the plan does not name: the
+  opening comment's list of what this server keeps named `joy_memories`
+  and `joy_usage`, and names `joy_files` too now. In
+  `src/joy/joy.pictures.js`, which the plan does not name either: two
+  comments called `make_picture` Joy's third tool, and say "her tool
+  make_picture" now. The first and the third of the six had first been
+  brought in line by the build and were taken back when a second reader
+  held them against the plan's list of places; then all six were listed
+  for the operator. Older than this step, and left as it is:
+  `src/joy/joy.memory.js` calls her memory tools "Joy's two tools", and
+  the list of tables in section 4 has no entry for any of Joy's three
+  tables.
+
+The checks. All of them ran on the files as they were handed over, the
+last time from empty databases. The tools are outside the repo, in
+`~/Desktop/Z-TestNet/forclaude/joy-files-plan-1-tools/`, with what they
+printed. No request left this Mac: no key of either company is on it, no
+`.env` file was read, and the trial's process lets no request out to
+another address than 127.0.0.1.
+
+- The code. `node --check` on the six files of code that the commit
+  touches, clean, on Node 24.22.0. One load of the app with no server
+  and no database (`createApp()` with made-up settings): 117 routes, as
+  a copy of 4b4c0cb gives, each with as many handlers, the three of Joy
+  with their four each; the same with both keys set. No route is new.
+  `src/config/env.js`, `.example.env`, `package-lock.json`, `src/app.js`
+  and three files of `src/joy/` that the step does not name
+  (`joy.router.js`, `joy.handlers.js`, `joy.memory.js`) are byte for
+  byte those of 4b4c0cb; `joy.service.js` and `joy.pictures.js` differ
+  from it in lines of a comment alone, the places brought in line on the
+  operator's word; and `package.json` differs by the one line. A type
+  checker's read of `src/app.js` and of the script (`tsc --checkJs`,
+  TypeScript 6.0.3 from the wallet's folder): none of the kinds that
+  mean a real mistake, here and in the same read of 4b4c0cb.
+- The shared memory file. The trial compares it with the trial's own
+  files and with the plan's table: "Where you live" stands in it word
+  for word, at its place; nine of the thirteen lines of the second new
+  part are word for word as tried, and the four others are as tried once
+  the plan's new words are taken out again; the line of change d stands
+  after the first line of "How you answer"; the line on what Joy has not
+  been taught is gone. The tool and the answer for a name that is no
+  file are compared with the trial's `words.mjs`, and the answer for a
+  file that cannot be read with the plan's text, each where Joy is told
+  it. The file has 70 lines and 10,845 bytes, where it had 43 and 5,020.
+- The scratch PostgreSQL. A PostgreSQL 17.11 that was started for this
+  build alone: a data folder of its own in the build chat's scratch
+  folder, listening on 127.0.0.1 port 62231 and nowhere else, with no
+  socket file. This Mac's own PostgreSQL on port 5432 was not touched,
+  and `scripts/setup-db.sh` was not run. Every apply of a schema file
+  ran as the deploy's line runs it: one transaction after `SET ROLE
+  masterpodsoftware`, into a database that the role owns.
+- The schema file, 24 checks. Alone into an empty database, twice: 48
+  tables both times, and the schema as `pg_dump` prints it the same
+  after the second run as after the first. On top of a database built
+  from the file of before, with rows in `joy_usage` and `joy_memories`,
+  twice: 47 tables, then 48, the second run changing nothing, and the
+  schema as `pg_dump` prints it the same as that of the database built
+  from the new file alone. Against the schema of before, `pg_dump` shows
+  the table with its four columns and two checks, its five comments, its
+  primary key and its trigger, and nothing else; no line went out. The
+  rows that were there kept every value they had, `updated_at` included.
+  The table is owned by the app's role. A second row of one name, a name
+  of another form, an empty text, a text of 100,001 bytes and one of
+  33,334 Thai letters, which are 100,002 bytes, are each refused by the
+  table; a text of 100,000 bytes is taken. A write of the same text
+  leaves `updated_at` as it was, and a write of another text moves it.
+- The stand-ins. For Anthropic, the stand-in of section 33's build with
+  two things new. It reads a request as bytes and makes text of them
+  once: the older stand-ins joined a request's pieces as text, which
+  breaks a Thai letter when a piece ends in the middle of one, and the
+  new shared memory file and the wallet file hold Thai letters. And it
+  has answers that call `read_file`, in the form of the real trial: the
+  call at once, with thinking before it and no words, and her answer in
+  the next request. What its Joy says then is made from the outcome that
+  this server handed back: the file's bytes, the first 12 characters of
+  its SHA-256 and its first line, or the refusal's words. It still holds
+  a request to the rules of Anthropic's pages for a message that takes
+  several requests (32.10). For OpenAI, the stand-in of section 33's
+  build as it was.
+- The trial. The working tree's own app (`createApp()`, nothing of
+  `src/server.js`) on the scratch database, called over HTTP with
+  requests signed as a wallet signs them, by session keys made for the
+  run. 125 checks in six runs, none bad. The first run has the default
+  settings and both keys, and 98 of them. The two files are the real
+  ones, as `web_app` has them at 8bc143a: `wallet.md` with 59,781 bytes,
+  of which 2,870 letters are Thai, and `anosphere.md` with 5,515. The
+  whole trial ran once more with the wallet file as the plan's step 2
+  left it (61,929 bytes), with the same results.
+- An answer from a file, line by line: the stream is her words and the
+  last line, with no line while she reads; two requests went to
+  Anthropic; the first ended in the call, and her answer goes back as it
+  came, thinking and the call of `read_file` with the name `wallet`; the
+  next request ends with ONE message that holds ONE outcome, the file's
+  text as one string, byte for byte the file, with nothing in front of
+  it and nothing after it and no `is_error`; her words are the ones the
+  stand-in makes from that text; the last line is the one of before; one
+  message and both requests' tokens on the day's row; nothing in the
+  log. The file `anosphere` the same way.
+- The request as the stand-in got it: `tools` with `remember` and
+  `update_memory` as they were, `read_file` word for word the trial's,
+  the web search entry and `make_picture` as it was, in that order; the
+  two system parts, the first of them the new file whole, with its Thai
+  letters unbroken, the second as before the step; the model, the token
+  limit, the effort, the cache marks and the stream as before; the same
+  `tools` and system parts in both requests.
+- Several calls in one message. Both files in one answer: both texts in
+  ONE message, in the order of the calls. The same file twice. A file
+  and `remember` in one answer, in both orders: both outcomes in the one
+  message, and the new memory file in the last line. A file and a web
+  search in one message, in both forms that such an answer can have
+  (32.2): the `searching` line, her words, the cited page in the last
+  line, one search on the row. A file and a picture in one answer:
+  `drawing`, the picture, her words, one picture on the row and one
+  request to OpenAI's stand-in. A file first and a picture in the next
+  request: three requests, and the file's text goes back in the third as
+  the second's outcome, with no second read for it.
+- A name that is no file: `secrets`, `Wallet`, `../wallet`, `wallet.md`,
+  an input with no name, a name that is a number and one that is a list.
+  Each is answered with the trial's words, as a refusal, with nothing in
+  the log. With the table given another name meanwhile, such a call is
+  answered the same: it asks the database nothing. A name that is no
+  file and then the right one: three requests, the refusal in the second
+  and the file in the third.
+- A row that is not there: on the empty table, before the first upload,
+  and with one row deleted. Joy is told the plan's words, as a refusal;
+  the answer ends as every answer does; the message is counted and its
+  tokens are written; ONE line in the log, `joy file not read: wallet no
+  row in joy_files`. With one row away and both files asked for in one
+  answer, the one that is there comes and the other is refused, in the
+  one message.
+- A query that fails, in three ways. The table under another name: the
+  plan's words as a refusal, and the log's line `joy file not read:
+  wallet relation "joy_files" does not exist (42P01)`. The database
+  stopped between the request that ended in the call and the read, in a
+  run of its own: the same words, the line `joy file not read: wallet
+  connect ECONNREFUSED 127.0.0.1:62231`, the answer ends as every answer
+  does, the tokens cannot be written either and the log says so as
+  before the step; when the database is back, the same process reads the
+  file again. And the built code on the schema of before (below).
+- A call in every request: four requests, each ending in a call, then
+  the end with no words; three reads went back, each the file that was
+  named; the tokens of all four on the row.
+- A file changed by the script between two messages. The first message
+  gets the file as it was. The script, run as a process of its own on
+  the same database, writes a changed wallet file. The next message, in
+  the same running process, gets the new text, byte for byte: no
+  restart, and no copy. Put back the same way.
+- The wallet going away during the read. The read was made to wait by a
+  lock on the table, and the wallet left while it waited (PostgreSQL
+  showed the one query waiting). When the read came back, no further
+  request went to Anthropic and Anthropic's package began none, nothing
+  was logged, and the first request's tokens were on the row with the
+  message.
+- With the searches and the pictures of the day used: the request goes
+  out with her two memory tools and `read_file` alone, and with both
+  sentences of 32.2 and 33.2 after the date; the file is read. With no
+  key for OpenAI and web search switched off, 4 checks: the same three
+  tools, the two sentences for the switch, and no request to OpenAI's
+  address in the whole run.
+- Words before the call: her answer after the read begins a new
+  paragraph. A message in Thai, the real trial's on a spare passkey: it
+  reaches the stand-in whole, and the Thai answer comes back whole. The
+  model's limit in the middle of the call: `stop` is `length`, and the
+  call is not carried out. A request that fails after the read:
+  Anthropic's package tries it three times, the last line is the
+  failure, and the first request's tokens are on the row.
+- Answers without a file, as they were: a plain answer in one request, a
+  saved line, a searched answer, a picture, a model that never stops
+  calling `remember`, a refused, a cut-off and a dropped answer, and a
+  next message of a chat that carries the earlier answer as its words
+  alone, for which she reads again.
+- The trial of section 33's build, its main run of 107 checks, run again
+  against this code, with nothing of it changed but that its two
+  stand-ins read a request as bytes: 103 hold. The four that do not are
+  the four that name the list of tools, where `read_file` now stands
+  third.
+- What was written: of the 48 tables four hold rows, the pods, the
+  nonces of the signed requests, `joy_usage` and `joy_files`. The log's
+  lines hold no word of a message and nothing of a file's text.
+- The script, 52 checks, each run a process of its own on a database of
+  its own, as `npm run joy-files` runs it on a server. The look on an
+  empty table (both files new, nothing written), the write (`committed`,
+  each row byte for byte the file by the SHA-256 that the database works
+  out), a second write (`Nothing to write.`, no row and no time
+  changed). A changed file, also one with the same number of bytes. A
+  folder with one file: the other row is untouched; on an empty table
+  the missing one is named as stored nowhere. Each fault, by `look` and
+  by `write`, with exit 1, the report on standard error and nothing
+  written: a folder with neither file, an empty file, white space alone,
+  bytes that are not UTF-8, a Thai letter cut in the middle at a file's
+  end, a picture, a zero byte, 100,001 bytes, two faults in one run, one
+  good changed file beside a faulty one, a folder that is not there, a
+  path that is a file, `wallet.md` as a folder, and a file that the user
+  may not read. A run with no word, with a wrong one, with two folders
+  or with the folder first: the usage line and exit 2. Anything else in
+  the folder is passed over; a folder that is a link is read; a folder
+  that is not given by its full path is read from where the script was
+  started. A file of exactly 100,000 bytes is taken, also one of 33,334
+  letters that make 100,000 bytes. A byte order mark, Windows line ends
+  and a last line with no line break are stored as they are. A row of
+  another name is left alone. An error in the middle of a write of two
+  files, a check that the trial put on the table for it: the first file
+  is not written either. A database that is not reached: its reason and
+  `Nothing was written.` Two writes at the same moment: each ends with
+  `committed` or `Nothing to write.`, and the table holds one folder's
+  file whole.
+- The two half-deployed states, 9 and 7 checks. The code of 4b4c0cb on
+  the new schema: a message is answered with the lines of before by the
+  four tools of before, it is counted and its tokens are written; a
+  saved line, a searched answer and a picture as before; it sends the
+  shared memory file of before. The built code on the schema of before:
+  a message that needs no file, a saved line, a searched answer and a
+  picture work; a question that needs a file is answered with the plan's
+  words for a file that cannot be read, with the log's line of 42P01 and
+  no `500`; the script says that the table is not there and writes
+  nothing. So the schema line goes first, and the first upload comes
+  before a restart.
+- The wallet of today, 20 checks, none bad. A development build of
+  `web_app` at 8bc143a, from a scratch copy, behind that commit's own
+  server program, against the working tree's app on a scratch database
+  of its own, in Google Chrome with no window, with the helper of
+  section 33's walks for a made-up login. An answer from the wallet file
+  is read to its end and drawn in Joy's bubble with no red line; the
+  wallet's Log names the call as whole, with 2 lines. While the answer
+  is awaited the page says "Joy is writing…". A second question in the
+  same chat: the wallet sends the earlier answers as their words alone,
+  and this server reads the file again. Both files in one answer. A
+  question in Thai. A file and a saved line, a file and a picture with
+  the picture on the page, a file and a web search with its source under
+  the answer. A name that is no file and a file that cannot be read: her
+  own words, no red line, and the page goes on. After a reload the chat
+  is back. Chrome raised no error on the page.
+- Faults put in, to see that the trial notices one. Fifteen scratch
+  copies of the working tree with one place changed each. Eleven in the
+  code: a copy of a file kept in the server's memory; the text handed
+  without the line break at its end; words in front of the text; a read
+  that throws when it fails; a row that is not there handed as an empty
+  text; any name looked up in the table; a file that could not be read
+  not handed over as a refusal; no line in the log; `read_file` last
+  among the tools; `read_file` left out when the searches of the day are
+  used; and no look at the wallet after the read. Four in the script: a
+  write that is not one transaction, a byte order mark taken off, a file
+  of exactly the limit refused, and no look for a zero byte. Fourteen
+  runs came out bad: thirteen by 1 to 32 of their checks, one of which,
+  `read_file` last among the tools, then ended in an error of the
+  trial's own; and one, the read that throws, by an error of the trial's
+  own alone, at the first check that met the fault. The fifteenth, no
+  look at the wallet after the read, came out the same as the code
+  itself, as told above.
+- The deploy's lines, on a made-up server on this Mac: GitHub as a bare
+  repository in the scratch folder, a clone at 4b4c0cb as a server, the
+  repository's packages linked in, a settings file of the trial's own,
+  and stand-ins for `sudo`, `systemctl`, `journalctl`, `psql` and the
+  schema's `curl`. Every line's syntax was read by bash, dash and zsh,
+  and no line holds a dollar sign. The schema line carries the whole
+  hash of the new file and prints `OK`, 47, the apply's 605 lines, 48,
+  the owner and `0 files of Joy in the new table`; a second run prints
+  48 twice; with the file of before as the download it prints `FAILED`
+  and applies nothing. The pull alone brings the eleven files. The
+  folder's way: the line that takes an older folder out of Downloads, in
+  zsh; a copy in the place of AirDrop; `scp` speaking to this Mac's own
+  file program. The look and the write through npm itself, and the look
+  line of 35.3, which refuses a write. Then that made-up server's own
+  `src/server.js` was started on the pulled code, and it answered a
+  member's question from the stored file over HTTP, signed. None of
+  these lines has run on a server.
+- The deploy's look at real answers, one program file that is read from
+  standard input in the masterpod's folder: it asks through
+  `askAnthropic()` of the code on the disk, reads the real rows by this
+  server's own read, lets no request go to another address than
+  Anthropic's, and writes nothing. Tried on the made-up server against a
+  stand-in that answers its seven messages in seven ways: as it should
+  be; as the real trial showed before the four changes, where its counts
+  are 5 names in the file's form, the letter N once, the word "file"
+  twice, the man's ending twice and both files read for the question on
+  how many anos there are; a Joy who never reads; a call of
+  `make_picture`, which reaches no address of OpenAI's; a web search; a
+  refused key and an overloaded Anthropic, where it ends after two
+  messages. It refuses to start on the code of before the pull, with no
+  key, on a database without the table and on a table without the two
+  files, each with one line that says what to do first.
+- A second reader, a helper of the build's chat that was given the plan
+  and the files and no word of the build's own view, read the nine files
+  of then, this section, the README's places and the how-to page against
+  the plan, and ran copies of the script and of the read against
+  stand-ins of its own. It found nothing wrong in what Joy does, in what
+  is stored or in what the script writes, and `joy/shared-memory.md`
+  byte for byte the text that it made itself from the plan. It found:
+  the lost connection at `COMMIT` (35.4), which the model has too; the
+  two places that the build had brought in line though the plan does not
+  name them (above); one line of the how-to page that took more out of
+  the Downloads folder than the page said; and four sentences, here and
+  in the page. The line and the sentences were put right. After that
+  every check of this list ran again: the six runs, the script's cases,
+  the schema's checks, the load check, the fifteen fault copies, the
+  walk of the wallet, the pictures build's run and the deploy's lines.
+  Then the six places of comment and README were brought in line on the
+  operator's word (above), which made the commit eleven files, and every
+  check of this list ran once more, on the files as they were handed
+  over.
+- Not tried by the build. Nothing against Anthropic's real API: no key
+  is on this Mac. The real trial of the planning sent the request of
+  35.2 from prod1 by a program of its own, with the words of 35.6
+  without the four changes. So three things have not been to the real
+  API: this server's own code with the tool; the four changes; and Joy's
+  answer when the file does not cover a thing, which no real call has
+  asked. The deploy's look is that proof, before any member gets the new
+  lines. Not tried either: nothing on a server, nothing on Linux,
+  nothing on PostgreSQL 16, which the servers run (the block uses
+  nothing newer than the file had), and nothing through PgBouncer or the
+  doormen. AirDrop with a folder in the place of one file. No Thai
+  reader has read Joy's Thai answers.
+- The numbers. `db/schema.sql` has 2027 lines, 31 more than before, and
+  its sha256 begins a6679632. Before the step it had 1996 lines and its
+  sha256 began ccc25354. It makes 48 tables where it made 47: the count
+  that the deploy's schema line prints proves the block.

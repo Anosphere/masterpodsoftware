@@ -6,6 +6,10 @@ import { pool, query } from '../db/pool.js';
  * since spec section 32 also counts the day's web searches and since
  * spec section 33 the day's pictures. The pod id and the blob are
  * Buffers of raw bytes, matching the BYTEA columns.
+ *
+ * And, since spec section 35, for her third table: joy_files, one row
+ * for each file that Joy reads with her tool read_file. The server reads
+ * a row. scripts/joy-files.js alone writes the table; no route does.
  */
 
 /** The pod's row as { memoryBlob, updatedAt } (a Buffer and a Date), or null before the first set. */
@@ -66,5 +70,39 @@ export async function addTokens(anopodId, day, tokens) {
             pictures = pictures + $8
       WHERE anopod_id = $1 AND day = $2::date`,
     [anopodId, day, tokens.input, tokens.output, tokens.cacheRead, tokens.cacheWrite, tokens.searches, tokens.pictures],
+  );
+}
+
+/**
+ * The text of one of Joy's files (spec section 35), by its name, or null
+ * when the table holds no row of that name. One row is read at each
+ * call, and nothing of it is kept in this process.
+ */
+export async function findFile(fileName) {
+  const { rows } = await query('SELECT content FROM joy_files WHERE file_name = $1', [fileName]);
+  return rows.length === 0 ? null : rows[0].content;
+}
+
+/**
+ * For scripts/joy-files.js: what the table holds of the files named in
+ * `fileNames`, as [ { name, content } ]. A name with no row is not in
+ * the answer. `db` is the pool, or the client of the script's
+ * transaction.
+ */
+export async function listStoredFiles(fileNames, db = pool) {
+  const { rows } = await db.query('SELECT file_name, content FROM joy_files WHERE file_name = ANY($1::text[]) ORDER BY file_name', [fileNames]);
+  return rows.map((row) => ({ name: row.file_name, content: row.content }));
+}
+
+/**
+ * For scripts/joy-files.js: writes one file's row whole, on the client
+ * of the script's transaction: an INSERT, or an UPDATE of the text when
+ * the row exists (the trigger stamps updated_at on that path).
+ */
+export async function upsertFile(client, fileName, content) {
+  await client.query(
+    `INSERT INTO joy_files (file_name, content) VALUES ($1, $2)
+     ON CONFLICT (file_name) DO UPDATE SET content = EXCLUDED.content`,
+    [fileName, content],
   );
 }
