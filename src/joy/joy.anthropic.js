@@ -34,6 +34,12 @@ import { MAKE_PICTURE_TOOL, makePicture } from './joy.pictures.js';
  * between two requests to Anthropic, with one read of the file's row
  * from its own database (joy.files.js). The file's text goes back as the
  * tool's outcome, and Joy's answer comes in the next request.
+ *
+ * Joy can see a picture that a member sends her (spec section 37). The
+ * member's new message then goes to Anthropic as one message of two
+ * parts, the picture and the member's words, in every request that the
+ * message takes. No other message carries a picture, and this server
+ * keeps none.
  */
 
 /**
@@ -102,7 +108,10 @@ function addSources(sources, content) {
  * Sends one message to Joy and reads her answer.
  *
  *   history   the conversation, oldest first, the new message last:
- *             [{ role: 'user' | 'assistant', text }]
+ *             [{ role: 'user' | 'assistant', text }]. The last message
+ *             also holds `upload`, { contentType, data }, when the
+ *             member sent a picture with it (spec section 37): the
+ *             picture's type and its bytes as base64
  *   memory    the member's memory file as the wallet sent it
  *   search    whether Joy may search the web for this message: 'on';
  *             'off' when web search is switched off by a setting; 'used'
@@ -156,7 +165,14 @@ export async function askAnthropic({ history, memory, search, picture, anopodId,
   // search tool is no longer in it. read_file is in every request: no
   // setting and no daily number takes it out.
   const tools = [...MEMORY_TOOLS, READ_FILE_TOOL, ...(search === 'on' ? [WEB_SEARCH_TOOL] : []), ...(picture === 'on' ? [MAKE_PICTURE_TOOL] : [])];
-  const messages = history.map(({ role, text }) => ({ role, content: text }));
+  // The conversation. A message goes as its words. The one message that
+  // came with a picture goes as two parts, the picture first and then
+  // its words (spec section 37). The list is built once for a message,
+  // so the picture is in every request that the message takes.
+  const messages = history.map(({ role, text, upload }) => ({
+    role,
+    content: upload === undefined ? text : [{ type: 'image', source: { type: 'base64', media_type: upload.contentType, data: upload.data } }, { type: 'text', text }],
+  }));
   const sources = [];
   let file = memory;
   let asked = false; // whether this message's one request to OpenAI has gone out

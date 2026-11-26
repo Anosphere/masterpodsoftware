@@ -134,17 +134,22 @@ function optionalSize(name, fallback) {
  * OpenAI, and everything else is as it was. JOY_DAILY_PICTURES may be 0,
  * which switches pictures off too. No error ever prints that key either.
  *
- * The last four are of spec section 36. JOY_PROVIDER picks the company
- * whose model writes Joy's answers: anthropic or openai, and anthropic
- * when it is not set. Any other word stops the boot. What the first
- * lines of this comment say holds for anthropic. With openai Joy is on
- * when OPENAI_API_KEY is set, which is the pictures' key too, and the
- * model, how hard it thinks and the most tokens of a request are the
+ * The four after those are of spec section 36. JOY_PROVIDER picks the
+ * company whose model writes Joy's answers: anthropic or openai, and
+ * anthropic when it is not set. Any other word stops the boot. What the
+ * first lines of this comment say holds for anthropic. With openai Joy
+ * is on when OPENAI_API_KEY is set, which is the pictures' key too, and
+ * the model, how hard it thinks and the most tokens of a request are the
  * three settings that begin JOY_OPENAI_. The first four settings are
  * Anthropic's and are then not used. The fifth, JOY_DAILY_MESSAGES, is
  * for both, as her web search's and her pictures' numbers are. One of
  * them counts another thing with openai: JOY_MAX_SEARCHES is then the
  * most steps of OpenAI's search tool for one request (spec 36.5).
+ *
+ * The last is of spec section 37: JOY_DAILY_UPLOADS, how many pictures
+ * one pod may send Joy in one day. It may be 0, which switches uploads
+ * off: a message that carries a picture is then refused. It is for both
+ * companies.
  */
 function readJoy() {
   return Object.freeze({
@@ -165,6 +170,7 @@ function readJoy() {
     openaiModel: optionalText('JOY_OPENAI_MODEL') ?? 'gpt-6.2-sol',
     openaiEffort: optionalChoice('JOY_OPENAI_EFFORT', ['low', 'medium', 'high'], 'medium'),
     openaiMaxTokens: optionalInteger('JOY_OPENAI_MAX_TOKENS', 16_000),
+    dailyUploads: optionalCount('JOY_DAILY_UPLOADS', 50),
   });
 }
 
@@ -266,6 +272,8 @@ export const env = Object.freeze({
   // that model thinks (low, medium or high) and the most tokens one
   // request to OpenAI may write, thinking included. With openai the
   // first number of her web search is the most steps of OpenAI's search
-  // tool for one request.
+  // tool for one request. Pictures from a member (spec section 37): how
+  // many pictures one pod may send her in one day (UTC). 0 switches
+  // uploads off.
   joy: readJoy(),
 });

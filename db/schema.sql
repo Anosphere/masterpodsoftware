@@ -8,8 +8,8 @@
 -- It never alters a table that already exists, though, apart from the
 -- idempotent ALTERs of the appointments block and of the recovery,
 -- attestation, marketplace, wallet memory, case chat, seen position,
--- first key blob, chat change, message edit, Joy search, Joy picture and
--- notification number blocks at the end.
+-- first key blob, chat change, message edit, Joy search, Joy picture,
+-- notification number and Joy upload blocks at the end.
 -- After changing this file, rebuild the local database from scratch with
 --
 --   npm run db:reset
@@ -1863,6 +1863,7 @@ CREATE TABLE IF NOT EXISTS joy_usage (
   updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
   searches           INTEGER     NOT NULL DEFAULT 0 CHECK (searches >= 0),
   pictures           INTEGER     NOT NULL DEFAULT 0 CHECK (pictures >= 0),
+  uploads            INTEGER     NOT NULL DEFAULT 0 CHECK (uploads >= 0),
   PRIMARY KEY (anopod_id, day)
 );
 
@@ -1872,7 +1873,7 @@ CREATE OR REPLACE TRIGGER joy_usage_set_updated_at
   WHEN (OLD.* IS DISTINCT FROM NEW.*)
   EXECUTE FUNCTION set_updated_at();
 
-COMMENT ON TABLE  joy_usage                    IS 'One row per pod and day (UTC): how many messages the pod sent Joy that day, the tokens Anthropic counted for them (spec section 30), since spec section 32 the web searches Anthropic made for them and, since spec section 33, the pictures OpenAI made for them. Holds no text of a message and no picture. The daily limit of messages, the daily number of searches and the daily number of pictures are read from it.';
+COMMENT ON TABLE  joy_usage                    IS 'One row per pod and day (UTC): how many messages the pod sent Joy that day, the tokens Anthropic counted for them (spec section 30), since spec section 32 the web searches Anthropic made for them, since spec section 33 the pictures OpenAI made for them and, since spec section 37, the pictures the pod sent Joy with them. Holds no text of a message and no picture. The daily limit of messages, the daily number of searches, the daily number of pictures made and the daily number of pictures sent are read from it.';
 COMMENT ON COLUMN joy_usage.anopod_id          IS 'The pod.';
 COMMENT ON COLUMN joy_usage.day                IS 'The day, in UTC.';
 COMMENT ON COLUMN joy_usage.messages           IS 'The messages the pod sent Joy that day. Counted when /ask-joy takes a message, before Anthropic is called, so a message that then fails is counted too.';
@@ -1920,13 +1921,13 @@ COMMENT ON COLUMN chat_room_messages.target_message_id IS 'The message an edit o
 -- The Joy search block (2026-11-24, spec section 32): Joy looks things up
 -- on the web. joy_usage.searches counts the web searches that Anthropic
 -- made for a pod's messages of a day. The column is also inline in the
--- CREATE TABLE above, as the table's last column, for a fresh database;
--- its comment is here only, after the column exists on a live one. A row
--- that was written before the column holds 0. No index: the column is
--- read with its own row, by the statement that counts a message. The
--- code of before this block names its columns in both of its statements
--- on joy_usage, so it runs on a database that has the block. Idempotent:
--- IF NOT EXISTS.
+-- CREATE TABLE above, for a fresh database, as the table's last column
+-- until the Joy picture block; its comment is here only, after the
+-- column exists on a live one. A row that was written before the column
+-- holds 0. No index: the column is read with its own row, by the
+-- statement that counts a message. The code of before this block names
+-- its columns in both of its statements on joy_usage, so it runs on a
+-- database that has the block. Idempotent: IF NOT EXISTS.
 
 ALTER TABLE joy_usage ADD COLUMN IF NOT EXISTS searches INTEGER NOT NULL DEFAULT 0 CHECK (searches >= 0);
 
@@ -1936,13 +1937,13 @@ COMMENT ON COLUMN joy_usage.searches IS 'The web searches Anthropic made for the
 -- The Joy picture block (2026-11-25, spec section 33): Joy has pictures
 -- made. joy_usage.pictures counts the pictures that OpenAI made for a
 -- pod's messages of a day. The column is also inline in the CREATE TABLE
--- above, as the table's last column, after searches, for a fresh
--- database; its comment is here only, after the column exists on a live
--- one. A row that was written before the column holds 0. No index: the
--- column is read with its own row, by the statement that counts a
--- message. The code of before this block names its columns in both of
--- its statements on joy_usage, so it runs on a database that has the
--- block. Idempotent: IF NOT EXISTS.
+-- above, after searches, for a fresh database, as the table's last
+-- column until the Joy upload block; its comment is here only, after the
+-- column exists on a live one. A row that was written before the column
+-- holds 0. No index: the column is read with its own row, by the
+-- statement that counts a message. The code of before this block names
+-- its columns in both of its statements on joy_usage, so it runs on a
+-- database that has the block. Idempotent: IF NOT EXISTS.
 
 ALTER TABLE joy_usage ADD COLUMN IF NOT EXISTS pictures INTEGER NOT NULL DEFAULT 0 CHECK (pictures >= 0);
 
@@ -2025,3 +2026,22 @@ COMMENT ON COLUMN joy_files.file_name  IS 'The file''s name, which is the name t
 COMMENT ON COLUMN joy_files.content    IS 'The whole file, as text: 1 to 100,000 bytes of UTF-8. It goes to the model as it stands here, whole.';
 COMMENT ON COLUMN joy_files.created_at IS 'When the file was first written. Set by default, never changed.';
 COMMENT ON COLUMN joy_files.updated_at IS 'When the file''s text last changed. Maintained by the joy_files_set_updated_at trigger. A write of the same text changes nothing.';
+
+
+-- The Joy upload block (2026-11-26, spec section 37): a member sends Joy
+-- one picture with a message. joy_usage.uploads counts the pictures that
+-- a pod sent Joy on a day. The column is also inline in the CREATE TABLE
+-- above, as the table's last column, after pictures, for a fresh
+-- database; its comment is here only, after the column exists on a live
+-- one. A row that was written before the column holds 0. No index: the
+-- column is read with its own row, by the statement that counts a
+-- message, and raised by a statement of its own that names the row by
+-- its key. No picture is stored: the column is a number. The code of
+-- before this block names its columns in both of its statements on
+-- joy_usage, so it runs on a database that has the block. The code of
+-- this block reads the column when it counts a message, so the block
+-- goes onto a database before that code runs. Idempotent: IF NOT EXISTS.
+
+ALTER TABLE joy_usage ADD COLUMN IF NOT EXISTS uploads INTEGER NOT NULL DEFAULT 0 CHECK (uploads >= 0);
+
+COMMENT ON COLUMN joy_usage.uploads IS 'The pictures the pod sent Joy that day, one with a message (spec section 37); 0 on a day without one. Counted when /ask-joy takes a message with a picture, before the company that answers is called, so a picture whose answer then fails is counted too, and so is the same picture sent again. From JOY_DAILY_UPLOADS on, a further message of that day that carries a picture is refused; messages that come at the same moment can pass the number.';

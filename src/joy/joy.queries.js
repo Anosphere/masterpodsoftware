@@ -3,9 +3,10 @@ import { pool, query } from '../db/pool.js';
 /**
  * SQL for Joy's two tables (spec section 30): joy_memories, one row per
  * pod, replaced in place; and joy_usage, one row per pod and day, which
- * since spec section 32 also counts the day's web searches and since
- * spec section 33 the day's pictures. The pod id and the blob are
- * Buffers of raw bytes, matching the BYTEA columns.
+ * since spec section 32 also counts the day's web searches, since spec
+ * section 33 the day's pictures that Joy had made, and since spec
+ * section 37 the day's pictures that the pod sent her. The pod id and
+ * the blob are Buffers of raw bytes, matching the BYTEA columns.
  *
  * And, since spec section 35, for her third table: joy_files, one row
  * for each file that Joy reads with her tool read_file. The server reads
@@ -37,20 +38,32 @@ export async function upsertMemory(anopodId, memoryBlob) {
  * Counts one message for the pod on today's row (the day in UTC), unless
  * the row already holds `limit` messages. One statement, so two requests
  * at the same instant cannot both take the last place. Returns
- * { day, searches, pictures }: the row's day as text (YYYY-MM-DD), and
- * the web searches and the pictures the row holds, which are those of
- * the pod's earlier messages of the day (spec sections 32 and 33); or
- * null when the limit is reached.
+ * { day, searches, pictures, uploads }: the row's day as text
+ * (YYYY-MM-DD), and the web searches, the pictures that Joy had made and
+ * the pictures that the pod sent her which the row holds, which are
+ * those of the pod's earlier messages of the day (spec sections 32, 33
+ * and 37); or null when the limit is reached.
  */
 export async function countMessage(anopodId, limit) {
   const { rows } = await query(
     `INSERT INTO joy_usage (anopod_id, day, messages) VALUES ($1, (now() AT TIME ZONE 'UTC')::date, 1)
      ON CONFLICT (anopod_id, day) DO UPDATE SET messages = joy_usage.messages + 1
        WHERE joy_usage.messages < $2
-     RETURNING day::text AS day, searches, pictures`,
+     RETURNING day::text AS day, searches, pictures, uploads`,
     [anopodId, limit],
   );
-  return rows.length === 0 ? null : { day: rows[0].day, searches: rows[0].searches, pictures: rows[0].pictures };
+  return rows.length === 0 ? null : { day: rows[0].day, searches: rows[0].searches, pictures: rows[0].pictures, uploads: rows[0].uploads };
+}
+
+/**
+ * Counts one picture that the pod sent Joy (spec section 37) on the
+ * pod's row of `day` (the text countMessage returned). A statement of
+ * its own: countMessage has counted the message by then, and nothing has
+ * gone to the company that answers yet. So a picture is counted also
+ * when its answer then fails.
+ */
+export async function countUpload(anopodId, day) {
+  await query('UPDATE joy_usage SET uploads = uploads + 1 WHERE anopod_id = $1 AND day = $2::date', [anopodId, day]);
 }
 
 /**

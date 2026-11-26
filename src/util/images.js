@@ -6,7 +6,9 @@ import { isObject } from './is-object.js';
  * stored (for a security image, of the plaintext) and the bytes as base64.
  * Public selfies and, since 2026-11-22, the pictures of public chat rooms
  * are plaintext, security images ciphertext; this module does not care
- * which.
+ * which. Since 2026-11-26 (spec section 37) a picture that a member sends
+ * Joy travels in this form too. It is plaintext and is stored nowhere:
+ * its type is the type of the bytes as they are handed on.
  */
 
 /** The three content types a pod may upload. */
@@ -53,8 +55,9 @@ export function encodeImage(row) {
  * height its own header names must each be 1 to `maxSide` pixels. Takes
  * what decodeImage returns. For a picture stored in the clear only (the
  * selfie and, since 2026-11-22, a public room's picture): a security
- * image is ciphertext, and nothing can be read in it. The reason is safe
- * to send back.
+ * image is ciphertext, and nothing can be read in it. Since 2026-11-26
+ * (spec section 37) also for a picture that a member sends Joy, which is
+ * in the clear and is not stored. The reason is safe to send back.
  */
 export function pictureProblem({ contentType, bytes }, maxSide) {
   const size = imageSize(contentType, bytes);
