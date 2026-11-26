@@ -128,11 +128,23 @@ function optionalSize(name, fallback) {
  * ANTHROPIC_API_KEY set Joy is on. Without it Joy is off: /ask-joy says
  * so, and nothing is sent to Anthropic. No error ever prints the key.
  * The two after the first five are her web search's (spec section 32):
- * each may be 0, and 0 in either switches web search off. The last six
- * are her pictures' (spec section 33). With OPENAI_API_KEY set Joy can
- * have a picture made. Without it she cannot, nothing is sent to OpenAI,
- * and everything else is as it was. JOY_DAILY_PICTURES may be 0, which
- * switches pictures off too. No error ever prints that key either.
+ * each may be 0, and 0 in either switches web search off. The six after
+ * those are her pictures' (spec section 33). With OPENAI_API_KEY set Joy
+ * can have a picture made. Without it she cannot, nothing is sent to
+ * OpenAI, and everything else is as it was. JOY_DAILY_PICTURES may be 0,
+ * which switches pictures off too. No error ever prints that key either.
+ *
+ * The last four are of spec section 36. JOY_PROVIDER picks the company
+ * whose model writes Joy's answers: anthropic or openai, and anthropic
+ * when it is not set. Any other word stops the boot. What the first
+ * lines of this comment say holds for anthropic. With openai Joy is on
+ * when OPENAI_API_KEY is set, which is the pictures' key too, and the
+ * model, how hard it thinks and the most tokens of a request are the
+ * three settings that begin JOY_OPENAI_. The first four settings are
+ * Anthropic's and are then not used. The fifth, JOY_DAILY_MESSAGES, is
+ * for both, as her web search's and her pictures' numbers are. One of
+ * them counts another thing with openai: JOY_MAX_SEARCHES is then the
+ * most steps of OpenAI's search tool for one request (spec 36.5).
  */
 function readJoy() {
   return Object.freeze({
@@ -149,6 +161,10 @@ function readJoy() {
     pictureSize: optionalSize('JOY_PICTURE_SIZE', '1024x1024'),
     pictureFormat: optionalChoice('JOY_PICTURE_FORMAT', ['jpeg', 'png', 'webp'], 'jpeg'),
     dailyPictures: optionalCount('JOY_DAILY_PICTURES', 30),
+    provider: optionalChoice('JOY_PROVIDER', ['anthropic', 'openai'], 'anthropic'),
+    openaiModel: optionalText('JOY_OPENAI_MODEL') ?? 'gpt-6.2-sol',
+    openaiEffort: optionalChoice('JOY_OPENAI_EFFORT', ['low', 'medium', 'high'], 'medium'),
+    openaiMaxTokens: optionalInteger('JOY_OPENAI_MAX_TOKENS', 16_000),
   });
 }
 
@@ -244,6 +260,12 @@ export const env = Object.freeze({
   // medium or high), its width and height in pixels and its file format
   // (jpeg, png or webp); and from how many pictures in one day (UTC) a
   // pod's further messages go out without the picture tool. 0 switches
-  // pictures off.
+  // pictures off. Who answers (spec section 36): the company whose model
+  // writes her answers, anthropic or openai (anthropic when not set);
+  // and for openai, whose key is the pictures' key, its model, how hard
+  // that model thinks (low, medium or high) and the most tokens one
+  // request to OpenAI may write, thinking included. With openai the
+  // first number of her web search is the most steps of OpenAI's search
+  // tool for one request.
   joy: readJoy(),
 });

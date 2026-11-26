@@ -1,12 +1,13 @@
 import { answer } from '../util/result.js';
-import { askAnthropic, describeFailure, failureOf } from './joy.anthropic.js';
+import { askJoy, describeFailure, failureOf } from './joy.answer.js';
 import { getJoyMemory, prepareAsk, recordTokens, setJoyMemory } from './joy.service.js';
 
 /**
  * Route handlers for Joy (spec section 30). HTTP in and out only: the
  * caller is req.anopod and req.body is the route's own object. The
- * checking and storing lives in joy.service.js, the call to Anthropic in
- * joy.anthropic.js.
+ * checking and storing lives in joy.service.js. The call to the company
+ * whose model writes her answers goes through joy.answer.js, which picks
+ * Anthropic or OpenAI (spec section 36).
  */
 
 /**
@@ -48,18 +49,18 @@ export async function setJoyMemoryHandler(req, res) {
  * not. `sources` are the web pages Joy cited, ten at most, and an empty
  * list when she cited none.
  *
- * When the wallet goes away before the end, the call to Anthropic is
- * stopped, and so is a request to OpenAI that is under way. The tokens
- * and the web searches Anthropic counted, and a picture that OpenAI
- * made, are written either way.
+ * When the wallet goes away before the end, the call to the company
+ * that answers is stopped, and so is a request for a picture that is
+ * under way. The tokens and the web searches that the company counted,
+ * and a picture that OpenAI made, are written either way.
  */
 export async function askJoyHandler(req, res) {
   const prepared = await prepareAsk(req.anopod, req.body);
   if (!prepared.ok) return answer(res, prepared);
   const { history, memory, day, search, picture } = prepared.body;
 
-  let stream = null; // the request to Anthropic that is under way
-  const leaving = new AbortController(); // stops a request to OpenAI that is under way
+  let stream = null; // the request to the company that answers, while one is under way
+  const leaving = new AbortController(); // stops a request for a picture that is under way, and tells the call that the wallet has gone
   let gone = false; // the wallet's connection closed before the answer ended
   let ended = false;
   res.on('close', () => {
@@ -78,7 +79,7 @@ export async function askJoyHandler(req, res) {
 
   const tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, searches: 0, pictures: 0 };
   try {
-    const out = await askAnthropic({
+    const out = await askJoy({
       history,
       memory,
       search,

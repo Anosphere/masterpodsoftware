@@ -1882,7 +1882,14 @@ of Joy's web search. Both have a default, so no line has to be added to
 (Since 2026-11-25, section 33, the six after those two are the settings
 of Joy's pictures. The first, OpenAI's key, has no default: without it
 Joy makes no picture and this server runs as before. The other five have
-a default, and 0 in the last switches pictures off, 33.7.)
+a default, and 0 in the last switches pictures off, 33.7.) (Since
+2026-11-25, section 36, Joy is off without Anthropic's key only while
+Anthropic's model answers, which is so unless `JOY_PROVIDER` is
+`openai`. Then Joy is on when OpenAI's key is set, the key of her
+pictures, and the model, its level and its most tokens are
+`JOY_OPENAI_MODEL`, `JOY_OPENAI_EFFORT` and `JOY_OPENAI_MAX_TOKENS`.
+These four settings have a default and stand in 36.8, not in the table
+above.)
 
 ## 9. Genesis
 
@@ -12070,7 +12077,10 @@ file of text, `joy/shared-memory.md`; and one npm package,
 `@anthropic-ai/sdk`, this server's first new package since the build of
 2026-10-24. The validators, the keyholders, the signing servers and the
 doormen are not touched. Nothing above this section changes except the
-items in 30.9.
+items in 30.9. (Since 2026-11-25, section 36, the answers are written by
+Anthropic's model or by OpenAI's, by the setting `JOY_PROVIDER`: by
+Anthropic's when the setting is not there. What this section says of
+Anthropic holds while Anthropic's model answers, 36.2.)
 
 ### 30.1 The rules
 
@@ -12141,7 +12151,9 @@ The wallet says so to the member on the Joy tab (its spec). (Since
 2026-11-25, section 33, a part of it can go on to a second company:
 for a picture, the description that Joy wrote from the conversation
 goes to OpenAI, with a hash of the pod's id. The conversation and the
-memory file do not, 33.3.)
+memory file do not, 33.3.) (Since 2026-11-25, section 36: when OpenAI's
+model answers, the conversation and the memory file go to OpenAI, where
+they went to Anthropic, and nothing of Joy goes to Anthropic, 36.7.)
 
 ### 30.3 Tables
 
@@ -12171,7 +12183,9 @@ memory file do not, 33.3.)
 Both have the `set_updated_at` trigger and a `COMMENT ON` for the table
 and every column. No foreign keys, as everywhere. (Since 2026-11-25,
 section 35, Joy has a third table, `joy_files`, with the two files that
-she reads, 35.3.)
+she reads, 35.3.) (Since 2026-11-25, section 36: when OpenAI's model
+answers, the four columns of tokens and `searches` hold OpenAI's counts,
+with the same meaning, 36.7.)
 
 The memory file itself is text of at most 10240 bytes (UTF-8). Its blob
 may be up to 32768 bytes, because the wallet wraps the text in JSON
@@ -12212,7 +12226,9 @@ message last. Checks, in order:
 3. The texts together are at most 120,000 bytes. `400 conversation too
    long`.
 4. `memory` is at most 10240 bytes. `400 memory too long`.
-5. Joy is on (`ANTHROPIC_API_KEY` is set). `503 joy is off`.
+5. Joy is on (`ANTHROPIC_API_KEY` is set). `503 joy is off`. (Since
+   2026-11-25, section 36: the key of the company that answers is set,
+   which is `OPENAI_API_KEY` when `JOY_PROVIDER` is `openai`, 36.2.)
 6. The pod's count of the day (UTC) is below `JOY_DAILY_MESSAGES`. `429
    daily limit reached`. Passing this check raises the count by one, in
    the same statement, so two requests at the same instant cannot both
@@ -12251,7 +12267,10 @@ each one JSON object with a line break after it:
 When the wallet's connection closes before the last line, the call to
 Anthropic is stopped. The tokens Anthropic counted are added to the
 pod's row of the day at the end, whether the answer ended, failed or
-was left.
+was left. (Since 2026-11-25, section 36: when OpenAI's model answers,
+`stop` and the three reasons of `error` are read from OpenAI's answer,
+the log's line holds OpenAI's code for a failure and never its message,
+and it is the request to OpenAI that is stopped, 36.4 and 36.6.)
 
 (Since 2026-11-24, section 32, the stream has one more kind of line,
 `{ "searching": true }`, written each time Joy starts a web search, and
@@ -12296,7 +12315,11 @@ sentence in the second system part, after the date, tells Joy so. 32.2.)
 switched off or the pod has made its pictures of the day, and then one
 more sentence in the second system part tells Joy so. 33.2.) (Since
 2026-11-25, section 35, `tools` also holds `read_file`, after Joy's two
-and before the web search tool. It is in every request. 35.2.)
+and before the web search tool. It is in every request. 35.2.) (Since
+2026-11-25, section 36, this is the request while Anthropic's model
+answers. When `JOY_PROVIDER` is `openai`, this server sends the request
+of 36.3 to OpenAI in its place: the same two texts and the same tools,
+in OpenAI's form.)
 
 The model's thinking is left as the model has it (adaptive, on by
 default) and is not shown. No `temperature`, `top_p` or `top_k` is sent:
@@ -12448,7 +12471,11 @@ This server boots and runs without any of them. Without the key,
 `/ask-joy` answers `503 joy is off`, nothing is sent to Anthropic and
 nothing is counted; the two memory routes work. So this step can be
 deployed before the key is set. The key is read in `src/config/env.js`
-like every setting and handed to the package; no error prints it.
+like every setting and handed to the package; no error prints it. (Since
+2026-11-25, section 36, there are four more: `JOY_PROVIDER`, and three
+for OpenAI's model, each with a default. With `JOY_PROVIDER=openai` it
+is `OPENAI_API_KEY` without which `/ask-joy` answers `503 joy is off`,
+36.8.)
 
 ### 30.9 Files
 
@@ -13451,7 +13478,13 @@ onto the database before the new code runs (32.10). One column, two env
 variables and new words in `joy/shared-memory.md`. No table, no route
 and no npm package. The validators, the keyholders, the signing servers,
 the doormen and the wallet's own server program are not touched. Nothing
-above this section changes except the items in 32.8.
+above this section changes except the items in 32.8. (Since 2026-11-25,
+section 36: when OpenAI's model answers, the search is OpenAI's own web
+search tool, which OpenAI runs inside the request in the same way. The
+line in the stream, the sources in the last line, the column and the two
+settings are as told here. What differs is in 36.5: the cited pages
+stand in her text and are cut out of it, and the 3 of `JOY_MAX_SEARCHES`
+count for one request.)
 
 ### 32.1 The rules
 
@@ -13643,7 +13676,11 @@ does not know, and a field of the last line it does not read (tried,
 32.10).
 
 (Since 2026-11-25, section 33, the stream has two more kinds of line,
-`{ "drawing": true }` and `{ "picture": { … } }`, 33.4.)
+`{ "drawing": true }` and `{ "picture": { … } }`, 33.4.) (Since
+2026-11-25, section 36: when OpenAI's model answers, `searching` is
+written for each step of OpenAI's search tool, as its item begins in
+OpenAI's stream, and `sources` are the pages of OpenAI's `url_citation`
+marks, by the same rules, 36.4 and 36.5.)
 
 ### 32.4 What this server keeps
 
@@ -13672,7 +13709,10 @@ line: whether the answer ended, failed or was left. An answer in which
 no search was made has no `server_tool_use` in its `usage` (the second
 request of the first real call): that is read as 0, and so is one that
 names it as `null`. A request that did not end, such as one whose
-connection dropped, adds nothing, as it adds no tokens.
+connection dropped, adds nothing, as it adds no tokens. (Since
+2026-11-25, section 36: when OpenAI's model answers, the searches are
+the steps of its search tool that are a search, counted from the
+answer's items, 36.7.)
 
 The daily number. The statement that counts a message (check 6 of 30.4)
 also hands back the row's `searches`: the searches of the pod's earlier
@@ -13684,6 +13724,10 @@ messages of one pod are under way at the same instant. A new day, by the
 clock of UTC, is a new row. (Since 2026-11-25, section 33, the same
 statement hands back the row's `pictures` too, and the statement that
 writes the tokens and the searches also writes the pictures, 33.5.)
+(Since 2026-11-25, section 36: when OpenAI's model answers, a pod can
+end a day over the number by up to 11 with the defaults, since the 3
+count for one request there and one message can take four requests,
+36.5.)
 
 Nothing else is kept. No search query, no page and no source is written
 into a table or into the log. The pages a search found pass through this
@@ -14247,7 +14291,11 @@ to; none was. As far as they are this server's:
 
 ### 33.2 The request to Anthropic
 
-The request of 30.5 and 32.2, with these things new.
+The request of 30.5 and 32.2, with these things new. (Since 2026-11-25,
+section 36: when OpenAI's model answers, `make_picture` goes as a
+function tool of OpenAI's, the last entry of `tools` in the request of
+36.3, and a call is carried out in the same way, between two requests to
+OpenAI.)
 
 **The tool.** `tools` holds one entry more, its last:
 
@@ -14397,7 +14445,10 @@ Content-Type: application/json
   one member in the place of the whole account.
 - What leaves for OpenAI is these seven fields and the key. Not the
   conversation, not the memory file, not the pod's id and not the
-  username.
+  username. (Since 2026-11-25, section 36, that is what leaves in this
+  request. When OpenAI's model answers, the conversation and the memory
+  file go to OpenAI too, in the request of 36.3, with the same hash of
+  the pod's id.)
 - Nothing else is set: no `moderation`, no `output_compression`, no
   `background`, no `user`. The address is a constant of the code. A
   redirect is not followed.
@@ -14475,7 +14526,11 @@ answer is the stream of 30.4 and 32.3 with two more kinds of line:
   the middle of the call. The line says that she asked, not that a
   picture comes. So a `drawing` line can stand with no `picture` line
   after it, and what ends the wait then is her next words or the
-  answer's last line.
+  answer's last line. (Since 2026-11-25, section 36: when OpenAI's model
+  answers, `drawing` is written when the item of her call begins in
+  OpenAI's stream, `response.output_item.added` with a `function_call`
+  named `make_picture`, and Joy's sentence about a picture is asked of
+  OpenAI, 36.4.)
 - `picture` is ONE line, written when OpenAI has answered and before
   Joy's sentence is asked of Anthropic. `type` is `image/jpeg`,
   `image/png` or `image/webp`. `data` is the picture's bytes as base64.
@@ -14621,7 +14676,11 @@ the variable. Which sizes and which model OpenAI takes is OpenAI's to
 say: a setting that it does not take makes every picture fail, with the
 log's line `status 400` and OpenAI's code. OpenAI's request also knows
 the qualities `xhigh`, `max` and `auto`; this server takes the three of
-the plan. All six are read once, when the server starts.
+the plan. All six are read once, when the server starts. (Since
+2026-11-25, section 36: what this says of a server without the key holds
+while Anthropic's model answers. With `JOY_PROVIDER=openai` the key is
+the key for her answers too: without it `/ask-joy` answers `503 joy is
+off`, and with it every answer is a request to OpenAI, 36.2.)
 
 ### 33.8 What it costs
 
@@ -15885,7 +15944,11 @@ to; none was. As far as they are this server's:
 
 ### 35.2 The request to Anthropic
 
-The request of 30.5, 32.2 and 33.2, with these things new.
+The request of 30.5, 32.2 and 33.2, with these things new. (Since
+2026-11-25, section 36: when OpenAI's model answers, `read_file` goes as
+a function tool of OpenAI's, the third entry of `tools` in the request
+of 36.3. A call is carried out by the same read, and the file's text is
+the call's outcome there too.)
 
 **The tool.** `tools` holds one entry more, its third:
 
@@ -16329,7 +16392,8 @@ The plan's section 6, as far as it is this server's:
 - More files, or the wallet file cut by subject. A third file is a build
   (35.5).
 - The same tool on GPT-6.2 Sol. That belongs to the plan for the change
-  of company, which comes after this build.
+  of company, which comes after this build. (Since 2026-11-25, section
+  36, it is built, 36.3.)
 - A switch for the files. There is no setting. The way back is the
   commit before, by the usual update of the three servers.
 - A page that shows what is stored. The look line of 35.3 shows the two
@@ -16758,3 +16822,1223 @@ another address than 127.0.0.1.
   its sha256 begins a6679632. Before the step it had 1996 lines and its
   sha256 began ccc25354. It makes 48 tables where it made 47: the count
   that the deploy's schema line prints proves the block.
+
+## 36. Joy's answers by OpenAI's model, and a setting that picks the company (2026-11-25)
+
+Design settled 2026-11-25 in a talking chat, by one real call that the
+user ran on prod1 that afternoon, and by a plan
+(`~/Desktop/Z-TestNet/forclaude/joy-openai-plan-1.md`, FINAL,
+2026-11-25, on the user's word "Final"; the real call's program and what
+prod1 printed are kept in
+`~/Desktop/Z-TestNet/forclaude/joy-openai-trial/`). The work note is
+`~/Desktop/Z-TestNet/forclaude/notes/project-joy-answers-by-openai.md`.
+What it is: Joy, the wallet's AI of section 30, can be answered by a
+second company's model. The user: "I want to talk about hitting a
+different api with joy. Instead of using claude, I want to switch
+general chats on chatgpt instead. I want to use gpt 6.2 sol." And of
+Claude, asked whether it stays in the code: "absolutely, plus, we
+probably want to use both for different things in the future." So this
+server gets a second file of code beside the one for Anthropic, which
+sends Joy's request to OpenAI's Responses API and reads its stream, and
+one setting, `JOY_PROVIDER`, picks the company whose model writes her
+answers. Joy stays Joy: what she is told and her four tools are the
+same, word for word, and she searches the web as before, by OpenAI's own
+search tool then (36.5). Her pictures were OpenAI's already and stay as
+they are. One step on this server (this section, step 1 of the plan and
+its only step). The wallet does not change: the request that it sends
+and the stream that it reads are as they were, to the line. Three new
+files of code, four env variables and one line in the log when this
+server starts. No table, no route and no npm package: the request to
+OpenAI is Node's own `fetch`, as the request for a picture is. The
+deploy has no schema line. With this step deployed nothing changes for
+anyone: without the line `JOY_PROVIDER=openai` in `.env` Anthropic's
+model answers as before, and what this server sends to Anthropic is the
+request of before the step, byte for byte (36.12). The switch is a step
+of its own, on a day after the deploy: the line into `.env` on the three
+servers and a restart of each. The way back is the line taken out and a
+restart, with no commit and no deploy. The validators, the keyholders,
+the signing servers, the doormen and the wallet's own server program are
+not touched. Nothing above this section changes except the items in
+36.10.
+
+### 36.1 The rules
+
+Decided by the user (the plan's section 2):
+
+- Joy's chat is answered by OpenAI's GPT-6.2 Sol (the user's words
+  above). "General chats" was read as every answer that Joy writes, her
+  web searches with it, and the user was told so.
+- Claude stays in the code, with a setting that picks, and both
+  companies may serve different things later (the user's words above).
+  Which things, the user did not say. Nothing is built for it. What this
+  section takes from it: each company keeps settings of its own, and one
+  place in the code picks who answers.
+- The daily numbers stay as they are: 300 messages, 100 web searches and
+  30 pictures a day for one pod, by the defaults. "Ok"
+- One real call from prod1 came before the plan. "Yes", and when a card
+  had put the plan first: "I'm confused, Don't you want to make the call
+  from prod 1 before the plan?"
+- The files tool of section 35 was built before this change. "Do this
+  one first." So `read_file` goes to OpenAI with her other tools.
+- The cited pages of a searched answer. OpenAI's model writes each one
+  into Joy's text, as a link in round brackets. This server takes these
+  out of the text and lists the pages under the answer as `sources`, as
+  before. So the wallet needs no build. "That's fine"
+- The price of a file read on this model is left as it is: a question
+  about the wallet costs about 3.8 cents there, because the whole file
+  goes to OpenAI each time. No daily number for reads, and nothing that
+  makes a read cheaper. The monthly limit in the account at OpenAI is
+  the stop. "Agreed"
+- No country is sent with a web search. OpenAI's search then takes its
+  own default, the United States. "No, just use the default."
+
+The mechanism as a whole (a second file of code, OpenAI's Responses API
+with nothing stored there, one setting that picks, and the wallet's
+stream as it is) was told to the user in the talk, and after the real
+call field by field. They said "absolutely" to both files and the
+setting, and objected to no part of the rest. They did not say yes to
+the rest in so many words (the plan's section 2, point 5).
+
+The plan's own points (its section 4), each put to the user to object
+to; none was:
+
+- The model thinks at the level `medium`, the default that OpenAI's
+  reference names for this request and the level of before for Claude.
+  It is a setting.
+- The deploy changes nothing, and the switch is a step of its own.
+  Before the switch, one look at real answers on one server: a small
+  program asks OpenAI and Anthropic through the code as it lies on that
+  server's disk (36.12).
+- Before the switch, one look at the account at OpenAI: the credit that
+  is left, and the monthly limit. Both were set for pictures. After the
+  switch they stop all of Joy, where they stopped only her pictures.
+- The cut of the cited places works by the form of a place, and only in
+  an answer for which Joy searched (36.5).
+- Three steps of a search for one request, not three searches for one
+  message (36.5).
+- No package of OpenAI's: its package is 24 MB in about 4,100 files, and
+  the request is one POST.
+- The sentences that name Anthropic as the one company are brought in
+  line, each with a dated clause (36.10).
+
+### 36.2 Who answers
+
+**One setting, `JOY_PROVIDER`**: `anthropic` or `openai`. It is read
+once, when this server starts, in `src/config/env.js`. Not set, or set
+to nothing, means `anthropic`. Any other word stops the boot, with an
+error that names the setting: `JOY_PROVIDER must be one of anthropic,
+openai, got "chatgpt"`. The word is taken as it is written: `OpenAI`
+with a capital stops the boot too.
+
+**One place in the code picks**: `src/joy/joy.answer.js`. It reads the
+setting once and hands on to the one company's file. It has four
+functions for the route, `askJoy`, `joyIsOn`, `failureOf` and
+`describeFailure`, and one for the log, `whoAnswersJoy`. The handler of
+`/ask-joy` and its checks (`src/joy/joy.handlers.js`,
+`src/joy/joy.service.js`) import from it and from no company's file, and
+name no company. One company answers every message. A split by the kind
+of message would be a change in that one file. It is not built.
+
+**Each company's file has the same four functions.**
+`src/joy/joy.anthropic.js` has `askAnthropic` and
+`src/joy/joy.openai.js` has `askOpenAI`: the same things in (30.5, 32.2,
+33.2), `{ stop, memory, sources }` out, and the same calls back,
+`onText`, `onSearch`, `onDrawing`, `onPicture` and `onStream`. Beside it
+each has its own `joyIsOn`, `failureOf` and `describeFailure`. Joy's own
+tools are carried out by the functions that were there,
+`applyMemoryTool`, `readJoyFile` and `makePicture`, from each company's
+own loop. So a later tool of Joy's goes into both loops.
+
+**What is the same whoever answers** stands once, in
+`src/joy/joy.common.js`, moved out of `src/joy/joy.anthropic.js` as it
+was: the shared memory file's text, read once at the start (30.7); the
+text with the date, the two sentences for a request without a tool
+(32.2, 33.2) and the member's memory file; the most requests for one
+message, 4; and the two numbers of a source, ten at most and a title cut
+at 200 characters. The rule for a source itself (an address that begins
+`https://` or `http://`, each once) stays a few lines in each company's
+file, since each reads its own company's marks.
+
+**Each company keeps its own settings:**
+
+| | Anthropic | OpenAI |
+| --- | --- | --- |
+| The key | `ANTHROPIC_API_KEY` | `OPENAI_API_KEY`, the pictures' key (33.7) |
+| The model | `JOY_MODEL`, `claude-haiku-5-5` | `JOY_OPENAI_MODEL`, `gpt-6.2-sol` |
+| How hard it thinks: `low`, `medium` or `high` | `JOY_EFFORT`, `medium` | `JOY_OPENAI_EFFORT`, `medium` |
+| The most tokens one request may write | `JOY_MAX_TOKENS`, 16000 | `JOY_OPENAI_MAX_TOKENS`, 16000 |
+
+Joy's own numbers are for both: `JOY_DAILY_MESSAGES`,
+`JOY_MAX_SEARCHES`, `JOY_DAILY_SEARCHES` and `JOY_DAILY_PICTURES`. The
+settings of the company that does not answer are read and checked all
+the same, and then not used: a wrong word in `JOY_OPENAI_EFFORT` stops
+the boot also while Anthropic answers. Both companies' files are loaded
+at every start, so Anthropic's package is loaded also while OpenAI
+answers.
+
+**Joy is on when the picked company's key is there.** Check 5 of
+`/ask-joy` (30.4) asks `joyIsOn()` of `src/joy/joy.answer.js`. Without
+the picked company's key the route answers `503 joy is off`, nothing is
+sent and nothing is counted, whatever the other company's key is. With
+`JOY_PROVIDER=openai` and `OPENAI_API_KEY` alone, Joy is on and
+Anthropic is never asked.
+
+**Her pictures do not ask who answers.** With `OPENAI_API_KEY` she has
+pictures made (33.2), by Anthropic's model or by OpenAI's.
+
+**The line at the start.** `src/server.js` prints one line right after
+its line on listening: who answers Joy and with which model, or that Joy
+is off and which key is not there.
+
+```
+Joy is answered by anthropic, model claude-haiku-5-5
+Joy is answered by openai, model gpt-6.2-sol
+Joy is off: JOY_PROVIDER picks openai, and OPENAI_API_KEY is not set
+Joy is off: JOY_PROVIDER picks anthropic, and ANTHROPIC_API_KEY is not set
+```
+
+### 36.3 The request to OpenAI
+
+With Node's own `fetch`, in `src/joy/joy.openai.js`. One message to Joy
+is one request, and one more after each round in which Joy called a tool
+of her own: four requests at most, as with Anthropic (30.5). It is the
+request of the real call, which OpenAI took as it was written, with two
+changes: `read_file` stands in its place, as the call's last eight
+messages sent it, and the list of every page that a search read is no
+longer asked for.
+
+```
+POST https://api.openai.com/v1/responses
+Authorization: Bearer <OPENAI_API_KEY>
+Content-Type: application/json
+Accept: text/event-stream
+
+{ "model": "gpt-6.2-sol", "store": false, "stream": true,
+  "reasoning": { "effort": "medium" }, "max_output_tokens": 16000,
+  "max_tool_calls": 3,
+  "safety_identifier": "<64 hex characters>",
+  "include": ["reasoning.encrypted_content"],
+  "tools": [ remember, update_memory, read_file, { "type": "web_search" }, make_picture ],
+  "input": [
+    { "role": "developer", "content": [ { "type": "input_text", "text": "<the shared memory file>",
+                                          "prompt_cache_breakpoint": { "mode": "explicit" } } ] },
+    { "role": "developer", "content": [ { "type": "input_text", "text": "<the date and the member's memory file>" } ] },
+    { "role": "user", "content": "<the member's message>" } ] }
+```
+
+The fields stand in this order. Nothing else is set: no `instructions`,
+no `previous_response_id`, no `temperature`, no `text`, no `user`. The
+address is a constant of the code. A redirect is not followed.
+
+| Field | Value |
+| ----- | ----- |
+| `model` | `JOY_OPENAI_MODEL`, `gpt-6.2-sol` by default |
+| `store` | `false`: OpenAI keeps no answer of Joy's for later reading |
+| `stream` | `true` |
+| `reasoning` | `{ effort: JOY_OPENAI_EFFORT }`, `medium` by default |
+| `max_output_tokens` | `JOY_OPENAI_MAX_TOKENS`, 16000 by default; the model's thinking counts in |
+| `max_tool_calls` | `JOY_MAX_SEARCHES`, 3 by default. Only in a request that holds the web search tool |
+| `safety_identifier` | the SHA-256 hash of the pod's id, taken over its 32 raw bytes, in hex: the code that the request for a picture sends (33.3) |
+| `include` | `["reasoning.encrypted_content"]`: the model's thinking in its encrypted form, which goes back in a later request |
+| `tools` | below |
+| `input` | below |
+
+**What Joy is told is the same text, in another place.** The shared
+memory file (30.7) is the first item of `input`, a `developer` message,
+with OpenAI's mark for its cache, `prompt_cache_breakpoint: { mode:
+"explicit" }`: it is the same for every member, so one member's request
+keeps it ready for the next. The second item is a `developer` message
+with no mark: the date, the two sentences for a request without a tool,
+the two sentences on the memory file and the memory file between its
+marks, in the words of 30.5, 32.2 and 33.2. Both texts come from
+`src/joy/joy.common.js` (36.2). OpenAI's field `instructions` is not
+used: for this model OpenAI puts it behind the conversation and bills it
+in full with every request.
+
+**The conversation** follows, each message as `{ role, content: text }`,
+with the role that the wallet sent, `user` or `assistant`.
+
+**Joy's four tools keep their names, their words and their inputs.**
+They go as OpenAI's function tools in its strict form, made from the
+definitions that are there, which stay in Anthropic's form in their
+files (30.6, 33.2, 35.2):
+
+```
+{ "type": "function", "name": "remember", "description": "Add one line to this member's memory file. …",
+  "parameters": { "type": "object", "properties": { "line": { "type": "string", "description": "…" } },
+                  "required": ["line"], "additionalProperties": false },
+  "strict": true }
+```
+
+`parameters` is the tool's `input_schema` with `additionalProperties:
+false`, which the strict form asks for. With `strict` OpenAI holds an
+input to the shape that the tool asks for. `eager_input_streaming`,
+which is Anthropic's, is not sent. The order is the one of before:
+`remember`, `update_memory`, `read_file`, the web search tool when it is
+in the request, `make_picture` when it is.
+
+**Web search is OpenAI's own tool**, `{ "type": "web_search" }`, run by
+OpenAI inside the request, as Anthropic's is. Nothing is sent with it:
+no country, no list of sites.
+
+**The tools are left out as before** (32.2, 33.2). The web search tool,
+and `max_tool_calls` with it, when web search is switched off or the pod
+has used its searches of the day; `make_picture` when pictures are off
+or the day's pictures are made. The sentence that tells Joy so stands in
+the second `developer` message. `read_file` is in every request (35.2).
+
+**A round of her own tools.** A call is an item of the answer of the
+type `function_call`, with `call_id`, `name` and `arguments`, a JSON
+text. When a request has ended as `completed` and its answer holds such
+items, the calls are carried out one after the other, in the order they
+stand in it: a change of the memory file (30.6), a read of a file's row
+(35.2), a picture (33.2, 33.3), each by the function of before. A call's
+`arguments` is read as JSON. One that is no JSON is handed to the tool
+as it came, a text, which every tool answers as an input that is not the
+object it asks for (30.6). The next request is the same request with
+more items at the end of `input`: first every item of the answer as it
+came, in its order, the model's thinking among them with its encrypted
+content, a search's item and a message of words too; then one item for
+each call, in the order of the calls:
+
+```
+{ "type": "function_call_output", "call_id": "<the call's call_id>", "output": "<the outcome>" }
+```
+
+`output` is the outcome as text: `saved`, `changed`, `taken out`,
+`made`, a file's whole text, or the few words of a refusal. OpenAI has
+no mark for a refusal, so the outcome's words say it: there is no
+`is_error`. An item goes back without one field, `created_by`, where it
+has it: OpenAI's own package takes that field off for the way back.
+
+**The same beginning in every request of one message.** `tools`, the two
+`developer` messages and `safety_identifier` are made once for a
+message. OpenAI drops the thinking of an earlier round when the
+request's beginning or that code differs between two requests.
+
+**The fourth request is the last.** A call in its answer is still
+carried out, and the answer ends there, with no words after it, as with
+Anthropic (30.5). A call of `make_picture` in a request that does not
+hold the tool is answered `there is no tool named make_picture`, and no
+picture is made.
+
+**What OpenAI keeps.** With `store: false` it keeps no answer for later
+reading. It keeps what is sent for up to 30 days in its log against
+abuse, and its pages say that it does not train its models on it.
+`safety_identifier` is there so that OpenAI can shut out one member who
+keeps breaking its rules, in the place of the whole account. Such a
+member then gets `joy unavailable` every time, and OpenAI's page says
+that it cannot take that back for one code.
+
+### 36.4 The stream from OpenAI, and the stream of `/ask-joy`
+
+OpenAI answers as a stream of events: blocks of text with an empty line
+between them, and a block's `data:` lines hold one JSON object with a
+`type`. This server reads the stream as bytes and makes text of them
+only where a whole character has come, since a piece can end in the
+middle of a Thai letter. It writes the stream of `/ask-joy` from it, and
+that stream is the one of 30.4, 32.3 and 33.4, to the line:
+
+| OpenAI's event | The wallet gets |
+| -------------- | --------------- |
+| `response.output_text.delta` | `{ "text": "..." }`, through the cut of 36.5 in a searched answer |
+| `response.output_item.added` with an item of the type `web_search_call` | `{ "searching": true }` |
+| `response.output_item.added` with a `function_call` named `make_picture`, in a request that holds the tool | `{ "drawing": true }` |
+| `response.refusal.delta` | `{ "text": "..." }`: the model's own words of a refusal |
+| `response.output_item.done` | nothing: the finished item is kept for the request's end |
+| `response.completed`, `response.incomplete`, `response.failed` | nothing by itself: the stream's last event, which holds the response with its `status`, its `output` and its `usage` |
+| `error` | nothing by itself: the stream ends without a last event (36.6) |
+
+Every other event is passed over. A picture's line is written when
+OpenAI's image model has made the picture (33.4), between two requests.
+
+**How a request's end is read**, from the response of the last event.
+The rows are looked at in this order, and the first that fits is taken:
+
+| The response | What follows |
+| ------------ | ------------ |
+| `status: "failed"` | the answer failed: `joy was cut off` (36.6), whatever the response holds |
+| a message with a part of the type `refusal` | the last line with `stop: "refused"` |
+| `status: "incomplete"` with `incomplete_details.reason: "content_filter"` | the last line with `stop: "refused"` |
+| `status: "incomplete"` with any other reason, `max_output_tokens` among them | the last line with `stop: "length"` |
+| `status: "completed"` with a call of her own tools | the calls are carried out, and the next request is sent (36.3) |
+| `status: "completed"` with none | the last line with `stop: "end"` |
+| any other status | the answer failed: `joy was cut off` (36.6) |
+
+The words of a `refusal` part went on as text while they came, and where
+none came, they go on at the request's end, before the rows above are
+looked at. So they reach the wallet also when the answer then fails.
+
+The tools of a cut-off or refused answer are never carried out, as
+before (30.5): such an answer can end in the middle of a call's input.
+
+**The answer's items** are the `output` of the last event's response,
+and where that lists none, the items as `response.output_item.done`
+handed them. An item of thinking that has no `encrypted_content` in the
+last event is taken from its own event.
+
+**The paragraph break.** The first text after a web search and the first
+text after a round of her own tools begin a new paragraph, when text was
+written before in the answer, as before (30.5, 32.3).
+
+**The watch on silence** is 120 seconds, as before (30.5). It starts
+when a request goes out and begins anew with every piece of the stream,
+so it covers the wait for the answer's first byte too. None runs between
+two requests, where a picture is made or a file is read. When it runs
+out the request is let go and the answer ends as `joy was cut off`: also
+when nothing of the answer had come, and also when a status that is not
+`200` had come and its body did not end. Such a request is not sent
+again. The empty lines of 30.4 go out meanwhile.
+
+**When the wallet goes away** the request to OpenAI that is under way is
+stopped, and nothing is written into the log, as before (30.4, 33.3).
+The handler of `/ask-joy` stops it through the object that `onStream`
+handed it, which has `abort()` as Anthropic's stream has, so the
+handler's lines for it are as they were. After a read of a file and
+after a picture the loop looks at the handler's signal and sends no
+further request (35.2). The wait before a request is sent again (36.6)
+ends at once.
+
+### 36.5 A searched answer
+
+**What OpenAI's model writes.** At the end of a paragraph it adds a
+space and the cited page as a link in round brackets:
+
+```
+... ตามอัตรากลางตลาดครับ ([bot.or.th](https://www.bot.or.th/th/statistics/exchange-rate.html?utm_source=openai))
+```
+
+With it OpenAI hands a mark for each such place, in the message's
+`annotations`: `{ "type": "url_citation", "url", "title", "start_index",
+"end_index" }`. The mark covers the place from its round bracket to its
+round bracket and not the space before it. In the stream the mark's
+event came 9 to 12 letters after the place, or at the text's end.
+
+**The cut.** The wallet shows Joy's words as she wrote them, so this
+server takes each such place out of the text, with the spaces before it,
+while the text streams. It is one function, `makeCut` in
+`src/joy/joy.openai.js`, with the form of a place in a second one,
+`readPlace`, so that another form is a small change. `readPlace` reads a
+held piece letter by letter and keeps where it stands, so each letter is
+looked at once (36.12). It works by the form of a place and not by
+OpenAI's mark, since the mark comes after the place's letters and the
+cut cannot wait for it without holding Joy's words back.
+
+- From a message's first step of a web search on, her text goes to the
+  wallet through the cut, in every later request of that message too. An
+  answer for which she did not search is handed on as it comes.
+- The cut hands a piece on at once, but for two things that it holds
+  back until it can tell: the spaces at a piece's end, and everything
+  from a round bracket on for as long as that can still become a place.
+- A place is `([words](address))`: the words hold no line break, the
+  address begins `https://` or `http://` and holds no space, and round
+  brackets inside the address count in pairs, as Wikipedia's addresses
+  have them, so the address ends at the bracket that closes the link.
+- A whole place is dropped, with the spaces before it. What turns out to
+  be none goes on as it is: a round bracket of her own, as in "(89°F)";
+  a link with no round brackets around it; two links inside one pair of
+  round brackets.
+- A held piece of more than 1,000 characters goes on as it is.
+- When no more text follows, at the end of a request and when a further
+  step of a search starts, what is held goes on as it is, except spaces,
+  which are dropped. So a place that is not finished when an answer is
+  cut off stands in her text as raw letters, and the space at the end of
+  an answer goes.
+
+**The rule rests on the form that the model writes today.** If OpenAI
+changes the form, the brackets stand in Joy's text as raw letters until
+this server is changed. The pages are still listed under the answer,
+since they come from the marks and not from the text.
+
+**The sources** in the last line (32.3) are the pages of OpenAI's marks:
+the `url_citation` marks of the answer's message items, over all
+requests of the message, in their order, each address once, ten at most,
+and only an address that begins `https://` or `http://`. OpenAI ends
+each address with `utm_source=openai`, a tag that tells the page's site
+where the visit came from. It is taken off where it is the address's
+last parameter, at the address's end or right before a part that a `#`
+sign begins, and two marks that differ by the tag alone are one source.
+A title is cut at 200 characters, without the spaces around it, and a
+mark with no title gives an empty one, as before.
+
+**An answer from OpenAI's own services** has no mark and so no source.
+Seen for weather: the step's query read `weather: Chiang Mai, Thailand`.
+OpenAI's page names sports and finance too.
+
+**The `searching` line** is written for each step of OpenAI's search
+tool as it starts: a search, a page that the tool opens, a look inside a
+page. In the real call every searched answer took one step, a search.
+
+**The most searches.** OpenAI counts the 3 of `JOY_MAX_SEARCHES` for one
+request, as `max_tool_calls`, and it counts every step of its search
+tool. Anthropic counts searches, for one message (32.2). So a search
+that opens two pages has used its three, and a message whose answer
+takes several requests could search more than three times. Neither was
+seen.
+
+**The day's number** counts the searches, as before (32.4): the steps
+whose `action.type` is `search`, which are the ones OpenAI charges
+(36.7).
+
+### 36.6 Failures, and trying again
+
+The wallet gets one of the three reasons of 30.4 and shows the sentence
+that it has for it:
+
+| The reason | What happened |
+| ---------- | ------------- |
+| `joy busy` | A `429` that is not the account's (too many requests or tokens in a minute), and every status from `500` on (OpenAI fails or is overloaded) |
+| `joy unavailable` | Every other status that is not `200`: a refused key (`401`), no credit left or a limit of the account reached (the account's `429`), a request that OpenAI does not take (`400`), a model that the key may not use (`404`), a refused country (`403`), a redirect, a `408` or a `409` that stayed. And OpenAI out of reach |
+| `joy was cut off` | Whatever goes wrong once the stream has begun: the connection drops, the stream ends with no last event or with an `error` event, the response's `status` is `failed` or one that is not known. And 120 seconds with nothing from OpenAI, wherever the request stands then (36.4) |
+
+A `429` is the account's when its `code` or its `type` is
+`credit_balance_exhausted`, `organization_spend_limit_exceeded`,
+`project_spend_limit_exceeded`, `organization_usage_limit_exceeded` or
+`insufficient_quota`.
+
+**Trying again.** A request is sent again when it failed before its
+stream began, in a way that a second try can mend: at a `408`, a `409`,
+a `429` that is not the account's, a status from `500` on, and when
+OpenAI is out of reach. Twice at most for one request, after half a
+second and then after one second, or after the wait that OpenAI's
+`Retry-After` names, in seconds or as a date, when that is above 0 and
+under 60 seconds. Anthropic's package does the same for a request to
+Anthropic. The empty lines of 30.4 keep the wallet's side waiting
+meanwhile. A request is not sent again when the wallet has gone away,
+not after 120 seconds of silence, and not after its stream began: the
+wallet has a part of the answer then.
+
+**The log.** A failure writes one line, `joy failed:` and a few words:
+the status, OpenAI's `code` for the failure or, where it gives none, its
+`type`, and the part of the request that it names (`param`); and how
+often the request was sent, when that is more than once. Never OpenAI's
+message: for a refused key it holds a part of the key. Never the key,
+and never a member's text. The forms:
+
+```
+joy failed: 401 invalid_api_key
+joy failed: 429 credit_balance_exhausted
+joy failed: 429 rate_limit_exceeded, sent 3 times
+joy failed: 503 server_is_overloaded, sent 3 times
+joy failed: 502, sent 3 times
+joy failed: 400 invalid_value include[0]
+joy failed: OpenAI out of reach: TypeError ECONNREFUSED, sent 3 times
+joy failed: OpenAI sent nothing for 120 seconds
+joy failed: 503, then OpenAI sent nothing for 120 seconds
+joy failed: 200, then OpenAI sent nothing for 120 seconds
+joy failed: 200, then the connection broke: TypeError UND_ERR_SOCKET
+joy failed: 200, then the stream ended with no last event
+joy failed: 200, then an error in the stream: server_error
+joy failed: 200, then the answer failed: server_error
+joy failed: 200, then the answer ended as cancelled
+```
+
+The two words after "out of reach" and after "the connection broke" are
+Node's own: the error's name and its code. The last form holds the
+response's `status` where it is one that this server does not know. An
+error that is none of OpenAI's, a fault in this server's own code or in
+a tool's function, is written as Anthropic's file writes one: the
+error's name and its message, cut at 200 characters. Nothing is written
+when the wallet has gone away. A request that goes through at a later
+try writes nothing.
+
+When Anthropic's model answers, the reasons and the log's line are those
+of 30.4, by Anthropic's package, as before.
+
+### 36.7 What this server keeps
+
+`joy_usage` stays as it is (30.3, 32.4, 33.5): the day's messages,
+tokens, searches and pictures for each pod. OpenAI's counts go into the
+same columns with the same meaning. A day's row does not say which
+company answered.
+
+| Column | From OpenAI's `usage`, summed over the requests of a message that ended |
+| ------ | ----------------------------------------------------------------------- |
+| `input_tokens` | `input_tokens` less the two below: the tokens at the full price. Never less than 0 |
+| `cache_read_tokens` | `input_tokens_details.cached_tokens` |
+| `cache_write_tokens` | `input_tokens_details.cache_write_tokens` |
+| `output_tokens` | `output_tokens`, the model's thinking in it |
+| `searches` | the number of `web_search_call` items of the answer whose `action.type` is `search` |
+
+OpenAI's `input_tokens` holds the tokens read from its cache and the
+tokens written to it, where Anthropic's count leaves both out (30.3), so
+they are taken apart here. The table refuses a number below 0, and a
+refused update would lose the message's counts, so the first is never
+less than 0. A missing number is 0, and so is anything that is no whole
+number above 0. The counts of an answer that was cut off at the limit or
+stopped by the filter are written too. A request that did not end with a
+last event adds nothing, as before.
+
+Nothing else is kept: nothing of a chat, a search or a file read, as
+before (30.2, 32.4, 35.3). What a member writes passes through this
+server's memory on its way to the company that answers: with
+`JOY_PROVIDER=openai` the conversation and the memory file go to OpenAI,
+where they went to Anthropic, and nothing of Joy goes to Anthropic.
+
+### 36.8 Environment variables
+
+| Variable | Default | Description |
+| -------- | ------- | ----------- |
+| `JOY_PROVIDER` | `anthropic` | The company whose model writes Joy's answers: `anthropic` or `openai`; anything else stops the boot |
+| `JOY_OPENAI_MODEL` | `gpt-6.2-sol` | OpenAI's model that writes Joy's answers when `JOY_PROVIDER` is `openai` |
+| `JOY_OPENAI_EFFORT` | `medium` | How hard that model thinks before it answers: `low`, `medium` or `high`; anything else stops the boot |
+| `JOY_OPENAI_MAX_TOKENS` | `16000` | The most tokens one request to OpenAI for an answer may write, the model's thinking included |
+
+All four have a default, so no line has to be added to `.env` for the
+deploy. The switch is the one line `JOY_PROVIDER=openai`. The key for
+OpenAI is `OPENAI_API_KEY` (33.7), which the three servers hold for her
+pictures. They are read once, when the server starts, as every setting
+is.
+
+### 36.9 What it costs
+
+Measured in the real call of 2026-11-25, by OpenAI's own count of tokens
+and its prices of that day for GPT-6.2 Sol (the plan's 3.7): 2 dollars
+for a million tokens read, 0.10 when they are read from OpenAI's cache,
+2.50 when they are written to it, 10 for a million tokens written out,
+and 1 cent for a web search.
+
+| The message | GPT-6.2 Sol, measured | Claude Haiku 5.5, measured |
+| ----------- | --------------------- | -------------------------- |
+| A plain message | 0.12 to 0.32 cents | 0.013 to 0.029 cents |
+| With one of her own tools | 0.19 to 0.39 cents | not measured apart |
+| With a web search | 1.2 to 2.0 cents | about 1.1 cents |
+| A question about the anoSphere | 0.6 cents | 0.06 to 0.11 cents |
+| A question about the wallet | 3.8 cents | 0.29 to 0.41 cents |
+| A picture, beside its message | 2.5 cents, as before | 2.5 cents |
+
+- The first message after a quiet half hour costs about 2 cents more.
+  Every request begins with the same 7,700 tokens or so, Joy's tools and
+  the shared memory file, and OpenAI keeps that beginning ready for 30
+  minutes after its last use.
+- A file is paid in the message that reads it, at the price of a write
+  to OpenAI's cache, and nothing reads it from there later.
+- A long chat costs more, since the whole chat goes with every message.
+  At the longest chat that this server takes, 120,000 bytes (30.4), a
+  message costs about 7 cents more when OpenAI's cache does not hold the
+  chat, by the plan's estimate.
+- The stops are in the account at OpenAI: the credit, with auto-reload
+  off, and the hard monthly limit. With `JOY_PROVIDER=openai` they stop
+  all of Joy, and not only her pictures: every message is then answered
+  `joy unavailable`.
+- The first three rows were measured with the shared memory file of that
+  afternoon and without `read_file`. Not measured: a long chat, a
+  request without the web search tool, and the level `high`.
+
+### 36.10 Files
+
+- `src/joy/joy.openai.js`, new: `askOpenAI`, the request, the reading of
+  the stream and the loop over a message's requests; `joyIsOn`,
+  `failureOf` and `describeFailure`; and the cut, `makeCut` with
+  `readPlace`, and `withoutTag`.
+- `src/joy/joy.answer.js`, new: the one place that picks (36.2).
+- `src/joy/joy.common.js`, new: what is the same whoever answers (36.2).
+- `src/joy/joy.anthropic.js`: it takes the shared memory file's text,
+  `memberPart`, `MAX_ROUNDS`, `MAX_SOURCES` and `TITLE_MAX_CHARS` from
+  `src/joy/joy.common.js`, where it had them itself; and the first
+  sentence of its opening comment. Nothing else of it changes.
+- `src/joy/joy.handlers.js`: its import, the name of the function that
+  it calls, `askJoy`, and the comments that named one company.
+- `src/joy/joy.service.js`: its import, the comments that named one
+  company, and one sentence more in the comment of `searchFor`, on how
+  far a day can end over the number of searches.
+- `src/joy/joy.queries.js` and `src/joy/joy.pictures.js`: one comment
+  each, brought in line on the user's word of 2026-11-26 (36.12). No
+  line of their code changes.
+- `src/config/env.js`: four lines in `readJoy`, and its two comments.
+- `src/server.js`: the import and the line at the start.
+- `.example.env`: the four variables, each as a comment line; two lines
+  that named Anthropic as the one company; and the line of
+  `JOY_MAX_SEARCHES`, which says what the number counts.
+- `README.md`: four rows in "Configuration"; the three new files in the
+  row of `src/joy/` and the row of `shared-memory.md` in "Layout"; and a
+  dated clause in the row of `/ask-joy`, in the row of `joy_usage` and
+  in the rows of `ANTHROPIC_API_KEY`, `JOY_MODEL`, `JOY_EFFORT`,
+  `JOY_MAX_SEARCHES` and `OPENAI_API_KEY`.
+- Here: a dated clause in section 8; in the opening of section 30, in
+  30.2, 30.3, 30.4 (two places), 30.5 and 30.8; in the opening of
+  section 32, in 32.3 and 32.4 (two places); in 33.2, 33.3, 33.4 and
+  33.7; in 35.2 and 35.9; and this section.
+
+Nothing else changes: not `db/schema.sql`, not `package.json` and
+`package-lock.json`, not `joy/shared-memory.md`, not
+`src/joy/joy.memory.js`, `joy.files.js` and `joy.router.js`, not
+`src/app.js`, and no line of code in `src/joy/joy.pictures.js` and
+`joy.queries.js`. Four env variables and one line in the log; no table,
+no column, no route, no npm package.
+
+### 36.11 What is left as it is
+
+The plan's section 6, as far as it is this server's:
+
+- The two companies for different things. Here one company answers every
+  message.
+- A way back by itself. When OpenAI fails, Joy says so. Claude does not
+  step in. The way back is by hand: the line out of `.env` and a
+  restart.
+- Links inside Joy's text. OpenAI's page says: "you must show inline
+  citations as prominent, clickable links". Here every cited page is a
+  link under the answer, not inside the sentence. Links inside the text
+  are a build of the wallet.
+- A country for the web search.
+- A lower price for a file read: a daily number for reads, OpenAI's
+  cache for the files, or a request that does not write a file to that
+  cache.
+- Shorter answers by a setting. OpenAI's request has one,
+  `text.verbosity`. It was not tried. Joy's lines are what keeps an
+  answer short.
+- A word of `joy/shared-memory.md` or of a tool.
+- Telling a member which model answers, or letting a member pick.
+- A count of which company answered, in `joy_usage`.
+- Anything for members under 18, for whom OpenAI asks more of a service.
+- Keeping less at OpenAI than its 30 days.
+- Joy seeing a picture, or opening a web address that a member gives
+  her.
+
+And what the build leaves as it is:
+
+- Sentences that the step outdates in a file that the plan says is not
+  changed. `db/schema.sql` says in the comments of `joy_usage` and of
+  five of its columns that the tokens and the web searches are the ones
+  Anthropic counted or made: a change there is a schema line in a
+  deploy, and the plan keeps the file as it is. With OpenAI answering,
+  the counts in those columns are OpenAI's (36.7). In this document the
+  rows of `JOY_MAX_SEARCHES` in the tables of section 8 and of 32.6 say
+  "the most web searches for one message": the clause at the opening of
+  section 32 and 36.5 say what the number counts with OpenAI.
+- A rule for three searches for one message, and for a search that opens
+  pages (36.5).
+- An answer whose last event has come is whole. But this server reads on
+  to the stream's end, so a stream that stays open after its last event
+  would hold the last line back, for 120 seconds at most. OpenAI ends
+  the stream with its last event; this was not seen.
+- A mark in an answer for which Joy did not search would be listed as a
+  source while its place stays in her text. By OpenAI's pages a mark
+  comes only with a web search.
+- Nothing tells the member that a searched answer has no source because
+  OpenAI's own service answered. Joy's own wallet file (`joy/wallet.md`
+  of the wallet's repository, the row `wallet` of `joy_files`) says that
+  "Sources" stands under a searched answer; the plan keeps her two files
+  as they are.
+
+### 36.12 Notes from the build
+
+#### Build 1, the masterpod (2026-11-25)
+
+Built from `~/Desktop/Z-TestNet/forclaude/joy-openai-plan-1.md`, its
+sections 3 and 4, the one step of its section 5 and its section 7, on
+main at 2c2cbf0, the working tree clean, in a build chat of its own that
+was started from the planning chat's card. The plan holds no code, so
+all of the code is the build's. Its start were the pieces that the
+planning chat had tried: the program that ran against OpenAI's real API
+from prod1 (`trial-source.mjs` in
+`~/Desktop/Z-TestNet/forclaude/joy-openai-trial/`) and the cut as one
+tried function (`cut.mjs` beside it). No new npm package, and no test
+script in the repo. Nothing was deployed, and no request was made of
+OpenAI or of Anthropic: no key is on this Mac.
+
+The deploy is the usual update, pull and restart on the three servers,
+the leader last, with no schema line, no `npm ci` and no new line in
+`.env`. After it Anthropic's model answers as before. The switch is a
+list of its own, for a day after the deploy: a look at the account at
+OpenAI; one look at real answers on one server, through the code as it
+lies on that server's disk; then the line `JOY_PROVIDER=openai` into
+each server's `.env`, by a line that stops when the setting is there
+already or the server has no key of OpenAI, and a restart of each. The
+way back is one line for each server, which takes the setting out and
+restarts. The two lists, the program of the look and the lines' trial
+are in `~/Desktop/Z-TestNet/forclaude/joy-openai-plan-1-tools/`.
+
+What the plan left open and how it was decided, each time the smallest
+way that fits its section 7:
+
+- The names in the code: `askOpenAI`, `askJoy`, `whoAnswersJoy`, and in
+  `env.joy` the four settings as `provider`, `openaiModel`,
+  `openaiEffort` and `openaiMaxTokens`, after the settings that were
+  there.
+- The words of the line at the start (36.2), and that it is printed
+  right after the line on listening.
+- The words of the log's line for each failure (36.6), and that it says
+  how often a request was sent when that is more than once.
+- A wait that `Retry-After` names is taken in seconds or as a date. One
+  of 0, and one of 60 seconds or more, is not kept: the request is then
+  sent again after half a second and after one second.
+- 120 seconds with nothing from OpenAI before any of the answer came is
+  `joy was cut off`, as the plan's table has silence, and such a request
+  is not sent again: the wallet has waited two minutes by then. The same
+  holds when a status that is not `200` came and its body then did not
+  end. The second reader found that the build first took such a request
+  by its status and sent it again, up to three times of 120 seconds; it
+  was mended and tried.
+- An `arguments` that is no JSON is handed to the tool as the text that
+  came. The memory tools tell an input back that is not the object they
+  ask for (30.6), so Joy reads her own text again.
+- A refusal in OpenAI's own form ends the answer as `refused` whether
+  the response is `completed` or `incomplete`. A response that `failed`
+  is a failure whatever it holds, a refusal too. The refusal's words go
+  on while they come (`response.refusal.delta`), and at the request's
+  end when none came.
+- A response whose status is neither `completed` nor `incomplete` is a
+  failure of the answer, `failed` among them.
+- A redirect is not followed and counts as every other status that is
+  not `200`.
+- The cut hands on what it holds when a further step of a search starts,
+  and at the end of each request, so that her words of before a search
+  or a round of her tools are whole before the paragraph break.
+- The cut reads a held piece letter by letter. The planning chat's tried
+  function, with which the build began, read the whole held piece again
+  for every new letter. On a made-up text of nothing but `([`, as long
+  as 16,000 tokens can be, that held this Mac's one thread for 13
+  seconds, and for 27 at twice that length; the second reader measured
+  the like. A member would have to make Joy write such a text after a
+  web search, and every other request to this server would wait
+  meanwhile. So the form of a place is read by `readPlace`, which keeps
+  where it stands in the piece and looks at each letter once. The same
+  texts take 0.2 and 0.4 seconds now, over all the pieces of an answer.
+  What goes to the wallet is the same text at the same moments, as the
+  checks below show.
+- OpenAI's tag also comes off an address where a part follows that a `#`
+  sign begins. The plan's rule is "where it is the address's last
+  parameter", and such a part is no parameter. The tried function took
+  the tag off at the address's end alone, so the same page with the tag
+  and without it would have been two sources there. The second reader
+  found it. Whether OpenAI cites an address with such a part was not
+  seen.
+- The `searching` line is written for every step of the search tool. The
+  plan's table names a web search that begins; the item of a step that
+  begins does not say yet which kind of step it is.
+- A count of OpenAI's that is no whole number above 0 counts as 0.
+- Both companies' files are loaded at every start, and the settings of
+  the company that does not answer are checked all the same (36.2).
+- The cut, `makeCut`, and `withoutTag` are exported from
+  `src/joy/joy.openai.js`, so that a trial can run the very functions by
+  themselves. Nothing else of this server imports them.
+- The section's number is 36, the next free one.
+- Section 8, the list of every setting, got one dated clause and no row:
+  the plan names the dated clauses and this section as the spec's
+  places, so the four settings have their table here (36.8), and the
+  clause in section 8 says so.
+- Sentences that the step outdates. In the places that the plan names
+  they were brought in line in the build: the comments of
+  `src/joy/joy.handlers.js` and `src/joy/joy.service.js` that named one
+  company, among them the service's sentence that a picture's
+  description goes on to "a second company"; the two comments of
+  `src/config/env.js` on Joy's settings; in `.example.env`, which the
+  plan names whole, the two lines that named Anthropic as the one
+  company and the line of `JOY_MAX_SEARCHES`; in `README.md`, which the
+  plan names whole, the rows of 36.10; and here the eighteen dated
+  clauses. One sentence that names no company was brought in line too,
+  since it stands in a file of this commit and the step makes it untrue:
+  the comment of `searchFor` in `src/joy/joy.service.js`, on how far a
+  day can end over the number of searches. The openings of the sections
+  before this one, their lists of files and their notes say what their
+  own builds made and stay as records. Two comments in files that the
+  plan does not change were first left and named in the build's report,
+  and brought in line the next morning, 2026-11-26, on the user's word
+  ("You can fix those lines and also give me a paste to commit."): the
+  comment of `addTokens` in `src/joy/joy.queries.js`, which named
+  Anthropic as the one that counts, and the opening comment of
+  `src/joy/joy.pictures.js`, whose sentence on what leaves for OpenAI
+  holds for the request for a picture alone. So the commit holds
+  thirteen files, where the plan's list names eleven. Left as they are,
+  and named in 36.11: the comments of `joy_usage` in `db/schema.sql`,
+  which the plan keeps unchanged.
+
+The checks. They ran in the night of 2026-11-25 on the files as they
+were handed over then. After the two comments were brought in line on
+2026-11-26, which changes no line of code, every one of them ran once
+more but the fault copies: neither the trial that they run nor a line of
+the code that they change is another one. The tools are outside the
+repo, in `~/Desktop/Z-TestNet/forclaude/joy-openai-plan-1-tools/`, with
+what they printed. No request left this Mac: no key of either company is
+on it, no `.env` file was read, and each trial's process lets no request
+out to another address than 127.0.0.1. OpenAI's two addresses are
+constants of the code, so a trial puts a `fetch` of its own in front
+before this server's code loads, which hands a request for
+`https://api.openai.com` to a stand-in on 127.0.0.1 and keeps the
+address that was asked for.
+
+- The code. `node --check` on the ten files of code that the step
+  touches, clean, on Node 24.22.0. One load of the app with no server
+  and no database (`createApp()` with made-up settings): 117 routes, as
+  a copy of 2c2cbf0 gives, each with as many handlers, the three of Joy
+  with their four each; the same with `JOY_PROVIDER=openai`, with both
+  keys and with one; with a wrong word in `JOY_PROVIDER` the load stops
+  with the setting's name. No route is new. `db/schema.sql`,
+  `package.json`, `package-lock.json`, `joy/shared-memory.md`,
+  `src/app.js`, `scripts/joy-files.js` and three files of `src/joy/`
+  (`joy.memory.js`, `joy.files.js`, `joy.router.js`) are byte for byte
+  those of 2c2cbf0. `src/joy/joy.queries.js` and
+  `src/joy/joy.pictures.js` are the files of 2c2cbf0 with one comment
+  changed each, and no line of their code differs.
+  `src/joy/joy.anthropic.js` is the file of 2c2cbf0 with five places
+  changed and nothing else: its import, the first sentence of its
+  opening comment and the three blocks that moved. The 29 lines of code
+  that left it stand in `src/joy/joy.common.js` as they were, line for
+  line and in their order. By their lines of code,
+  `src/joy/joy.handlers.js` differs in its import and in the name of the
+  function that it calls, `src/joy/joy.service.js` in its import,
+  `src/server.js` by its import and one line, and `src/config/env.js` by
+  four lines. One file of this server imports a company's file,
+  `src/joy/joy.answer.js`. 30 checks.
+- The scratch PostgreSQL. A PostgreSQL 17.11 that was started for this
+  build alone: a data folder of its own in the build chat's scratch
+  folder, listening on 127.0.0.1 port 62451 and nowhere else, with no
+  socket file. This Mac's own PostgreSQL on port 5432 was not touched,
+  and `scripts/setup-db.sh` was not run. The schema file went in as the
+  deploy's line of section 35 runs it. Joy's two files were put in by
+  `scripts/joy-files.js`, as on a server.
+- The stand-ins. For OpenAI's Responses API a new one, made after the
+  real call of 2026-11-25: the items of an answer (thinking with its
+  encrypted content, a call, a step of a search, a message with its
+  marks), the events of a stream, a cited place as a link in round
+  brackets with its mark some letters later, and usage with the cached
+  and the written tokens counted into `input_tokens`. It reads a request
+  as bytes, and it writes every event in two pieces that are cut in the
+  middle of a letter. It holds a request to what OpenAI asks of a
+  message that takes several requests: the earlier round's items back
+  exactly as they were given, without `created_by`; one outcome for each
+  call, in the calls' order; a thinking item with its encrypted content;
+  and the same beginning and the same code for the pod in every request
+  of a message. For Anthropic, the stand-in of section 35's build, which
+  now keeps a request's bytes. For OpenAI's image model, the stand-in of
+  section 33's build.
+- The trial. The working tree's own app (`createApp()`, nothing of
+  `src/server.js`) on the scratch database, called over HTTP with
+  requests signed as a wallet signs them, by session keys made for the
+  run. 187 checks in seven runs, none bad. The first run has
+  `JOY_PROVIDER=openai`, the default settings and both keys, and 155 of
+  them.
+- The request as the stand-in got it: its bytes are the bytes of the
+  request of 36.3, field for field in that order, built in the trial
+  from the plan's own words, with the shared memory file word for word,
+  its nine Thai letters whole, the second `developer` message in the
+  words of before the step, and the chat with a Thai message in it. The
+  tools' names, words and inputs are those of 2c2cbf0. The key goes as
+  `Authorization: Bearer`. `eager_input_streaming` and `input_schema`
+  stand nowhere in the bytes.
+- A plain answer line by line: `{"text":"Hello the"}`, `{"text":"re."}`
+  and the last line of before; status 200, the type and `no-store`; one
+  message and OpenAI's counts of one request on the day's row; nothing
+  in the log. An answer in Thai comes whole, though every event was cut
+  in the middle. An answer for which the model thought first has the
+  thinking in the tokens written out.
+- Her memory tools. `remember`: two requests, the second the same
+  request with the call's item added as it came and the outcome `saved`,
+  the bytes again those of 36.3; the new memory file in the last line.
+  `update_memory` with a new line and with an empty one. A refused call,
+  whose outcome holds its words and nothing else. Two calls in one
+  answer, both outcomes in the calls' order. Words before a call, after
+  which her words begin a new paragraph. An input that is no JSON, one
+  that is JSON and no object, one with a line that is no text, and a
+  tool that is none of hers: each told back as before the step. A call
+  in every request: four requests, the fourth's call still carried out,
+  four lines in the memory file, and the answer ends with no words.
+- Her files. The file's text is the outcome, whole and alone, byte for
+  byte the file, 61,929 bytes with its Thai letters unbroken. Both files
+  in one answer; a file and `remember`; a name that is no file; a row
+  that is not there, with the log's line of 35.2; `read_file` in every
+  request.
+- Her pictures. The lines `drawing`, the picture, her words; the picture
+  is the stand-in's real JPEG with her description; one request to the
+  image model, as before the step, with the same code for the pod as the
+  request for her answer. A second picture's call in a later request and
+  two calls in one answer: one picture, the other answered in the words
+  of before. A refused picture and one that fails, the second with the
+  log's line of 33.3. A description of 1,001 characters and an empty
+  one. `make_picture` in every request: one picture, four requests.
+- A searched answer. The `searching` line first; the real call's Thai
+  answer on an exchange rate, with a round bracket of her own in it,
+  comes out with its two cited places gone and the space before each; no
+  line that went to the wallet holds a part of a place; the sources are
+  the two pages with their titles, without OpenAI's tag; one search on
+  the row, and 4,900 tokens taken apart into 4,000, 700 and 200. An
+  answer from OpenAI's weather service: no source, and the space at its
+  end gone. A place in the middle of a line. Words before the search.
+  Three steps of the search tool: three `searching` lines and ONE search
+  on the row. Two searches with words between them. A search and
+  `remember` in one answer, where the search's item goes back as it
+  came, and `remember` first with the search in the next request. A
+  search, then a read of a file, where the place of the second request
+  is cut too. Fourteen marks: ten sources, each address once, also when
+  two marks differ by the tag alone, no `javascript:` and no `ftp:`
+  address, a title cut at 200 characters, and plain `http://` taken.
+  Three marks more: the tag before a part that a `#` sign begins comes
+  off, the same address and part with no tag is the same source, and a
+  tag that is not the address's last parameter stays. An answer for
+  which she did not search goes on as it came.
+- The cut's cases through the app, each whole, in pieces of nine letters
+  and letter by letter: two places one after the other, a round bracket
+  that is no place, an address with round brackets in it, a link with no
+  round brackets around it, a place that is not finished at the answer's
+  end, a place of more than 1,000 characters, two links inside one pair
+  of round brackets, a place with no mark, and Thai text around two
+  places.
+- The cut by itself: `makeCut` as it stands in the working tree, on the
+  six searched answers of the real call's paste and on 24 made-up cases,
+  each whole, cut in two at every place between two letters, and letter
+  by letter; ten addresses for the tag; and five texts made to keep the
+  cut holding, each timed. 4,055 runs, none wrong, and none other than
+  by the function that the planning chat had tried, but for the two
+  addresses with a part after a `#` sign, where the tried function left
+  the tag. The texts made to keep it holding: 32,000 letters of `([` in
+  about 0.2 seconds, where the tried function took 13; 64,000 in 0.4,
+  where it took 27; and one piece of 998 letters with 332 beginnings of
+  a place in it in 2 milliseconds, where it took 100 to 150. And held
+  against the tried function on made-up texts, pieces of a place and the
+  letters that matter to the cut put together and cut into pieces by
+  chance: 60,000 texts of 6.7 million letters, of which 36,502 had
+  something cut, and 20,000 more in the run of every check. In none did
+  the two hand on another text, or the same text at another moment.
+- A pod that has used its searches of the day: no web search tool and no
+  `max_tool_calls`, the sentence of 32.2 after the date, the bytes again
+  those of 36.3. One that has made its pictures: no `make_picture`, the
+  web search tool still there. Both: her two memory tools and
+  `read_file` alone. A call of `make_picture` though the tool is not in
+  the request: no picture.
+- A thinking item going back as it came: with its encrypted content of
+  more than 3,000 characters, before the call; the call without the one
+  field `created_by`; the same two `developer` messages, tools and code
+  for the pod in both requests. A thinking item whose encrypted content
+  stood only in its own event. A last event that lists no items.
+- The ends. Cut at the most tokens in the middle of a call's input:
+  `stop` is `length`, and the call is not carried out. OpenAI's filter:
+  `refused`. Another reason: `length`. Cut after a search: the page
+  cited up to there is in the last line, and the place that is not
+  finished goes on as raw letters. A refusal in OpenAI's own form,
+  streamed and where it stood only in the last event: its words as her
+  text, `refused`. A refusal beside a call: the call is not carried out.
+- The failures, each with the wallet's line and the log's line of 36.6:
+  a refused key, where the log holds no part of the key and none of
+  OpenAI's message; the five words of the account's 429, each sent once;
+  too many requests and "slow down", each sent three times, with waits
+  of half a second and one second; 503 and 500; a failure whose answer
+  is no JSON; a request that OpenAI does not take, with the part it
+  names; a model that the key may not use; a refused country; a 408 and
+  a 409, each sent three times; a redirect, which is not followed;
+  OpenAI out of reach, sent three times; an answer that fails after its
+  stream began; one that fails and holds a refusal in OpenAI's own form,
+  whose words had gone to the wallet before; a stream with no last
+  event; an `error` event; and a connection that drops in the middle,
+  where the half answer had gone to the wallet.
+- A request that goes through at its third try, after two 429, after two
+  503 and after two times out of reach: the answer, nothing in the log.
+  A wait of 2 seconds that `Retry-After` names is kept, one of 120
+  seconds is not. A request that fails after a round of her tools, and
+  one after a picture: the tokens of the first request and the picture
+  are on the row.
+- The wallet going away: in the middle of an answer, where the stand-in
+  saw the request end; before anything of the answer had come; in the
+  wait before a second try; in a file's read, which a lock on the table
+  made wait; and in a picture, where the request to the image model was
+  stopped. Each time no further request went to OpenAI and nothing was
+  logged.
+- 120 seconds of silence, in a run of its own with the real 120 seconds,
+  three times at the same time: half an answer and then nothing, no
+  answer at all, and a `503` whose body begins and never ends. The
+  wallet got `joy was cut off` after 120 seconds each time, an empty
+  line had gone out every 10 seconds, twelve of them, each request was
+  let go and not sent again, the `503` too, and the log has the three
+  lines of 36.6. 7 checks.
+- OpenAI's counts in forms that the count has to stand: more read and
+  written tokens than tokens in all, where the tokens at the full price
+  are 0 and never less; no details; and no usage at all.
+- What was written: of the 48 tables four hold rows, the pods, the
+  nonces of the signed requests, `joy_usage` and `joy_files`. The log's
+  lines are of three kinds, hold no part of the key, none of OpenAI's
+  messages and no word of a member's message, and none is longer than 69
+  characters. No request went to Anthropic in the whole run, and the
+  only two addresses asked at OpenAI were the one for an answer and the
+  one for a picture.
+- The six other runs. With `JOY_OPENAI_MODEL`, `JOY_OPENAI_EFFORT`,
+  `JOY_OPENAI_MAX_TOKENS` and `JOY_MAX_SEARCHES` set: the bytes of the
+  request hold them, and Anthropic's own three settings stand in no
+  request. Web search and pictures switched off: three tools, both
+  sentences. `JOY_PROVIDER=openai` with no key of OpenAI: `503 joy is
+  off`, though Anthropic's key is there, and nothing counted or sent. No
+  `JOY_PROVIDER`, and `JOY_PROVIDER=anthropic`: a plain answer, a saved
+  line, a searched answer, a picture, an answer from a file and a
+  failure through Anthropic's stand-in, as before, and no request for an
+  answer to OpenAI's address. `JOY_PROVIDER=anthropic` with no key of
+  Anthropic: `503 joy is off`.
+- WHAT THIS SERVER SENDS TO ANTHROPIC IS THE REQUEST OF BEFORE, BYTE FOR
+  BYTE. The same 89 member messages, every answer that the stand-in for
+  Anthropic has, with a memory file and a chat in Thai, and with the
+  searches and the pictures of the day used, went through the code of
+  2c2cbf0 and through the working tree, each a process of its own with
+  the same pod, the same day and the same address of the stand-in. The
+  170 requests that reached Anthropic's stand-in are the same bytes in
+  both, 4,437,416 of them, and so are their headers; and so are the 22
+  requests for a picture. The working tree was run twice for it, with no
+  `JOY_PROVIDER` and with `JOY_PROVIDER=anthropic`. A second pair, with
+  another model, level and token limit, web search off and no key for
+  OpenAI: 127 requests, the same bytes. 16 checks.
+- The setting and the line at the start. This server's own program,
+  `src/server.js`, was started sixteen times on the scratch database,
+  once for each case, with made-up keys, and stopped again. It printed
+  the line of 36.2 right after its line on listening: for no
+  `JOY_PROVIDER`, for one set to nothing and for `anthropic`, with
+  `JOY_MODEL` set too; for `openai`, with `JOY_OPENAI_MODEL` set too and
+  with OpenAI's key alone; and the line that Joy is off for the picked
+  company's missing key. With `chatgpt`, `OpenAI` and `both`, and with a
+  wrong word in `JOY_OPENAI_EFFORT` or `JOY_OPENAI_MAX_TOKENS`, also
+  while Anthropic answers, it ended with the setting's name in its error
+  and no line on listening. No output held a key.
+- The earlier steps' own trials of Anthropic's way, once more against
+  this code. The trial of section 35's build from a scratch copy of its
+  tools: its six runs 125 checks, none bad; the script 52; the schema
+  file 24; and its load check 14 of 17, where the three that do not hold
+  are the three that hold `src/config/env.js`, `.example.env`,
+  `src/joy/joy.handlers.js` and `src/joy/joy.service.js` to the commit
+  before that step. The main run of section 33's build, with its two
+  stand-ins reading a request as bytes: 103 of 107, the same four as in
+  section 35's build, which name the list of tools.
+- The wallet of today, 22 checks, none bad. A development build of
+  `web_app` at b03a974, from a scratch copy, behind that commit's own
+  server program, against the working tree's app with
+  `JOY_PROVIDER=openai` on a scratch database of its own, in Google
+  Chrome with no window, with the helper of section 33's walks for a
+  made-up login. A plain answer in Joy's bubble, and "Joy is writing…"
+  while it is awaited. An answer in Thai. A searched answer: "Joy is
+  searching the web…", her text with no web address in it, and under it
+  the two pages with their titles. A weather answer with no Sources. A
+  search and a saved line in one message. A picture: "Joy is making a
+  picture…", the picture of 1024 by 1024 with her sentence and the
+  Download button. An answer from the wallet file. A second question in
+  the same chat, which goes to OpenAI as the earlier answers' words with
+  the wallet's note in front of the answer that had the picture. A
+  failure, with the wallet's own sentence for `joy busy` in red, and the
+  next message answered. After a reload the chat is back. Anthropic was
+  asked nothing, and Chrome raised no error on the page.
+- Faults put in, to see that the trial notices one. Twenty-four scratch
+  copies of the working tree with one place changed each, a database for
+  each. Twenty-three came out bad, twenty-two of them by 1 to 18 of
+  their checks and one by the run stopping at its first check: the cut
+  never used; OpenAI's tag left on an address; the tag left where a part
+  follows it; `created_by` going back; `input_tokens` written as it is;
+  no second try; the account's 429 taken for the minute's; the fourth
+  request's call not carried out; `max_tool_calls` without the web
+  search tool; `store` true; a thinking item not taken from its own
+  event; OpenAI's message in the log's line; every step counted as a
+  search; no new paragraph after a search; tools without
+  `additionalProperties`; no mark for the cache; another code for the
+  pod in each request; a refusal ending as a plain answer; the filter's
+  stop ending as `length`; the one place handing every message to
+  Anthropic, where the run stopped since no request had gone to OpenAI;
+  one word of what Joy is told changed, with each company answering; and
+  OpenAI answering when no `JOY_PROVIDER` is set. The twenty-fourth, no
+  look at the wallet after a read of a file, came out the same as the
+  code itself: the next request's own look at the wallet's signal stops
+  it before it leaves this server. The look after the read stays, as the
+  plan words it.
+- The look at real answers, one program file that is read from standard
+  input in this server's folder (`joy-openai-look-1.mjs`): it asks
+  through `askAnthropic()` and `askOpenAI()` of the code on the disk,
+  twelve member messages, two through Anthropic's file and ten through
+  OpenAI's, the plan's list. It reads a file's real row by this server's
+  own read, has one picture made, lets no request go to another address
+  than the two companies', and writes nothing. The one message at the
+  level `high` runs in a process of its own, which the program starts
+  with that level, since the level is read when this server's code
+  loads. For each message it prints the wallet's lines in short, the
+  seconds, the tokens, the cents and the answer whole, and what OpenAI's
+  own answer holds of each request: its items, what went back in it, and
+  thinking that OpenAI dropped. It counts `([` left in a searched
+  answer, an address with `utm_source`, ครับ in a Thai answer, a square
+  bracket in an answer from a file, and thinking that OpenAI dropped.
+  Tried on a made-up server against stand-ins that answer its twelve
+  messages in nine ways, 24 checks: as it should be; a cited place in a
+  form that the cut does not know; the man's word in Thai; a name in
+  square brackets; a Joy who does not call `remember`; a model that does
+  not think at the level `high`; thinking that OpenAI dropped; a refused
+  key and too many requests, where it ends after two messages. It stops
+  with one line that says why on the code of before the deploy and with
+  no key of OpenAI, leaves Anthropic's two messages out when that key is
+  not there, and wrote nothing into the database.
+- The lists' lines, on a made-up server on this Mac: GitHub as a bare
+  repository in the scratch folder, a clone at 2c2cbf0 as a server, the
+  repository's packages linked in, a settings file of the trial's own,
+  and stand-ins for `sudo`, `systemctl`, `journalctl`, `hostname` and
+  `patronictl`. The stand-in for `systemctl` really started that
+  server's own `src/server.js`, with one file in front of it that lets
+  it ask the stand-ins and nobody else. Every line's syntax was read by
+  bash, dash and zsh, and no line holds a dollar sign. The line that
+  takes away what the real call left on prod1. The pull and restart,
+  after which the program's log has the line that Anthropic answers and
+  a signed message through the started program was answered by
+  Anthropic's stand-in. The look's file by `scp` speaking to this Mac's
+  own file program, and the look itself. The line that puts
+  `JOY_PROVIDER=openai` into the settings file: the file keeps its
+  rights and every line of before; a second run writes nothing and says
+  that the setting is there; on a settings file with no key of OpenAI it
+  writes nothing and says so. After the restart the log says that OpenAI
+  answers with `gpt-6.2-sol`, and a signed message was answered by
+  OpenAI's stand-in, with OpenAI's counts on the pod's row. The way
+  back: the setting is out, the file is the same file with the same
+  rights, differing from the file of before the switch by one line break
+  at its end, and after the restart Anthropic's stand-in answers again.
+  None of these lines has run on a server.
+- The three commit lines, each on two throwaway clones of its
+  repository, alone and beside another chat's changed file and new file,
+  which stay out of the commit.
+- A second reader, a helper of the build's chat that was given the plan
+  and the files and no word of the build's own view, read the change
+  against the plan and the code around it, and ran
+  `src/joy/joy.openai.js` in a process of its own against a `fetch` of
+  its own, with no socket and no database. In the cases that the plan's
+  list names it found no wrong behaviour. It named fourteen things. Two
+  were faults of the code, and both were mended and tried: a status that
+  is not `200` whose body does not end was taken by its status and sent
+  again; and OpenAI's tag stayed on an address with a part after a `#`
+  sign. A third the build had measured in the same hour, the cost of the
+  cut on a long held piece, and it was mended too. Sentences that it
+  found and that were brought in line: one of 33.7 that the step makes
+  untrue, one of 32.4 and one of 33.4, each with a clause now; three
+  places of this section that said something the code does not do or
+  left a form of the log's line out (the order in which a request's end
+  is read in 36.4, the words on her web search in the opening, the list
+  of forms in 36.6); the rows of `JOY_EFFORT` and `JOY_MAX_SEARCHES` in
+  the README and the line of `.example.env`; a comment of the wallet's
+  code file on the three words of `stop`; and the dated part of the
+  how-to page for the account at OpenAI, which now names four sentences
+  of the older page that hold only until the switch, and says where its
+  facts are from. One sentence that the build had added to a comment of
+  `src/joy/joy.service.js`, on OpenAI's price above 272,000 tokens, came
+  out again: the plan does not hold that fact. Named by the reader as
+  more than the plan's list of places holds, and kept: the clause in
+  section 8 (above); the clause in 35.9, which brings a sentence of a
+  named section in line that said this tool on GPT-6.2 Sol is not built;
+  the two functions exported for a trial (above); `whoAnswersJoy` in
+  `src/joy/joy.answer.js` (36.2), which keeps `src/server.js` from
+  naming a company; and five bullets of the how-to page's dated part
+  beyond the three things that the plan names for it (what a message
+  costs, one anoPod's day, the limits for one minute, what OpenAI gets,
+  and that OpenAI can shut out one member). They are facts of the plan's
+  3.2 and 3.7, and they say what holds after the switch where the older
+  page's sentences no longer do. Two comments that it found, in
+  `src/joy/joy.queries.js` and `src/joy/joy.pictures.js`, were left at
+  first and brought in line the next morning on the user's word (above).
+  Left, and named in 36.11: the comments of `db/schema.sql`, and the
+  sentence of Joy's wallet file on Sources. Asked directly, the reader
+  held every line of `src/joy/joy.anthropic.js` against the file of
+  2c2cbf0 and `src/joy/joy.common.js`: no code differs. It did not check
+  the request to Anthropic byte for byte, which the build's own proof
+  does, nor anything against a real connection.
+- Not tried by the build. Nothing against OpenAI's or Anthropic's real
+  API: no key is on this Mac. The real call of the planning sent the
+  request of 36.3 from prod1 by a program of its own, so this server's
+  own code has not talked to OpenAI's model. The look at real answers is
+  that proof, before the switch. What the real call did not show, and
+  what the look is made for: a thinking item, a search's item and a
+  message's item going back in a later request; a request without the
+  web search tool or without `make_picture`; Joy's lines as they stand
+  since section 35 on this model, the woman's endings in Thai and a name
+  of the wallet file given alone; the level `high`. Not to be had by a
+  look: an answer cut at the most tokens or stopped by the filter, a
+  refusal in OpenAI's own form, two pages at one cited place, a third
+  step of a search, a request that OpenAI's safety check holds back or
+  refuses for the member's code, and what OpenAI answers after the first
+  of several `Retry-After`. Not tried either: nothing on a server,
+  nothing on Linux, nothing through PgBouncer or the doormen, and Node
+  24.22.2, which the servers run, where this Mac has 24.22.0. No Thai
+  reader has read Joy's Thai.

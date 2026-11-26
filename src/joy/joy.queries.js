@@ -54,10 +54,12 @@ export async function countMessage(anopodId, limit) {
 }
 
 /**
- * Adds the tokens and the web searches Anthropic counted for one message,
- * and the pictures OpenAI made for it, to the pod's row of `day` (the
- * text countMessage returned). `tokens` is { input, output, cacheRead,
- * cacheWrite, searches, pictures }, each a number of 0 or more.
+ * Adds the tokens and the web searches that the company whose model
+ * answers counted for one message, Anthropic or OpenAI (spec section
+ * 36), and the pictures OpenAI made for it, to the pod's row of `day`
+ * (the text countMessage returned). `tokens` is { input, output,
+ * cacheRead, cacheWrite, searches, pictures }, each a number of 0 or
+ * more.
  */
 export async function addTokens(anopodId, day, tokens) {
   await query(
