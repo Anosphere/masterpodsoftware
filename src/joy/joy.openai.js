@@ -29,6 +29,11 @@ import { MAKE_PICTURE_TOOL, makePicture } from './joy.pictures.js';
  * OpenAI keeps no answer for later reading: `store` is false. So after a
  * round of her tools the answer's items go back as they came, the
  * model's thinking among them in its encrypted form.
+ *
+ * Joy can see a picture that a member sends her (spec section 37). The
+ * member's new message then goes to OpenAI as one message of two parts,
+ * the member's words and the picture, in every request that the message
+ * takes. No other message carries a picture, and this server keeps none.
  */
 
 /** Where an answer is asked for. */
@@ -544,7 +549,10 @@ async function send(body, leaving, onStream, onEvent) {
  * things out and the same calls back.
  *
  *   history   the conversation, oldest first, the new message last:
- *             [{ role: 'user' | 'assistant', text }]
+ *             [{ role: 'user' | 'assistant', text }]. The last message
+ *             also holds `upload`, { contentType, data }, when the
+ *             member sent a picture with it (spec section 37): the
+ *             picture's type and its bytes as base64
  *   memory    the member's memory file as the wallet sent it
  *   search    whether Joy may search the web for this message: 'on';
  *             'off' when web search is switched off by a setting; 'used'
@@ -603,8 +611,16 @@ export async function askOpenAI({ history, memory, search, picture, anopodId, to
   ];
   const who = toHex(sha256(anopodId));
   // The conversation, and after it what each round of her tools adds:
-  // the answer's items as they came, then each tool's outcome.
-  const items = history.map(({ role, text }) => ({ role, content: text }));
+  // the answer's items as they came, then each tool's outcome. A message
+  // goes as its words. The one message that came with a picture goes as
+  // two parts, its words first and then the picture, as an address that
+  // holds the picture itself (spec section 37). The picture's detail is
+  // not set, so OpenAI's default holds. The list is built once for a
+  // message, so the picture is in every request that the message takes.
+  const items = history.map(({ role, text, upload }) => ({
+    role,
+    content: upload === undefined ? text : [{ type: 'input_text', text }, { type: 'input_image', image_url: `data:${upload.contentType};base64,${upload.data}` }],
+  }));
   const sources = [];
   let file = memory;
   let asked = false; // whether this message's one request for a picture has gone out
